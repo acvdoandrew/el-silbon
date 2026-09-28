@@ -215,7 +215,7 @@ fn card(width: f32) -> impl Bundle {
     )
 }
 
-fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>) {
+fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, launch: Res<crate::app::Launch>) {
     let fonts = Fonts {
         sans: assets.load("fonts/NotoSans-Regular.ttf"),
         serif: assets.load("fonts/NotoSerif-Regular.ttf"),
@@ -478,7 +478,7 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>) {
                 .with_children(|o| {
                     o.spawn(card(560.0)).with_children(|c| {
                         c.spawn((Text::new("Paused"), font(&f.serif, 40.0), TextColor(INK)));
-                        c.spawn((Text::new("The encounter is frozen. The mouse is free."), font(&f.sans, 15.0), TextColor(DIM)));
+                        c.spawn((Text::new(if launch.network.is_some() { "Local menu only. The shared encounter continues." } else { "The encounter is frozen. The mouse is free." }), font(&f.sans, 15.0), TextColor(DIM)));
                         for (kind, down, up) in [
                             (SettingLabel::Volume, MenuAction::VolumeDown, MenuAction::VolumeUp),
                             (SettingLabel::Sensitivity, MenuAction::SensitivityDown, MenuAction::SensitivityUp),
@@ -586,6 +586,8 @@ fn buttons(
     mut exit: MessageWriter<AppExit>,
     mut settings: ResMut<Settings>,
     tuning: Res<TuningRes>,
+    net: Res<crate::net::Network>,
+    mut net_commands: MessageWriter<crate::net::NetControl>,
 ) {
     for (interaction, action, mut bg) in &mut query {
         match interaction {
@@ -595,7 +597,11 @@ fn buttons(
                 match action {
                     MenuAction::Begin | MenuAction::Resume => next.set(Flow::Playing),
                     MenuAction::Restart => {
-                        restart.write(RestartRequest);
+                        if net.enabled {
+                            net_commands.write(crate::net::NetControl::Action(crate::net::protocol::Action::Restart));
+                        } else {
+                            restart.write(RestartRequest);
+                        }
                     }
                     MenuAction::Quit => {
                         exit.write(AppExit::Success);
@@ -681,11 +687,20 @@ fn status_text(
     truth: Res<Truth>,
     mut panel: Query<(&mut Visibility, &Children), With<StatusText>>,
     mut texts: Query<(&mut Text, &mut TextColor)>,
+    net: Res<crate::net::Network>,
 ) {
     let th = &truth.encounter.threat;
     let present = matches!(th.presence, Presence::Present | Presence::Rising { .. });
     let status: Option<(&str, Color)> = if truth.encounter.objective.is_over() {
         None
+    } else if net.enabled {
+        match net.snapshot().map(|s| s.danger) {
+            Some(1) => Some(("He has seen you — break his line of sight", AMBER)),
+            Some(2) => Some(("He is coming — get behind solid walls!", RED)),
+            Some(3) => Some(("Out of his sight… stay hidden", PALE_BLUE)),
+            _ if present => Some(("You can see him on the llano", DIM)),
+            _ => None,
+        }
     } else {
         match th.state {
             ThreatState::Warning => Some(("He has seen you — break his line of sight", AMBER)),
@@ -758,8 +773,17 @@ fn prompt(
     }
 }
 
-fn carry_tag(truth: Res<Truth>, state: Res<State<Flow>>, mut q: Query<&mut Visibility, With<CarryTag>>) {
-    let show = truth.encounter.carrying() && *state.get() != Flow::Briefing;
+fn carry_tag(
+    truth: Res<Truth>,
+    net: Res<crate::net::Network>,
+    state: Res<State<Flow>>,
+    mut q: Query<&mut Visibility, With<CarryTag>>,
+) {
+    let show = (if net.enabled {
+        net.carrying()
+    } else {
+        truth.encounter.carrying()
+    }) && *state.get() != Flow::Briefing;
     for mut v in &mut q {
         set_vis(&mut v, show);
     }

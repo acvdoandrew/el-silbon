@@ -42,14 +42,14 @@ impl Plugin for PlayerPlugin {
                         .in_set(GameSet::Control)
                         .after(reset_player)
                         .run_if(in_state(Flow::Playing))
-                        .run_if(|launch: Res<Launch>| !launch.smoke),
+                        .run_if(|launch: Res<Launch>| !launch.smoke && !launch.net_smoke),
                     apply_motion.in_set(GameSet::Motion).run_if(in_state(Flow::Playing)),
                 ),
             );
     }
 }
 
-fn eye_transform(pose: &Pose, tuning: &crate::tuning::Tuning) -> Transform {
+pub(crate) fn eye_transform(pose: &Pose, tuning: &crate::tuning::Tuning) -> Transform {
     Transform::from_translation(pose.eye(tuning)).with_rotation(Quat::from_euler(
         EulerRot::YXZ,
         pose.yaw,
@@ -166,14 +166,19 @@ fn apply_motion(
     layout: Res<LayoutRes>,
     tuning: Res<TuningRes>,
     player: Single<(&mut Player, &mut Transform)>,
+    net: Res<crate::net::Network>,
     flashlight: Single<(&mut Flashlight, &mut SpotLight)>,
 ) {
     let tuning = &tuning.0;
     let dt = time.delta_secs().min(tuning.max_step);
     let (mut player, mut tf) = player.into_inner();
     let speed = truth.encounter.player_speed(tuning);
-    player.pose.look(intent.0.look_delta, tuning);
-    player.pose.walk(&layout.0, tuning, intent.0.move_axis, speed, dt);
+    if !net.enabled || !net.caught() {
+        player.pose.look(intent.0.look_delta, tuning);
+    }
+    if !net.enabled {
+        player.pose.walk(&layout.0, tuning, intent.0.move_axis, speed, dt);
+    }
     *tf = eye_transform(&player.pose, tuning);
 
     if intent.0.toggle_flashlight {
@@ -183,7 +188,7 @@ fn apply_motion(
     }
 }
 
-fn reset_player(
+pub(crate) fn reset_player(
     mut requests: MessageReader<RestartRequest>,
     layout: Res<LayoutRes>,
     tuning: Res<TuningRes>,

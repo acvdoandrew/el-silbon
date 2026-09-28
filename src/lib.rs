@@ -21,6 +21,7 @@ pub mod control;
 pub mod debug;
 pub mod encounter;
 pub mod geometry;
+pub mod net;
 pub mod perception;
 pub mod player;
 pub mod rng;

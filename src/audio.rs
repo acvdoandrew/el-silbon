@@ -102,7 +102,13 @@ fn play_whistles(
     mut phrases: MessageReader<WhistleMsg>,
     sounds: Res<Sounds>,
     settings: Res<Settings>,
+    state: Res<State<Flow>>,
+    net: Res<crate::net::Network>,
 ) {
+    if *state.get() != Flow::Playing || (net.enabled && net.caught()) {
+        phrases.clear();
+        return;
+    }
     for WhistleMsg(p) in phrases.read() {
         let clip = match p.variant {
             WhistleVariant::Loud => &sounds.whistle_loud,
@@ -150,6 +156,8 @@ fn mix(
     tuning: Res<TuningRes>,
     mut hush: ResMut<Hush>,
     mut sinks: Query<(&Voice, &mut AudioSink)>,
+    state: Res<State<Flow>>,
+    net: Res<crate::net::Network>,
 ) {
     let tense = matches!(
         truth.encounter.threat.state,
@@ -159,7 +167,13 @@ fn mix(
     let k = (time.delta_secs() * 0.8).min(1.0);
     hush.0 += (target - hush.0) * k;
     for (voice, mut sink) in &mut sinks {
+        if *state.get() == Flow::Paused {
+            sink.pause();
+        }
         let mut v = voice.gain * settings.volume;
+        if net.enabled && net.caught() && voice.kind == VoiceKind::Whistle {
+            v = 0.0;
+        }
         if voice.kind == VoiceKind::Ambience {
             v *= hush.0;
         }

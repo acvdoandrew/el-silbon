@@ -29,7 +29,10 @@ impl Plugin for EncounterPlugin {
                 (
                     reset_views.in_set(GameSet::Control),
                     update_target.in_set(GameSet::Target).run_if(in_state(Flow::Playing)),
-                    step_truth.in_set(GameSet::Simulate).run_if(in_state(Flow::Playing)),
+                    step_truth
+                        .in_set(GameSet::Simulate)
+                        .run_if(in_state(Flow::Playing))
+                        .run_if(crate::net::offline),
                     sync_satchels.in_set(GameSet::Present),
                 ),
             );
@@ -41,11 +44,29 @@ fn update_target(
     tuning: Res<TuningRes>,
     truth: Res<Truth>,
     player: Single<&Player>,
+    net: Res<crate::net::Network>,
     intent: Res<CurrentIntent>,
     mut target: ResMut<CurrentTarget>,
     mut note: ResMut<NoteOpen>,
 ) {
-    let t = evaluate_target(&layout.0, &tuning.0, &player.pose, &truth.encounter);
+    let t = if net.enabled {
+        if !net.active() {
+            None
+        } else {
+            net.snapshot().and_then(|s| {
+                crate::net::session::target(
+                    &layout.0,
+                    &tuning.0,
+                    &player.pose,
+                    s.satchel,
+                    crate::net::protocol::objective(s.objective),
+                    net.id().unwrap_or(0),
+                )
+            })
+        }
+    } else {
+        evaluate_target(&layout.0, &tuning.0, &player.pose, &truth.encounter)
+    };
     target.0 = t;
     if intent.0.interact_pressed && t.is_some_and(|t| t.kind == TargetKind::Note && t.ready()) {
         note.0 = !note.0;
@@ -101,9 +122,14 @@ type SatchelVis<'a> = &'a mut Visibility;
 
 fn sync_satchels(
     truth: Res<Truth>,
-    mut table: Query<SatchelVis, (With<TableSatchel>, Without<TreeSatchel>, Without<CarriedSatchel>)>,
+    mut table: Query<
+        (&mut Visibility, &mut Transform),
+        (With<TableSatchel>, Without<TreeSatchel>, Without<CarriedSatchel>),
+    >,
     mut tree: Query<SatchelVis, (With<TreeSatchel>, Without<TableSatchel>, Without<CarriedSatchel>)>,
     mut carried: Query<SatchelVis, (With<CarriedSatchel>, Without<TableSatchel>, Without<TreeSatchel>)>,
+    net: Res<crate::net::Network>,
+    layout: Res<LayoutRes>,
 ) {
     let o = truth.encounter.objective;
     let set = |v: &mut Visibility, show: bool| {
@@ -117,11 +143,32 @@ fn sync_satchels(
         }
     };
     let returned = truth.encounter.restitution >= 1.0;
-    for mut v in &mut table {
-        set(&mut v, o == Objective::FindSatchel);
+    for (mut v, mut transform) in &mut table {
+        let pos = if net.enabled {
+            net.snapshot().and_then(|s| {
+                if let crate::net::protocol::Satchel::Ground(p) = s.satchel {
+                    Some(Vec3::from_array(p))
+                } else {
+                    None
+                }
+            })
+        } else {
+            (o == Objective::FindSatchel).then_some(layout.0.satchel)
+        };
+        set(&mut v, pos.is_some());
+        if let Some(pos) = pos {
+            transform.translation = pos;
+        }
     }
     for mut v in &mut carried {
-        set(&mut v, o == Objective::ReturnBones);
+        set(
+            &mut v,
+            if net.enabled {
+                net.carrying()
+            } else {
+                o == Objective::ReturnBones
+            },
+        );
     }
     for mut v in &mut tree {
         set(&mut v, returned && matches!(o, Objective::Escape | Objective::Won));

@@ -21,7 +21,8 @@ pub struct LayoutRes(pub Layout);
 #[derive(Resource)]
 pub struct TuningRes(pub Tuning);
 
-/// Hidden truth plus this listener's perception state.
+/// Offline truth, or a sanitized multiplayer presentation mirror. Multiplayer
+/// authority and each listener's cue director remain inside `net::session`.
 #[derive(Resource)]
 pub struct Truth {
     pub encounter: Encounter,
@@ -57,6 +58,9 @@ pub struct Launch {
     pub seed: u64,
     pub shots_dir: PathBuf,
     pub size: (u32, u32),
+    pub network: Option<crate::net::transport::Mode>,
+    pub net_smoke: bool,
+    pub headless: bool,
 }
 
 impl Default for Launch {
@@ -66,6 +70,9 @@ impl Default for Launch {
             seed: DEFAULT_SEED,
             shots_dir: PathBuf::from("screenshots"),
             size: (1600, 900),
+            network: None,
+            net_smoke: false,
+            headless: false,
         }
     }
 }
@@ -80,6 +87,10 @@ USAGE: el_silbon [--seed N] [--size WxH] [--shots DIR] [--smoke]
   --shots DIR   screenshot folder for F12 and the smoke route (default ./screenshots)
   --smoke       DEBUG: play the deterministic scripted route (win, restart,
                 caught, restart), save screenshots, print a summary, exit
+  --host ADDR   host and play, e.g. 127.0.0.1:5000 (loopback/private LAN only)
+  --join ADDR   join a host before the encounter starts
+  --net-smoke   DEBUG: real two-process shared-encounter route
+  --headless    with --net-smoke: run real networking without graphics
 ";
 
 impl Launch {
@@ -89,6 +100,21 @@ impl Launch {
         while let Some(arg) = it.next() {
             match arg.as_str() {
                 "--smoke" => launch.smoke = true,
+                "--host" | "--join" => {
+                    if launch.network.is_some() {
+                        return Err("Choose either --host or --join, not both.".into());
+                    }
+                    let value = it.next().ok_or("host/join needs IP:PORT")?;
+                    let addr = value.parse().map_err(|_| format!("Invalid socket address: {value}"))?;
+                    let addr = crate::net::transport::local_address(addr)?;
+                    launch.network = Some(if arg == "--host" {
+                        crate::net::transport::Mode::Host(addr)
+                    } else {
+                        crate::net::transport::Mode::Join(addr)
+                    });
+                }
+                "--net-smoke" => launch.net_smoke = true,
+                "--headless" => launch.headless = true,
                 "--seed" => {
                     let v = it.next().ok_or("--seed needs a value")?;
                     launch.seed = v.parse().map_err(|_| format!("bad --seed value: {v}"))?;
@@ -106,6 +132,15 @@ impl Launch {
                 "-h" | "--help" => return Err(USAGE.to_string()),
                 other => return Err(format!("unknown argument: {other}\n\n{USAGE}")),
             }
+        }
+        if launch.smoke && launch.network.is_some() {
+            return Err("--smoke is offline only; use --net-smoke for a shared session.".into());
+        }
+        if launch.net_smoke && launch.network.is_none() {
+            return Err("--net-smoke needs --host or --join.".into());
+        }
+        if launch.headless && !launch.net_smoke {
+            return Err("--headless is only available with --net-smoke.".into());
         }
         Ok(launch)
     }
@@ -162,6 +197,15 @@ pub fn run() -> AppExit {
             };
         }
     };
+    if launch.headless {
+        return match crate::net::smoke::run_headless(launch) {
+            Ok(()) => AppExit::Success,
+            Err(e) => {
+                eprintln!("NET SMOKE FAIL: {e}");
+                AppExit::error()
+            }
+        };
+    }
     build_app(launch).run()
 }
 
@@ -241,6 +285,7 @@ pub fn build_app(launch: Launch) -> App {
                 .chain(),
         )
         .add_plugins((
+            crate::net::NetworkPlugin,
             crate::world::WorldPlugin,
             crate::player::PlayerPlugin,
             crate::encounter::EncounterPlugin,
@@ -254,7 +299,11 @@ pub fn build_app(launch: Launch) -> App {
         .add_systems(OnExit(Flow::Paused), thaw_time)
         .add_systems(
             Update,
-            (apply_restart, pause_keys, pause_on_focus_loss)
+            (
+                apply_restart.run_if(crate::net::offline),
+                pause_keys,
+                pause_on_focus_loss,
+            )
                 .chain()
                 .in_set(GameSet::Control),
         );
@@ -262,7 +311,7 @@ pub fn build_app(launch: Launch) -> App {
 }
 
 fn capture_cursor(launch: Res<Launch>, mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>) {
-    if launch.smoke {
+    if launch.smoke || launch.net_smoke {
         return; // never grab the desktop's pointer during automation
     }
     cursor.visible = false;
@@ -274,8 +323,10 @@ fn release_cursor(mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>) {
     cursor.grab_mode = CursorGrabMode::None;
 }
 
-fn freeze_time(mut time: ResMut<Time<Virtual>>) {
-    time.pause();
+fn freeze_time(launch: Res<Launch>, mut time: ResMut<Time<Virtual>>) {
+    if launch.network.is_none() {
+        time.pause();
+    }
 }
 
 fn thaw_time(mut time: ResMut<Time<Virtual>>) {
@@ -315,7 +366,7 @@ fn pause_keys(
         Flow::Playing if keys.just_pressed(KeyCode::Escape) => next.set(Flow::Paused),
         Flow::Paused if keys.just_pressed(KeyCode::Escape) => next.set(Flow::Playing),
         Flow::Briefing if keys.just_pressed(KeyCode::Enter) => next.set(Flow::Playing),
-        Flow::Outcome if keys.just_pressed(KeyCode::KeyR) => {
+        Flow::Outcome if launch.network.is_none() && keys.just_pressed(KeyCode::KeyR) => {
             restart.write(RestartRequest);
         }
         _ => {}
@@ -330,7 +381,7 @@ fn pause_on_focus_loss(
     mut next: ResMut<NextState<Flow>>,
 ) {
     let lost = focus.read().any(|f| !f.focused);
-    if lost && !launch.smoke && *state.get() == Flow::Playing {
+    if lost && !launch.smoke && !launch.net_smoke && *state.get() == Flow::Playing {
         next.set(Flow::Paused);
     }
 }
@@ -345,7 +396,6 @@ mod tests {
 
     #[test]
     fn launch_arguments() {
-        assert_eq!(args("").unwrap(), Launch::default());
         let l = args("--smoke --seed 42 --size 1280x720 --shots out").unwrap();
         assert!(l.smoke);
         assert_eq!(l.seed, 42);
@@ -354,5 +404,11 @@ mod tests {
         assert!(args("--seed nope").is_err());
         assert!(args("--size 12").is_err());
         assert!(args("--fly").is_err());
+        assert!(args("--headless").is_err());
+        assert!(args("--net-smoke").is_err());
+        assert!(args("--host 0.0.0.0:5000").is_err());
+        assert!(args("--host 8.8.8.8:5000").is_err());
+        assert!(args("--host 127.0.0.1:5000 --join 127.0.0.1:5000").is_err());
+        assert!(args("--host 127.0.0.1:5000 --smoke").is_err());
     }
 }

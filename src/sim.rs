@@ -2,9 +2,9 @@
 //!
 //! Headless and deterministic. The ECS layer feeds a [`TickInput`] per frame
 //! and reacts to the [`Event`]s pushed out; nothing in here knows about
-//! rendering, audio or input devices. This is the part that would move to an
-//! authoritative server later — clients would only ever see what the
-//! perception layer lets them hear, never `Threat::pos` for the whistle.
+//! rendering, audio or input devices. Offline play advances this encounter
+//! directly; `net::session` reuses its threat rules on the authoritative host
+//! and sends only player-facing cues and legitimate visible presentation.
 
 use bevy::math::Vec2;
 
@@ -339,7 +339,14 @@ impl Encounter {
         }
     }
 
-    fn update_threat(&mut self, layout: &Layout, tuning: &Tuning, player: Vec2, dt: f32, events: &mut Vec<Event>) {
+    pub(crate) fn update_threat(
+        &mut self,
+        layout: &Layout,
+        tuning: &Tuning,
+        player: Vec2,
+        dt: f32,
+        events: &mut Vec<Event>,
+    ) {
         let th = &mut self.threat;
         th.speed = 0.0;
         match th.presence {
