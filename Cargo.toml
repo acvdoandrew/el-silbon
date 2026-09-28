@@ -1,0 +1,38 @@
+[package]
+name = "el_silbon"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "El Silbón — The Return: first local playable folk-horror encounter (Bevy)."
+license = "MIT OR Apache-2.0"
+publish = false
+default-run = "el_silbon"
+
+[dependencies]
+bevy = { version = "=0.19.1", default-features = false, features = [
+    "3d",
+    "ui",
+    "audio",
+    "wav",
+    "keyboard",
+    "mouse",
+] }
+
+[lib]
+name = "el_silbon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "el_silbon"
+path = "src/main.rs"
+
+# Bevy recommendation: keep our code quick to rebuild, dependencies optimized.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+codegen-units = 1
+lto = "thin"

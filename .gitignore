@@ -1,0 +1,9 @@
+/target
+/screenshots
+
+# Local secrets and Python-generated files.
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
