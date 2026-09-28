@@ -1,6 +1,6 @@
 # Asset sources
 
-Every asset used by the game, with provenance. Nothing is a placeholder.
+Asset provenance for the encounter. The multiplayer player avatars below are intentional placeholders.
 
 ## Audio — original, generated
 
@@ -30,6 +30,13 @@ burlap, straw, dark and pale cloth, clay, the note paper, the 1998 calendar page
 "HATO LA CEIBA" sign (original 5×7 stencil glyphs) and the moon halo. All
 geometry (house, fences, ceiba, props, grass, palms, sky, the Silbón) is built
 procedurally in `src/world/`. No image or model files are shipped.
+
+## Multiplayer player avatars — original placeholders
+
+`src/net/mod.rs` builds amber and blue capsule/head meshes for remote players,
+using existing satchel geometry for the carried item. These are deliberately
+temporary, distinguishable player representations, not new environment or
+enemy art. They add no cameras, lights or audio listeners.
 
 ## Fonts — third party, SIL Open Font License 1.1
 

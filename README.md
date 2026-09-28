@@ -1,9 +1,9 @@
 # El Silbón — The Return
 
 A compact first-person folk-horror encounter set on a fictional stretch of the
-Colombian–Venezuelan Llanos, late 1990s. This repository is the **first local
-playable test** of a planned cooperative game (4–8 players, reference six); it
-is single-player only for now and makes no multiplayer claims.
+Colombian–Venezuelan Llanos, late 1990s. The current checkpoint supports an
+offline encounter and a two-player, player-hosted development session.
+The eventual cooperative target remains 4–8 players (reference six).
 
 Your truck died on the road. Beyond a sagging fence stand an abandoned house
 with a lamp still burning and an enormous ceiba. Take the bone satchel from the
@@ -43,21 +43,79 @@ Launch options:
 Assets load from this crate's `assets/` even when the binary is started from
 `target/`; set `BEVY_ASSET_ROOT` to override.
 
+## Two-player session
+
+Build once: `cargo build --release --locked`. Start two separate applications:
+
+```sh
+# Host: plays as the amber player.
+./target/release/el_silbon --host 127.0.0.1:5000 --shots screenshots/host
+# Client: plays as the blue player.
+./target/release/el_silbon --join 127.0.0.1:5000 --shots screenshots/client
+```
+
+Wait until the banner reports **2/2 connected**, then the **host presses Enter**.
+Both retain WASD, mouse look, E/hold E and F. **G** puts the satchel down.
+**F6/R** restarts everyone (host only); **F10** ends the session for the host
+or leaves for the client. Closing the application also disconnects.
+Esc/focus loss opens a **local menu only**: the shared world continues.
+
+For a trusted LAN, substitute the host's explicit private LAN IP in **both**
+commands. Wildcard/public host addresses are rejected. No firewall/router
+changes, port forwarding, discovery, relay, Steam login or internet hosting
+are provided. Both peers must use matching gameplay sources, Cargo.lock and
+`--seed` (default 1997); mismatches are rejected before admission.
+
+**Policy:** join before the first start only. Restart retains connected
+players and does not reopen admission. After a disconnection, the host may
+continue alone; launch a new host session to admit a replacement player.
+
+The host validates movement/collision, aim, interaction reach, item ownership,
+objective progression and one threat simulation. Exactly one player carries
+the satchel. Dropping, capture or disconnection leaves it recoverable.
+A caught player is inactive until restart; the other may continue. All
+remaining players caught means shared failure. After restitution, an active
+survivor returning from outside the road goal produces shared victory.
+
+### Networking choice and boundaries
+
+[Renet 2.0](https://docs.rs/renet/2.0.0/renet/) and
+[renet_netcode 2.0](https://docs.rs/renet_netcode/2.0.0/renet_netcode/)
+are standalone Rust libraries, independent of the installed Bevy 0.19.1.
+This avoids an engine upgrade or replication framework. Renet's
+[separate Steam transport](https://github.com/lucaspoffo/renet/tree/master/renet_steam)
+is a future integration option, **not implemented here**.
+
+Host simulation runs at 60 Hz; snapshots/input send at 20 Hz. Remote positions
+are smoothed; there is no prediction/rollback or production anti-cheat.
+Actions use reliable ordered messages, run epochs and sequence numbers.
+The direct-address netcode setup is **unauthenticated development mode**:
+trusted loopback/LAN only, not a secure public service.
+
+Whistles are generated host-side per listener and sent as categorical timbre
+and pitch variation, not true distance or an invertible continuous distance.
+Enemy transforms are included only when present, within a broad view cone
+and with unblocked authored line of sight. The host necessarily knows the
+truth; clients can remember previously visible positions or infer information
+from cues. This is not a claim of comprehensive hidden-information security.
+
 ## Controls
 
 | Input | Action |
 |---|---|
-| Mouse | look (after clicking **Begin**, the cursor is captured) |
+| Mouse | look; offline Begin or multiplayer entry captures cursor |
 | W A S D / arrows | move |
 | E or left click | interact; **hold** at the ceiba's hollow |
 | F | flashlight on/off |
-| Esc | pause (frees the cursor) / resume |
+| Esc | offline pause / multiplayer local menu; releases cursor |
 | F12 | screenshot of the game window |
-| R | restart (on the win/lose screen) |
+| R / F6 | multiplayer host restart; offline R on the outcome screen |
+| G | multiplayer: put the satchel down |
+| F10 | multiplayer: host ends session / client leaves |
 
-The pause menu adjusts master volume, mouse sensitivity and whistle captions,
-and can restart from the road. Losing window focus pauses automatically.
-There is no camera bob or shake.
+The menu adjusts master volume, mouse sensitivity and whistle captions.
+Offline pause freezes the encounter; multiplayer menus/focus loss stop only
+local input while the shared encounter continues. There is no bob or shake.
 
 ## The encounter
 
@@ -74,8 +132,8 @@ There is no camera bob or shake.
    rise again far away.
 5. Hold E at the hollow in the ceiba's roots for three seconds (progress
    pauses if you let go or look away). He leaves.
-6. Walk back out to the road: win. Being caught ends the run; both outcomes
-   offer restart.
+6. Walk back out to the road: win. Offline capture ends the run; in multiplayer
+   a captured player waits for restart while their teammate may continue.
 
 Intended length is 3–5 minutes; **this is not yet measured with human
 players** (see `docs/PROGRESS.md`).
@@ -109,16 +167,57 @@ replays the same route headlessly.
 
 ## Scope of this build
 
-In: one authored night encounter, full win/lose/restart loop, pause/settings,
-captions, procedural world and textures, original synthesized audio.
-Not in: networking or co-op, voice, save data, controller support, content
-beyond this encounter. Next milestone: two real clients (see
-`docs/PROGRESS.md`).
+In: one authored encounter, offline and two-player direct-address play,
+shared satchel/objectives/threat/outcomes, restart and disconnect recovery,
+pause/settings, captions, existing procedural visuals and synthesized audio.
+Not in: voice, assisted carrying, rescue/revival, Steam authentication,
+matchmaking, reconnect/host migration, map expansion or internet relay.
+Next milestone: **basic proximity voice**, after the two-player checklist.
 
 ## Hands-on checks
 
 Desktop testing is user-led; no automated Omarchy pointer/keyboard control.
 After rebuilding, close the old game window and relaunch to see the changes.
+
+### Two-player checklist
+
+1. Connect both applications before host Enter. Confirm amber/blue remote
+   players move and collide with the existing walls/doors; each controls only
+   its own camera. Try joining a third application after start: expect rejection.
+2. Both aim at the satchel and press E together: exactly one should carry it.
+   Carrier presses G; the other aims down and picks it up. Try E from too far
+   away or through a wall: ownership must not change.
+3. Compare whistle impressions from separated positions. Hide during a warning
+   and confirm the warning clears without an unavoidable capture.
+4. Return the satchel at the ceiba, then have an active player return to the
+   road. Both must receive victory; host F6/R resets both.
+5. Let the carrier get caught. Confirm they stop moving, the satchel drops and
+   the survivor can recover it. Both caught must produce shared failure.
+6. Restart, let the client carry, then client F10/close. Confirm its avatar
+   disappears and the host can recover/finish. End/close the host separately:
+   the client must report disconnection rather than continue a private AI run.
+7. Repeat restart and menus: no extra players, lights, satchels or audio loops.
+
+### Reproducible two-process smoke
+
+These commands use **real UDP endpoints in separate processes** and scripted
+game input, not desktop automation or a mocked network. Run in two terminals:
+
+```sh
+./target/release/el_silbon --host 127.0.0.1:5000 --net-smoke --headless
+./target/release/el_silbon --join 127.0.0.1:5000 --net-smoke --headless
+```
+
+The headless route uses accelerated fixed steps and claims no rendering proof.
+It performs a shared win, a both-caught run, two host restarts, and a carrier
+disconnect followed by host pickup. Each process prints `NET SMOKE PASS`
+and exits; failures return a nonzero exit code.
+
+Omit `--headless` to exercise the real renderer, scene census and game-owned
+screenshots in `screenshots/network/`. This opens two windows but never grabs
+the pointer or injects Omarchy input. Use separate `--shots` folders if desired.
+
+### Offline checklist
 
 - Walk the whole route; note confusing landmarks, collision snags, and total time.
 - Take the satchel, wait for a warning in the yard, then hide behind a solid wall.

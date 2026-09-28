@@ -1,5 +1,68 @@
 # Progress
 
+## Current milestone: two-player shared encounter
+
+- Implemented directly by Astra under the user's ownership override; no
+  subagents, model/config/auth changes, new map content or voice.
+- Standalone Renet 2.0 + renet_netcode 2.0; Bevy remains exactly 0.19.1.
+  Direct loopback/private-LAN hosting only, development authentication, no relay.
+- Host owns input-driven movement/collision, stable player IDs, the singleton
+  satchel, all interactions/objectives and one threat. Snapshots are 20 Hz;
+  host simulation is 60 Hz. Remote players are temporary amber/blue meshes.
+- Lobby-only admission with gameplay/configuration fingerprint and seed check.
+  Host Enter starts, F6/R restarts, F10 ends; client F10 leaves. Esc is a local
+  menu, not a global pause. No reconnect or host migration.
+- Dropped/captured/disconnected carriers leave a recoverable satchel. Captured
+  players wait for restart; the survivor continues. All remaining players
+  caught means failure. After restitution, an active player must return to
+  the road from outside its goal to produce shared victory.
+- Run epochs and input/action sequences reject old-run/replayed requests.
+  Disconnect removes the avatar, ownership, pending effects and input.
+- Whistles are listener-specific categorical cues generated host-side.
+  Hidden transforms are omitted; a present enemy is sent only inside a broad
+  view cone with unblocked authored sight. The host is trusted; this does not
+  hide previously seen positions or prevent inference from cues.
+- After verification, the user explicitly authorized committing this checkpoint
+  and pushing it to the existing private `acvdoandrew/el-silbon` repository.
+  Future pushes still require an explicit request.
+
+### Verification
+
+- Original baseline: 19 tests, formatting, check and Clippy passed.
+- Final build gate: `cargo fmt --check`, `cargo check --locked`,
+  `cargo test --locked` (**30 passed**), Clippy `--all-targets -- -D warnings`,
+  and `cargo build --release --locked` passed.
+- Added authority tests cover conflicting ownership, invalid reach/occlusion,
+  drop/transfer, restitution/escape, capture, disconnect, stale movement,
+  restart epochs and absence of hidden enemy transforms.
+  Distinct near/far listeners receive different categorical whistle variants;
+  manifestation considers both players, and a teammate already waiting on
+  the road cannot skip the carrier's return journey.
+- Two **real UDP processes on this machine**, headless: complete win,
+  shared failure, two restarts, carrier leave and host recovery passed.
+  Separate real UDP probes rejected late joining and a mismatched seed.
+  The final release repeated the complete headless two-process route successfully.
+  An abrupt host-termination probe produced an explicit snapshot timeout.
+  The smoke driver was corrected to wait on stale snapshots rather than
+  misreport connection loss as a walking/path failure.
+- Two **rendered processes on this machine**, Vulkan/RTX 4070, dev and release builds:
+  both reported `NET RENDER SMOKE PASS`. Restarts retained the census
+  `[1 camera, 1 spot, 2 points, 1 moon, 1 ambience, 1 threat, 1 table item,
+  1 returned item, 1 first-person item]`; remote avatar counts matched peers.
+  Latest reviewed images in `screenshots/network-checkpoint/network/` show both players, carrying,
+  listener warning, individual capture and shared win/failure.
+  The final menu fix was exercised in the dev build: session status no longer
+  covers outcome buttons. Both processes again passed the full route and census.
+  The final release executable was also rebuilt successfully from those sources.
+- Final release offline `--smoke` passed win/failure/two restarts; camera,
+  lights, ambience, threat, mesh and UI census stayed unchanged. Its nine
+  genuine captures are in `screenshots/offline-regression/smoke/`.
+- No Omarchy input/window automation. No two-physical-machine LAN test and
+  no separate-internet-connection test. Human movement feel, simultaneous
+  input and audio comfort remain user-led checks.
+
+The sections below preserve the initial offline encounter's history.
+
 ## Decisions
 
 - **Engine**: Bevy `=0.19.1`, Rust 2024; features `3d`, `ui`, `audio`, `wav`,
@@ -111,9 +174,9 @@
 
 ## Unresolved / risks
 
-- Revised visuals and renderer-readiness capture gating have not been re-run
-  on the desktop after the user requested hands-on testing. User screenshots
-  should confirm sky restraint, whole-tree readability and the threat silhouette.
+- The revised scene has now rendered in the two-player process checks above.
+  Human visual/pacing assessment remains user-led; no new art was introduced
+  for this networking milestone beyond the explicitly temporary player avatars.
 - Encounter length (target 3–5 minutes) is unmeasured with human players; the
   optimized scripted win takes 85 s.
 - Invisible walls at the road ends (x = ±44 m) are hidden only by fog.
@@ -122,11 +185,8 @@
 
 ## Next
 
-1. User-led playtest of the rebuilt checkpoint: F12 roadside, house table,
-   whole ceiba and first threat sighting; report any snag, unreadable cue,
-   uncomfortable sound, plus approximate completion time.
-2. Tune only from those observations; target 3–5 minutes with fair recovery.
-3. Next milestone — **two real clients** before more content: shared carry
-   and interaction state, distinct per-listener whistle perception from the
-   same hidden truth, a feasibility check for voice, and the threat truth made
-   server-authoritative (clients never receive true threat distance for cues).
+1. User-led two-player checklist in README: movement, competing pickup,
+   transfer, restitution/escape, capture, carrier disconnect and host departure.
+2. Fix only observed foundation issues before additional systems or content.
+3. **Next milestone: basic proximity voice feasibility and implementation.**
+   Not started here. The eventual target remains 4–8 players.
