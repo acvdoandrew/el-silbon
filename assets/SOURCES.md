@@ -53,6 +53,7 @@ Regenerate: `python3 tools/gen_audio.py` (writes into `assets/audio/`).
 | `omen_bones.wav` | far, dull bone clatter, mostly room (own seed) | omen: bones in the dark; the clack that ends a silence |
 | `omen_lamps.wav` | sagging mains hum that fizzes and dies (own seed) | omen: the lamps die |
 | `omen_swell.wav` | slow low swell of fifths and rumble (own seed) | omen: drag marks, the hat |
+| `title_theme.wav` | 48 s seamless loop: a lone, slightly flat cuatro (Karplus-Strong strings) slowly strumming B minor, G, E minor, F sharp with single high notes, over a low breathing drone and wind, in reverb (own seed) | the title screen |
 | `dread_drone.wav` | 16 s seamless drone of beating low fifths and air (own seed) | the dread bed, swelling with the night and the rite |
 | `lock_rattle.wav` | padlock knocks and a shackle ring (own seed) | a wrong combination at the key box |
 | `lock_open.wav` | shackle click and a ring of keys (own seed) | the key box opens |

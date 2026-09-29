@@ -152,7 +152,8 @@ pub(crate) fn roster(
     state: Res<State<Flow>>,
     mut lines: Query<(&RosterLine, &mut Text, &mut TextColor)>,
 ) {
-    let playing = matches!(*state.get(), Flow::Playing | Flow::Paused);
+    // Only a shared night has a party to list (hosting can begin at runtime).
+    let playing = matches!(*state.get(), Flow::Playing | Flow::Paused) && net.is_shared();
     let me = net.id();
     for (line, mut t, mut c) in &mut lines {
         let Some(p) = net.snapshot().filter(|_| playing).and_then(|s| s.players.get(line.0)) else {
@@ -758,7 +759,7 @@ pub(crate) fn name_panel(
         .enumerate()
         .map(|(i, n)| {
             if i as u8 == naming.choice {
-                format!("▸ {n} ◂")
+                format!("› {n} ‹")
             } else {
                 n.to_string()
             }

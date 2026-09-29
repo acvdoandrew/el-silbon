@@ -73,6 +73,7 @@ struct Sounds {
     banished: Handle<AudioSource>,
     dog_growl: Handle<AudioSource>,
     dog_bark: Handle<AudioSource>,
+    theme: Handle<AudioSource>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,6 +86,8 @@ enum VoiceKind {
     Crank,
     Radio,
     Dread,
+    /// The title screen's cuatro.
+    Theme,
     Whistle,
     Effect,
 }
@@ -191,6 +194,7 @@ fn load_sounds(mut commands: Commands, assets: Res<AssetServer>, tuning: Res<Tun
         beacon: a("beacon_flare"),
         counting: a("counting"),
         ping: a("ping"),
+        theme: a("title_theme"),
     };
     let t = &tuning.0;
     let spawn_loop = |commands: &mut Commands,
@@ -243,6 +247,14 @@ fn load_sounds(mut commands: Commands, assets: Res<AssetServer>, tuning: Res<Tun
     );
     spawn_loop(
         &mut commands,
+        "title theme",
+        &sounds.theme,
+        t.ambience_gain * 1.2,
+        VoiceKind::Theme,
+        false,
+    );
+    spawn_loop(
+        &mut commands,
         "dread loop",
         &sounds.dread,
         t.ambience_gain * 1.1,
@@ -286,8 +298,10 @@ fn play_whistles(
     state: Res<State<Flow>>,
     net: Res<Network>,
 ) {
-    // The dead hear no more of him; the paused hear nothing at all.
-    if *state.get() != Flow::Playing || net.status() == 2 {
+    // The dead hear no more of him; the paused hear nothing at all. The
+    // title screen's night has its own faint whistles.
+    let heard = matches!(state.get(), Flow::Playing | Flow::Title);
+    if !heard || net.status() == 2 {
         phrases.clear();
         return;
     }
@@ -575,6 +589,7 @@ fn mix(
             }
             VoiceKind::Rain => v *= hush_omen * duck * rain * if dazed { 0.65 } else { 1.0 },
             VoiceKind::Dread => v *= if over { 0.0 } else { dread },
+            VoiceKind::Theme => v *= if *state.get() == Flow::Title { 1.0 } else { 0.0 },
             VoiceKind::Heartbeat => {
                 v *= heart_level * heart_level;
                 sink.set_speed(heart_speed);

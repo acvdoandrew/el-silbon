@@ -468,8 +468,28 @@ pub fn spawn(
         }
         rest
     };
-    for r in d.relics.iter().skip(1) {
-        perch(&mut perches, *r, floor(*r), 0.3);
+    // Every hiding place a bundle might use has its own perch, shown only
+    // under tonight's (the night can change from the menu without a relaunch).
+    for sites in d.relic_sites.iter().skip(1) {
+        for &site in sites {
+            let mut mb = MeshBuilder::new();
+            perch(&mut mb, site, floor(site), 0.3);
+            if mb.is_empty() {
+                continue;
+            }
+            commands.spawn((
+                Name::new("bundle perch"),
+                RelicPerch(site),
+                Mesh3d(meshes.add(mb.build())),
+                MeshMaterial3d(palette.wood.clone()),
+                NotShadowCaster,
+                if d.relics.contains(&site) {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                },
+            ));
+        }
     }
     for (i, p) in d.aji.iter().enumerate() {
         perch(
@@ -967,6 +987,27 @@ pub fn spawn(
 
 /// Bundles rest where they lie, sit in the altar's arc once delivered and
 /// vanish from the world while somebody carries them.
+/// A perch under one of the bundles' possible hiding places.
+#[derive(Component)]
+pub struct RelicPerch(Vec3);
+
+/// Show the perches under tonight's hiding places.
+pub fn relic_perches(layout: Res<LayoutRes>, mut perches: Query<(&RelicPerch, &mut Visibility)>) {
+    if !layout.is_changed() {
+        return;
+    }
+    for (perch, mut vis) in &mut perches {
+        let want = if layout.0.district.relics.contains(&perch.0) {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *vis != want {
+            *vis = want;
+        }
+    }
+}
+
 pub fn bundles(
     net: Res<Network>,
     layout: Res<LayoutRes>,

@@ -91,7 +91,7 @@ impl Plugin for PlayerPlugin {
             .add_systems(Startup, spawn_player.after(crate::world::spawn_world))
             .add_systems(
                 Update,
-                (head_bob, torch_in_hand, torch_light, carry_fog)
+                (view_settings, head_bob, torch_in_hand, torch_light, carry_fog)
                     .chain()
                     .in_set(GameSet::Present)
                     .after(apply_motion),
@@ -433,7 +433,14 @@ fn read_devices(
     let k = tuning.0.mouse_radians_per_count * settings.sensitivity;
     intent.0 = Intent {
         move_axis: axis.normalize_or_zero(),
-        look_delta: Vec2::new(motion.delta.x * k, -motion.delta.y * k),
+        look_delta: Vec2::new(
+            motion.delta.x * k,
+            if settings.invert_y {
+                motion.delta.y * k
+            } else {
+                -motion.delta.y * k
+            },
+        ),
         interact_pressed: keys.just_pressed(KeyCode::KeyE) || mouse.just_pressed(MouseButton::Left),
         interact_held: keys.pressed(KeyCode::KeyE) || mouse.pressed(MouseButton::Left),
         toggle_flashlight: keys.just_pressed(KeyCode::KeyF),
@@ -474,11 +481,33 @@ fn apply_motion(
     }
 }
 
+/// The player's view settings: field of view and brightness (the photo
+/// driver sets its own field of view per shot).
+fn view_settings(
+    settings: Res<Settings>,
+    launch: Res<Launch>,
+    camera: Single<(&mut Projection, &mut ColorGrading), With<Player>>,
+    mut applied: Local<bool>,
+) {
+    if *applied && !settings.is_changed() {
+        return;
+    }
+    *applied = true;
+    let (mut projection, mut grading) = camera.into_inner();
+    if !launch.photos
+        && let Projection::Perspective(p) = &mut *projection
+    {
+        p.fov = settings.fov.to_radians();
+    }
+    grading.global.exposure = 0.3 + 0.7 * settings.brightness;
+}
+
 /// The torch's lights and lens follow its switch and its charge: a dead
 /// battery gives nothing, a weak one gutters and catches.
 fn torch_light(
     time: Res<Time>,
-    torch: Single<&Flashlight>,
+    state: Res<State<Flow>>,
+    torch: Single<(&Flashlight, &mut Visibility)>,
     net: Res<crate::net::Network>,
     tuning: Res<TuningRes>,
     lens: Res<TorchLens>,
@@ -486,9 +515,20 @@ fn torch_light(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut shown: Local<Option<u16>>,
 ) {
+    let (torch, mut vis) = torch.into_inner();
+    // On the title screen the camera drifts over the llano: no torch in hand.
+    let title = *state.get() == Flow::Title;
+    let want = if title {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
+    if *vis != want {
+        *vis = want;
+    }
     let charge = net.snapshot().map_or(1.0, |s| s.me.battery);
     let low = tuning.0.battery_low;
-    let level = if !torch.on || charge <= 0.0 {
+    let level = if title || !torch.on || charge <= 0.0 {
         0.0
     } else if charge >= low {
         1.0
@@ -521,6 +561,8 @@ fn torch_light(
 /// the bob is laid on top of that placement and taken off again next frame.
 fn head_bob(
     time: Res<Time>,
+    settings: Res<Settings>,
+    state: Res<State<Flow>>,
     mut gait: ResMut<Gait>,
     mut camera: Single<&mut Transform, With<Player>>,
     mut placed: Local<Option<(Transform, Transform)>>,
@@ -546,7 +588,11 @@ fn head_bob(
         gait.amount += (pace - gait.amount) * (dt * 6.0).min(1.0);
         gait.phase = (gait.phase + moved * STRIDE_PER_M) % std::f32::consts::TAU;
     }
-    let a = gait.amount;
+    let a = if settings.head_bob && *state.get() != Flow::Title {
+        gait.amount
+    } else {
+        0.0
+    };
     let mut tf = base;
     if a > 1e-3 {
         let right = base.rotation * Vec3::X;

@@ -30,7 +30,8 @@ ritual practice.
 ## Run
 
 ```sh
-cargo run --release --locked                 # solo
+cargo run --release --locked                 # the title screen and its menus
+cargo run --release --locked -- --play       # straight into a solo night
 cargo run --release --locked -- --help       # launch options
 cargo test --locked                          # headless rules and route tests
 ```
@@ -38,7 +39,8 @@ cargo test --locked                          # headless rules and route tests
 | Option | Meaning |
 |---|---|
 | `--seed N` | the night: bundle hiding places, padlock code, which of him walks, storm (solo without it: a new night every launch; debug routes and shared sessions: `1997`) |
-| `--night N` | `gentle`, `normal` (default) or `hard`; every peer in a shared session must agree |
+| `--night N` | `gentle`, `normal` (default) or `hard`; a joiner takes the host's night automatically |
+| `--play` | skip the title screen and go straight into a solo night |
 | `--size WxH` | window size (default `1600x900`) |
 | `--shots DIR` | folder for F12 screenshots and the debug drivers (default `./screenshots`) |
 | `--host ADDR` | host a shared session, e.g. `127.0.0.1:5000` (loopback or private LAN only) |
@@ -46,11 +48,25 @@ cargo test --locked                          # headless rules and route tests
 | `--smoke` | **debug**: deterministic scripted run (win, restart, caught, restart), then exit |
 | `--tour` | **debug**: walk to every landmark and up the lookout, then the full `--smoke` route |
 | `--photos` | **debug**: presentation review captures from searched viewpoints, then exit |
+| `--menu-shots` | **debug**: the title screen and every menu page, one capture each, then exit |
 | `--net-smoke` | **debug**: scripted two-process shared-run route (with `--host`/`--join`) |
 | `--headless` | with `--net-smoke`: real networking without graphics |
 
 Assets load from this crate's `assets/` even when the binary is started from
 `target/`; set `BEVY_ASSET_ROOT` to override.
+
+A plain launch opens on the **title screen**: the camera drifts past the
+hacienda's landmarks in the rain while a cuatro plays alone; now and then a
+whistle, and sometimes, when lightning strikes, a tall shape. Its menus
+(keyboard or mouse): **Play** (difficulty and night number), **Play with
+friends** (host on this machine's LAN address or join one), **Journal** (the
+pages of the tale found over every night, readable again, and the tally of
+nights), **Settings** (volume, sensitivity, invert Y, field of view,
+brightness, head bob, captions, window or fullscreen), **How to play**,
+**Credits** and **Quit**. Esc in a night opens the pause menu (resume,
+settings, journal, restart, leave to the title). Settings, pages and the
+tally are saved to `$XDG_DATA_HOME/el-silbon/profile.json` (else
+`~/.local/share/el-silbon/profile.json`); the debug drivers never touch it.
 
 ## The run
 
@@ -216,6 +232,11 @@ debug features.
   state (camera, powered lamps, photo-only teammates, the downed view) is a
   presentation mirror, written on each image and in the manifest; it is
   never gameplay proof. Only the `00_overview*` frames widen the fog range.
+- **`--menu-shots`** opens on the title screen, shows it at four landmark
+  stops and then every menu page, begins a solo night (briefing, play,
+  pause, pause settings) and leaves it for the title again, saving one
+  capture per step to `<shots>/menu/`. It prints `MENU SHOTS OK` and exits
+  0. Presentation review only.
 - **`--net-smoke`** runs the shared route in two real processes over UDP:
   a delivery and exchanged marks, a shared win with all bones, power and
   the truck, a restart, a shared failure, a second restart, then a carrier
@@ -242,6 +263,7 @@ endpoint delivers them.
 In: the connected district, solo and up-to-four-player direct-address
 sessions, shared objectives, threat and outcomes, stealth, noise, fear,
 ají, downing and revival, pings, restart and disconnect recovery,
+the title screen and menus, a saved profile (settings, journal, tally),
 pause/settings, captions, procedural visuals and synthesized audio.
 
 Not in: proximity voice (postponed), swimming, climbing, boat physics,

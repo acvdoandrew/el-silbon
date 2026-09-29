@@ -6,11 +6,13 @@
 
 mod hud;
 mod map;
+pub(crate) mod menu;
+pub(crate) mod title;
 
 use bevy::prelude::*;
 
 use crate::app::{Flow, GameSet, Launch, LayoutRes, RunReset, Settings, Truth, TuningRes};
-use crate::net::{NetControl, Network, protocol::Action};
+use crate::net::Network;
 
 pub(crate) const PANEL_BG: Color = Color::srgba(0.018, 0.022, 0.03, 0.5);
 pub(crate) const INK: Color = Color::srgb(0.93, 0.9, 0.84);
@@ -62,6 +64,11 @@ pub(crate) struct ObjectiveHint;
 pub(crate) struct StatusPanel;
 #[derive(Component)]
 pub(crate) struct RosterLine(pub usize);
+
+/// The briefing's line naming tonight (chosen in the menu, so it changes).
+#[derive(Component)]
+pub(crate) struct BriefingNight;
+
 #[derive(Component)]
 pub(crate) struct FearOuter;
 #[derive(Component)]
@@ -107,8 +114,6 @@ pub(crate) struct DownedText;
 #[derive(Component)]
 pub(crate) struct BriefingPanel;
 #[derive(Component)]
-pub(crate) struct PausePanel;
-#[derive(Component)]
 pub(crate) struct OutcomePanel;
 #[derive(Component)]
 pub(crate) struct OutcomeTitle;
@@ -140,30 +145,18 @@ pub(crate) struct NotePaper;
 #[derive(Component)]
 pub(crate) struct NoteCount;
 
-#[derive(Component, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SettingLabel {
-    Volume,
-    Sensitivity,
-    Captions,
-}
-
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MenuAction {
     Begin,
-    Resume,
-    Restart,
-    Quit,
-    VolumeDown,
-    VolumeUp,
-    SensitivityDown,
-    SensitivityUp,
-    ToggleCaptions,
+    Title,
 }
 
 pub struct HudPlugin;
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
+        menu::plugin(app);
+        title::plugin(app);
         app.init_resource::<Hint>()
             .init_resource::<CaptionLine>()
             .init_resource::<MapOpen>()
@@ -188,7 +181,6 @@ impl Plugin for HudPlugin {
                         hud::note_panel,
                         hud::lock_panel,
                         hud::name_panel,
-                        settings_text,
                         map::toggle_map,
                         map::update_map,
                         map::update_markers,
@@ -321,20 +313,13 @@ fn fill_node(color: Color) -> impl Bundle {
     )
 }
 
-fn spawn_ui(
-    mut commands: Commands,
-    assets: Res<AssetServer>,
-    launch: Res<Launch>,
-    map_image: Res<map::MapImage>,
-    layout: Res<LayoutRes>,
-) {
+fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, map_image: Res<map::MapImage>, layout: Res<LayoutRes>) {
     let fonts = Fonts {
         sans: assets.load("fonts/NotoSans-Regular.ttf"),
         serif: assets.load("fonts/NotoSerif-Regular.ttf"),
         italic: assets.load("fonts/NotoSerif-Italic.ttf"),
     };
     let f = &fonts;
-    let shared = !launch.network.is_solo();
 
     commands
         .spawn((
@@ -397,23 +382,21 @@ fn spawn_ui(
                 p.spawn((ObjectiveHint, label(f, "", 13.0, PALE_BLUE, false)));
             });
 
-            // Party roster (top centre, hosted play only).
-            if shared {
-                root.spawn(Node {
-                    position_type: PositionType::Absolute,
-                    top: px(12),
-                    width: percent(100),
-                    flex_direction: FlexDirection::Column,
-                    align_items: AlignItems::Center,
-                    row_gap: px(2),
-                    ..default()
-                })
-                .with_children(|r| {
-                    for i in 0..4 {
-                        r.spawn((RosterLine(i), label(f, "", 14.0, INK, false)));
-                    }
-                });
-            }
+            // Party roster (top centre, empty unless the night is shared).
+            root.spawn(Node {
+                position_type: PositionType::Absolute,
+                top: px(12),
+                width: percent(100),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                row_gap: px(2),
+                ..default()
+            })
+            .with_children(|r| {
+                for i in 0..4 {
+                    r.spawn((RosterLine(i), label(f, "", 14.0, INK, false)));
+                }
+            });
 
             // Controls (bottom right, always readable, out of the way).
             root.spawn((
@@ -676,73 +659,13 @@ fn spawn_ui(
                             TextLayout::justify(Justify::Center),
                         ));
                         c.spawn((
-                            Text::new(format!(
-                                "Night #{} ({}) — the bundles, the padlock and which of him walks change with every night.",
-                                launch.seed,
-                                launch.night.label()
-                            )),
+                            BriefingNight,
+                            Text::new(""),
                             font(&f.italic, 14.0),
                             TextColor(DIM),
                         ));
                         c.spawn(button(f, "Begin — click to capture the mouse", MenuAction::Begin, 420.0));
-                        c.spawn(button(f, "Quit", MenuAction::Quit, 160.0));
-                    });
-                });
-
-            root.spawn((PausePanel, overlay(), Visibility::Hidden, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5)), GlobalZIndex(10)))
-                .with_children(|o| {
-                    o.spawn(card(560.0)).with_children(|c| {
-                        c.spawn((Text::new("Paused"), font(&f.serif, 40.0), TextColor(INK)));
-                        c.spawn((
-                            Text::new(if shared {
-                                "Local menu only. The shared run continues."
-                            } else {
-                                "The run is frozen. The mouse is free."
-                            }),
-                            font(&f.sans, 15.0),
-                            TextColor(DIM),
-                        ));
-                        for (kind, down, up) in [
-                            (SettingLabel::Volume, MenuAction::VolumeDown, MenuAction::VolumeUp),
-                            (SettingLabel::Sensitivity, MenuAction::SensitivityDown, MenuAction::SensitivityUp),
-                        ] {
-                            c.spawn(Node {
-                                flex_direction: FlexDirection::Row,
-                                align_items: AlignItems::Center,
-                                column_gap: px(8),
-                                ..default()
-                            })
-                            .with_children(|row| {
-                                row.spawn(button(f, "−", down, 52.0));
-                                row.spawn((
-                                    kind,
-                                    Text::new(""),
-                                    font(&f.sans, 18.0),
-                                    TextColor(INK),
-                                    Node {
-                                        width: px(280),
-                                        justify_content: JustifyContent::Center,
-                                        ..default()
-                                    },
-                                    TextLayout::justify(Justify::Center),
-                                ));
-                                row.spawn(button(f, "+", up, 52.0));
-                            });
-                        }
-                        c.spawn(Node {
-                            flex_direction: FlexDirection::Row,
-                            align_items: AlignItems::Center,
-                            column_gap: px(8),
-                            ..default()
-                        })
-                        .with_children(|row| {
-                            row.spawn((SettingLabel::Captions, Text::new(""), font(&f.sans, 18.0), TextColor(INK)));
-                            row.spawn(button(f, "Toggle", MenuAction::ToggleCaptions, 110.0));
-                        });
-                        c.spawn(button(f, "Resume", MenuAction::Resume, 300.0));
-                        c.spawn(button(f, "Restart from the road", MenuAction::Restart, 300.0));
-                        c.spawn(button(f, "Quit", MenuAction::Quit, 300.0));
-                        c.spawn((Text::new("Esc also resumes."), font(&f.sans, 13.0), TextColor(DIM)));
+                        c.spawn(button(f, "Back to the title", MenuAction::Title, 240.0));
                     });
                 });
 
@@ -757,8 +680,6 @@ fn spawn_ui(
                             TextColor(INK),
                             TextLayout::justify(Justify::Center),
                         ));
-                        c.spawn(button(f, "Play again (R)", MenuAction::Restart, 300.0));
-                        c.spawn(button(f, "Quit", MenuAction::Quit, 300.0));
                     });
                 });
 
@@ -894,36 +815,18 @@ fn spawn_ui(
 fn buttons(
     mut query: Query<(&Interaction, &MenuAction, &mut BackgroundColor), Changed<Interaction>>,
     mut next: ResMut<NextState<Flow>>,
-    mut exit: MessageWriter<AppExit>,
-    mut settings: ResMut<Settings>,
-    tuning: Res<TuningRes>,
-    mut net_commands: MessageWriter<NetControl>,
+    mut leave: MessageWriter<crate::net::LeaveRun>,
 ) {
     for (interaction, action, mut bg) in &mut query {
         match interaction {
             Interaction::Pressed => {
                 bg.0 = BUTTON_PRESS;
-                let (smin, smax) = tuning.0.sensitivity_range;
                 match action {
-                    MenuAction::Begin | MenuAction::Resume => next.set(Flow::Playing),
-                    MenuAction::Restart => {
-                        net_commands.write(NetControl::Action(Action::Restart));
+                    MenuAction::Begin => next.set(Flow::Playing),
+                    MenuAction::Title => {
+                        leave.write(crate::net::LeaveRun);
                     }
-                    MenuAction::Quit => {
-                        exit.write(AppExit::Success);
-                    }
-                    MenuAction::VolumeDown => settings.volume = ((settings.volume - 0.1) * 10.0).round() / 10.0,
-                    MenuAction::VolumeUp => settings.volume = ((settings.volume + 0.1) * 10.0).round() / 10.0,
-                    MenuAction::SensitivityDown => {
-                        settings.sensitivity = ((settings.sensitivity - 0.1) * 10.0).round() / 10.0;
-                    }
-                    MenuAction::SensitivityUp => {
-                        settings.sensitivity = ((settings.sensitivity + 0.1) * 10.0).round() / 10.0;
-                    }
-                    MenuAction::ToggleCaptions => settings.captions = !settings.captions,
                 }
-                settings.volume = settings.volume.clamp(0.0, 1.0);
-                settings.sensitivity = settings.sensitivity.clamp(smin, smax);
             }
             Interaction::Hovered => bg.0 = BUTTON_HOVER,
             Interaction::None => bg.0 = BUTTON,
@@ -933,38 +836,39 @@ fn buttons(
 
 fn panels(
     state: Res<State<Flow>>,
+    menu: Res<menu::Menu>,
+    launch: Res<Launch>,
     mut q: ParamSet<(
         Query<&mut Visibility, With<BriefingPanel>>,
-        Query<&mut Visibility, With<PausePanel>>,
+        Query<&mut Visibility, With<HudRoot>>,
         Query<&mut Visibility, With<OutcomePanel>>,
     )>,
+    mut night: Query<&mut Text, With<BriefingNight>>,
 ) {
     let s = *state.get();
     for mut v in &mut q.p0() {
         set_vis(&mut v, s == Flow::Briefing);
     }
-    for mut v in &mut q.p1() {
-        set_vis(&mut v, s == Flow::Paused);
+    if s == Flow::Briefing {
+        let line = format!(
+            "Night #{} ({}) — the bundles, the padlock and which of him walks change with every night.",
+            launch.seed,
+            launch.night.label()
+        );
+        for mut t in &mut night {
+            set_text(&mut t, &line);
+        }
     }
+    // The title screen shows the llano and its menus, no HUD (the photo
+    // driver manages the HUD itself).
+    if !launch.photos {
+        for mut v in &mut q.p1() {
+            set_vis(&mut v, s != Flow::Title);
+        }
+    }
+    // The outcome card steps aside for a confirmation.
     for mut v in &mut q.p2() {
-        set_vis(&mut v, s == Flow::Outcome);
-    }
-}
-
-fn settings_text(settings: Res<Settings>, mut q: Query<(&SettingLabel, &mut Text)>, mut first: Local<bool>) {
-    if !settings.is_changed() && *first {
-        return;
-    }
-    *first = true;
-    for (kind, mut t) in &mut q {
-        let s = match kind {
-            SettingLabel::Volume => format!("Volume: {:.0}%", settings.volume * 100.0),
-            SettingLabel::Sensitivity => format!("Mouse sensitivity: {:.1}×", settings.sensitivity),
-            SettingLabel::Captions => {
-                format!("Whistle captions: {}", if settings.captions { "On" } else { "Off" })
-            }
-        };
-        set_text(&mut t, &s);
+        set_vis(&mut v, s == Flow::Outcome && menu.page == menu::Page::Outcome);
     }
 }
 

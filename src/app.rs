@@ -32,7 +32,8 @@ pub struct Truth {
 }
 
 /// Player-adjustable settings (pause menu).
-#[derive(Resource, Clone, Debug, PartialEq)]
+#[derive(Resource, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Settings {
     /// Master volume, 0..1.
     pub volume: f32,
@@ -40,6 +41,16 @@ pub struct Settings {
     pub sensitivity: f32,
     /// Show whistle captions (perceived impression only).
     pub captions: bool,
+    /// Mouse up looks down.
+    pub invert_y: bool,
+    /// Vertical field of view, degrees.
+    pub fov: f32,
+    /// Brightness offset (−1 darker .. +1 brighter), in exposure stops/2.
+    pub brightness: f32,
+    /// The head rises and falls as you walk.
+    pub head_bob: bool,
+    /// Borderless fullscreen rather than a window.
+    pub fullscreen: bool,
 }
 
 impl Default for Settings {
@@ -48,6 +59,11 @@ impl Default for Settings {
             volume: 0.8,
             sensitivity: 1.0,
             captions: true,
+            invert_y: false,
+            fov: 68.0,
+            brightness: 0.0,
+            head_bob: true,
+            fullscreen: false,
         }
     }
 }
@@ -70,6 +86,12 @@ pub struct Launch {
     pub tour: bool,
     /// DEBUG: fly a camera to authored viewpoints, capture, exit. No gameplay.
     pub photos: bool,
+    /// Start on the title screen and its menus (a plain launch). The debug
+    /// routes, `--play` and `--host`/`--join` go straight into a run.
+    pub menu: bool,
+    /// DEBUG `--menu-shots`: walk the title screen and every menu page,
+    /// save a screenshot of each, exit.
+    pub menu_shots: bool,
 }
 
 impl Default for Launch {
@@ -85,6 +107,8 @@ impl Default for Launch {
             headless: false,
             tour: false,
             photos: false,
+            menu: false,
+            menu_shots: false,
         }
     }
 }
@@ -98,12 +122,14 @@ USAGE: el_silbon [--seed N] [--size WxH] [--shots DIR] [--smoke]
                 walks, scatter and jitter (solo play without it: a new night
                 every launch; the debug routes and shared sessions: 1997)
   --night N     gentle, normal (default) or hard (every peer must agree)
+  --play        skip the title screen and go straight into a solo night
   --size WxH    window size (default 1600x900)
   --shots DIR   screenshot folder for F12 and the debug routes (default ./screenshots)
   --tour        DEBUG: walk to every place, then play the scripted full run
   --smoke       DEBUG: play the deterministic scripted full run (win, restart,
                 downed, restart), save screenshots, print a summary, exit
   --photos      DEBUG: fly a camera to authored viewpoints, save screenshots, exit
+  --menu-shots  DEBUG: show the title screen and every menu page, save screenshots, exit
   --host ADDR   host and play, e.g. 127.0.0.1:5000 (loopback/private LAN only)
   --join ADDR   join a host before the run starts
   --net-smoke   DEBUG: real two-process shared-run route
@@ -114,6 +140,7 @@ impl Launch {
     pub fn from_args(args: impl IntoIterator<Item = String>) -> Result<Self, String> {
         let mut launch = Self::default();
         let mut seeded = false;
+        let mut play = false;
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             match arg.as_str() {
@@ -123,6 +150,8 @@ impl Launch {
                     launch.smoke = true;
                 }
                 "--photos" => launch.photos = true,
+                "--menu-shots" => launch.menu_shots = true,
+                "--play" => play = true,
                 "--host" | "--join" => {
                     if launch.network != Mode::Solo {
                         return Err("Choose either --host or --join, not both.".into());
@@ -164,6 +193,9 @@ impl Launch {
         if (launch.smoke || launch.photos) && launch.network != Mode::Solo {
             return Err("--smoke and --photos are solo only; use --net-smoke for a shared session.".into());
         }
+        if launch.menu_shots && (launch.smoke || launch.photos || launch.network != Mode::Solo || play) {
+            return Err("--menu-shots runs alone, from the title screen.".into());
+        }
         if launch.smoke && launch.photos {
             return Err("Choose --smoke/--tour or --photos, not both.".into());
         }
@@ -182,12 +214,15 @@ impl Launch {
                 .map_or(0, |d| d.as_nanos() as u64);
             launch.seed = 1 + now % 1_000_000;
         }
+        launch.menu = !play && launch.network == Mode::Solo && !launch.smoke && !launch.photos;
         Ok(launch)
     }
 }
 
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Flow {
+    /// The title screen and its menus, over the llano at night. No run yet.
+    Title,
     /// Title and controls; click Begin to capture the mouse.
     #[default]
     Briefing,
@@ -205,6 +240,25 @@ pub struct EncounterMsg(pub Event);
 /// A whistle phrase to play now (perceived cue only).
 #[derive(Message, Clone, Copy, Debug)]
 pub struct WhistleMsg(pub WhistlePhrase);
+
+/// What the game remembers between launches, and whether it may write it
+/// (never during the automated routes).
+#[derive(Resource)]
+pub struct ProfileRes {
+    pub profile: crate::profile::Profile,
+    pub persist: bool,
+}
+
+impl ProfileRes {
+    /// Save now (best effort).
+    pub fn save(&self) {
+        if self.persist
+            && let Err(e) = crate::profile::save(&self.profile)
+        {
+            warn!("could not save the profile: {e}");
+        }
+    }
+}
 
 /// The run was reset (a new epoch began): views clear themselves.
 #[derive(Message, Clone, Copy, Debug, Default)]
@@ -279,6 +333,15 @@ pub fn build_app(launch: Launch) -> App {
     let layout = Layout::with_seed(launch.seed);
     let encounter = Encounter::new(&layout);
     let automated = launch.smoke || launch.photos;
+    // A player's settings and journal come back each launch; the automated
+    // routes run on the defaults and never write the profile.
+    let persist = !automated && !launch.net_smoke && !launch.menu_shots;
+    let profile = if persist {
+        crate::profile::load()
+    } else {
+        crate::profile::Profile::default()
+    };
+    let menu = launch.menu;
 
     let mut app = App::new();
     let present_mode = if automated {
@@ -322,9 +385,10 @@ pub fn build_app(launch: Launch) -> App {
         .insert_resource(LayoutRes(layout))
         .insert_resource(TuningRes(tuning))
         .insert_resource(Truth { encounter })
-        .insert_resource(Settings::default())
+        .insert_resource(profile.settings.clone())
+        .insert_resource(ProfileRes { profile, persist })
         .insert_resource(launch)
-        .init_state::<Flow>()
+        .insert_state(if menu { Flow::Title } else { Flow::Briefing })
         .add_message::<EncounterMsg>()
         .add_message::<WhistleMsg>()
         .add_message::<RunReset>()
@@ -386,7 +450,7 @@ pub(crate) fn advance_storm(
 }
 
 fn capture_cursor(launch: Res<Launch>, mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>) {
-    if launch.smoke || launch.net_smoke || launch.photos {
+    if launch.smoke || launch.net_smoke || launch.photos || launch.menu_shots {
         return; // never grab the desktop's pointer during automation
     }
     cursor.visible = false;
@@ -419,8 +483,8 @@ fn pause_keys(
         return;
     }
     match state.get() {
+        // Esc opens the menu; inside it, the menu handles Esc (back, resume).
         Flow::Playing if keys.just_pressed(KeyCode::Escape) => next.set(Flow::Paused),
-        Flow::Paused if keys.just_pressed(KeyCode::Escape) => next.set(Flow::Playing),
         Flow::Briefing if keys.just_pressed(KeyCode::Enter) && launch.network.is_solo() => next.set(Flow::Playing),
         Flow::Outcome if launch.network.is_host() && keys.just_pressed(KeyCode::KeyR) => {
             control.write(crate::net::NetControl::Action(crate::net::protocol::Action::Restart));
@@ -437,7 +501,13 @@ fn pause_on_focus_loss(
     mut next: ResMut<NextState<Flow>>,
 ) {
     let lost = focus.read().any(|f| !f.focused);
-    if lost && !launch.smoke && !launch.net_smoke && !launch.photos && *state.get() == Flow::Playing {
+    if lost
+        && !launch.smoke
+        && !launch.net_smoke
+        && !launch.photos
+        && !launch.menu_shots
+        && *state.get() == Flow::Playing
+    {
         next.set(Flow::Paused);
     }
 }
@@ -472,6 +542,9 @@ mod tests {
             DEFAULT_SEED,
             "the debug route's night is fixed"
         );
+        assert!(args("").unwrap().menu, "a plain launch opens on the title screen");
+        assert!(!args("--play").unwrap().menu && !args("--smoke").unwrap().menu);
+        assert!(!args("--host 127.0.0.1:5000").unwrap().menu);
         assert_eq!(args("--seed 7").unwrap().seed, 7);
         assert_eq!(args("--night hard").unwrap().night, crate::tuning::Night::Hard);
         assert!(args("--night brutal").is_err());

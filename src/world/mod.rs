@@ -114,6 +114,7 @@ impl Plugin for WorldPlugin {
                 silbon::animate_silbon,
                 herd::animate,
                 dynamic::bundles,
+                dynamic::relic_perches,
                 dynamic::peppers,
                 dynamic::batteries,
                 dynamic::key_box,

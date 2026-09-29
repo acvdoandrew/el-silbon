@@ -2097,7 +2097,7 @@ fn altar(k: &mut Kit, ctx: &SpawnCtx) {
         .notes
         .iter()
         .map(|n| n.pos)
-        .chain(d.relics.iter().copied())
+        .chain(d.relic_sites.iter().flatten().copied())
         .chain(d.aji.iter().copied())
     {
         let rel = Vec2::new(q.x - off.x, q.z - off.z);

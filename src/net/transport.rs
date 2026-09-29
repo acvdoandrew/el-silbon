@@ -72,6 +72,9 @@ pub struct Endpoint {
     pub status: String,
     pub last_error: String,
     pub closed: bool,
+    /// Set when the host answered with its own night (seed, night code):
+    /// the adapter reconnects with it.
+    pub adopt: Option<(u64, u8)>,
     latest: Input,
     input_sequence: u64,
     action_sequence: u64,
@@ -149,6 +152,7 @@ impl Endpoint {
             status,
             last_error: String::new(),
             closed: false,
+            adopt: None,
             latest: Input::default(),
             input_sequence: 0,
             action_sequence: 0,
@@ -376,10 +380,18 @@ impl Endpoint {
                                         "Different gameplay build/configuration; use the same checkout and Cargo.lock."
                                             .to_owned(),
                                     )
-                                } else if seed != tuning.seed {
-                                    Err(format!("Seed mismatch: restart with --seed {}", tuning.seed))
-                                } else if night != tuning.night.code() {
-                                    Err(format!("Night mismatch: restart with --night {}", tuning.night.label()))
+                                } else if seed != tuning.seed || night != tuning.night.code() {
+                                    // Not refused: told which night this is.
+                                    server.send_message(
+                                        client_id,
+                                        DefaultChannel::ReliableOrdered,
+                                        encode(&ServerMessage::Tonight {
+                                            seed: tuning.seed,
+                                            night: tuning.night.code(),
+                                        }),
+                                    );
+                                    closing.insert(client_id, 0.0);
+                                    break;
                                 } else {
                                     session.add_player(*next_id, layout, tuning)
                                 };
@@ -509,6 +521,10 @@ impl Endpoint {
                 self.status = format!("Connected as player {id}; waiting for host to start");
             }
             ServerMessage::Rejected(reason) | ServerMessage::Ended(reason) => self.close(&reason),
+            ServerMessage::Tonight { seed, night } => {
+                self.adopt = Some((seed, night));
+                self.close("The host's night is another; joining it.");
+            }
             ServerMessage::Snapshot(snapshot) => {
                 // Unreliable snapshots may arrive before reliable admission.
                 // Do not render our own player as a remote before Welcome.
@@ -551,5 +567,42 @@ fn message_run(m: &ServerMessage) -> Option<u64> {
 impl Drop for Endpoint {
     fn drop(&mut self) {
         self.close("Session ended: host or client closed the application.");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tuning::Night;
+
+    /// Real loopback UDP: a joiner knocking with another night is told the
+    /// host's, and admitted once it knocks again with it.
+    #[test]
+    fn a_joiner_with_another_night_is_told_the_hosts_and_admitted_with_it() {
+        let addr: SocketAddr = "127.0.0.1:38917".parse().unwrap();
+        let host_tuning = Tuning::with_seed(7).with_night(Night::Hard);
+        let host_layout = Layout::with_seed(7);
+        let mut host = Endpoint::new(Mode::Host(addr), &host_layout, &host_tuning).expect("host");
+        let knock = |tuning: &Tuning, layout: &Layout, host: &mut Endpoint| {
+            let mut client = Endpoint::new(Mode::Join(addr), layout, tuning).expect("client");
+            for _ in 0..300 {
+                host.update(0.016, &host_layout, &host_tuning);
+                client.update(0.016, layout, tuning);
+                if client.closed || client.id.is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(4));
+            }
+            client
+        };
+        let wrong = Tuning::with_seed(3).with_night(Night::Gentle);
+        let first = knock(&wrong, &Layout::with_seed(3), &mut host);
+        assert!(first.closed, "a mismatched joiner is not admitted: {}", first.status);
+        assert_eq!(first.adopt, Some((7, Night::Hard.code())));
+        assert!(first.id.is_none());
+        drop(first);
+        let second = knock(&host_tuning, &host_layout, &mut host);
+        assert!(!second.closed, "{}", second.status);
+        assert!(second.id.is_some(), "admitted with the host's night");
     }
 }

@@ -33,6 +33,7 @@ pub mod noise;
 pub mod perception;
 pub mod photos;
 pub mod player;
+pub mod profile;
 pub mod rng;
 pub mod script;
 pub mod sim;

@@ -1296,6 +1296,63 @@ def make_bark(rng):
     return normalize(fade(out, 0.001, 0.3), 0.8)
 
 
+def pluck(rng, freq, length, decay=0.996, bright=0.5):
+    """One plucked string (Karplus-Strong), the cuatro's voice."""
+    period = max(2, int(SR / freq))
+    buf = [rng.uniform(-1.0, 1.0) for _ in range(period)]
+    # A softer pick: smooth the initial burst a little.
+    for i in range(1, period):
+        buf[i] = buf[i] * bright + buf[i - 1] * (1.0 - bright)
+    out = [0.0] * int(length * SR)
+    for i in range(len(out)):
+        j = i % period
+        nxt = buf[(j + 1) % period]
+        v = buf[j]
+        out[i] = v
+        buf[j] = (v + nxt) * 0.5 * decay
+    return out
+
+
+def make_theme(rng):
+    """The title's night: a slow, out-of-tune cuatro strummed alone on a
+    porch, over a low drone and wind; a seamless 48 s loop."""
+    loop, xfade = 48.0, 4.0
+    n = int((loop + xfade) * SR)
+    out = [0.0] * n
+    # Four strings each, as a cuatro voices them (B minor, G, E minor, F#).
+    chords = [
+        (185.0, 246.9, 293.7, 370.0),
+        (196.0, 246.9, 293.7, 392.0),
+        (164.8, 246.9, 329.6, 392.0),
+        (185.0, 233.1, 277.2, 370.0),
+    ]
+    beat = 6.0
+    for k in range(int((loop + xfade) / beat)):
+        chord = chords[k % len(chords)]
+        t0 = k * beat + 0.4
+        # A slow downward strum, each string slightly flat and late.
+        for s, f in enumerate(chord):
+            f *= 1.0 - 0.006 * rng.random()
+            string = pluck(rng, f, 5.5, decay=0.9965, bright=0.45)
+            mix(out, fade(string, 0.002, 1.5), int((t0 + s * 0.045 + 0.01 * rng.random()) * SR), 0.22)
+        # Now and then one high note alone, answered by nothing.
+        if k % 2 == 1:
+            f = chord[3] * (2.0 if k % 4 == 1 else 1.5)
+            note = pluck(rng, f, 3.5, decay=0.995, bright=0.6)
+            mix(out, fade(note, 0.002, 1.0), int((t0 + 3.1) * SR), 0.14)
+    # A low drone breathing under it, and the wind.
+    wind = one_pole_lowpass(noise(rng, n), 260.0)
+    ph = 0.0
+    for i in range(n):
+        t = i / SR
+        ph += TAU * 61.7 * (1.0 + 0.002 * math.sin(TAU * 0.07 * t)) / SR
+        swell = 0.6 + 0.4 * math.sin(TAU * t / 12.0)
+        out[i] += math.sin(ph) * 0.05 * swell + wind[i] * 0.9 * (0.5 + 0.5 * math.sin(TAU * t / 17.0 + 1.0))
+    wet = reverb(out, size=1.3, damp=0.45, feedback=0.84)
+    out = [d * 0.7 + w * 0.6 for d, w in zip(out, wet)]
+    return normalize(loop_crossfade(out, loop, xfade), 0.45)
+
+
 def make_horror():
     """Sounds added after the first two streams, each on its own seed so
     adding or changing one never changes another."""
@@ -1320,6 +1377,7 @@ def make_horror():
         "banished.wav": make_banished(random.Random(SEED + 118)),
         "dog_growl.wav": make_growl(random.Random(SEED + 119)),
         "dog_bark.wav": make_bark(random.Random(SEED + 120)),
+        "title_theme.wav": make_theme(random.Random(SEED + 121)),
     }
 
 

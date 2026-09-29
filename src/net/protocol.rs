@@ -298,6 +298,12 @@ pub enum ServerMessage {
         id: PlayerId,
     },
     Rejected(String),
+    /// The host's night differs from the one the joiner knocked with: the
+    /// joiner takes this seed and difficulty and knocks again.
+    Tonight {
+        seed: u64,
+        night: u8,
+    },
     Snapshot(Snapshot),
     Cue {
         run: u64,

@@ -37,6 +37,12 @@ impl Night {
         self as u8
     }
 
+    pub fn from_code(code: u8) -> Option<Self> {
+        [Night::Gentle, Night::Normal, Night::Hard]
+            .into_iter()
+            .find(|n| n.code() == code)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Night::Gentle => "gentle",

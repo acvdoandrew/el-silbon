@@ -54,7 +54,8 @@ impl Plugin for DebugPlugin {
         let launch = app.world().get_resource::<Launch>().cloned();
         let smoke = launch.as_ref().is_some_and(|l| l.smoke);
         let photos = launch.as_ref().is_some_and(|l| l.photos);
-        if smoke || photos {
+        let menu_shots = launch.as_ref().is_some_and(|l| l.menu_shots);
+        if smoke || photos || menu_shots {
             // The render world reports how many pipelines are still compiling.
             let probe = PipelineProbe(Arc::new(AtomicUsize::new(usize::MAX)));
             if let Some(render) = app.get_sub_app_mut(RenderApp) {
@@ -100,6 +101,17 @@ impl Plugin for DebugPlugin {
                     smoke_overview.in_set(GameSet::Present),
                 ),
             );
+        }
+        if menu_shots {
+            app.insert_resource(MenuShots {
+                step: 0,
+                frames: 0,
+                idle: 0,
+                started: Instant::now(),
+                taken: Vec::new(),
+                exit_in: None,
+            })
+            .add_systems(Update, menu_shots_drive.in_set(GameSet::Control));
         }
         if photos {
             let (mut shots, calm, requested) = {
@@ -1003,5 +1015,177 @@ fn photo_drive(
                 photos.exit_in = Some(5);
             }
         }
+    }
+}
+
+/// `--menu-shots`: the title screen and every menu page, one screenshot each
+/// (presentation review only). The driver opens pages directly and starts
+/// and leaves a solo night through the same messages as the menu.
+#[derive(Resource)]
+struct MenuShots {
+    step: usize,
+    frames: u32,
+    idle: u32,
+    started: Instant,
+    taken: Vec<PathBuf>,
+    exit_in: Option<u32>,
+}
+
+/// What each step shows before its screenshot.
+#[derive(Clone, Copy)]
+enum MenuStep {
+    /// The title screen at this landmark stop, on this page.
+    Title(usize, crate::ui::menu::Page),
+    /// Start a solo night; captured at its briefing.
+    Begin,
+    /// The night under way (the HUD returns, no party roster alone).
+    Playing,
+    Pause,
+    /// Leave the night, back on the title screen.
+    Leave,
+}
+
+const MENU_SHOTS: &[(&str, MenuStep)] = {
+    use crate::ui::menu::Page::*;
+    &[
+        ("01_title_main", MenuStep::Title(0, Main)),
+        ("02_title_main_ceiba", MenuStep::Title(1, Main)),
+        ("03_title_main_corral", MenuStep::Title(2, Main)),
+        ("04_title_main_lookout", MenuStep::Title(5, Main)),
+        ("05_play_solo", MenuStep::Title(3, Solo)),
+        ("06_multiplayer", MenuStep::Title(4, Multiplayer)),
+        ("07_host", MenuStep::Title(4, Host)),
+        ("08_join", MenuStep::Title(4, Join)),
+        ("09_journal", MenuStep::Title(6, Journal)),
+        ("10_reading", MenuStep::Title(6, Reading(0))),
+        ("11_settings", MenuStep::Title(0, Settings)),
+        ("12_how_to_play", MenuStep::Title(1, HowTo)),
+        ("13_credits", MenuStep::Title(2, Credits)),
+        ("14_confirm_quit", MenuStep::Title(2, ConfirmQuit)),
+        ("15_briefing", MenuStep::Begin),
+        ("16_playing", MenuStep::Playing),
+        ("17_pause", MenuStep::Pause),
+        ("18_pause_settings", MenuStep::Pause),
+        ("19_back_on_title", MenuStep::Leave),
+    ]
+};
+
+#[allow(clippy::too_many_arguments)]
+fn menu_shots_drive(
+    mut commands: Commands,
+    mut shots: ResMut<MenuShots>,
+    launch: Res<Launch>,
+    probe: Res<PipelineProbe>,
+    screenshots: Query<(), With<Screenshot>>,
+    (state, mut next): (Res<State<Flow>>, ResMut<NextState<Flow>>),
+    (mut menu, mut night): (ResMut<crate::ui::menu::Menu>, ResMut<crate::ui::title::TitleNight>),
+    (mut starts, mut leaves): (MessageWriter<crate::net::StartRun>, MessageWriter<crate::net::LeaveRun>),
+    mut exit: MessageWriter<AppExit>,
+) {
+    use crate::ui::menu::Page;
+    let shots = &mut *shots;
+    if let Some(n) = shots.exit_in {
+        if n == 0 && screenshots.is_empty() {
+            let missing: Vec<_> = shots.taken.iter().filter(|p| !file_written(p)).collect();
+            if missing.is_empty() {
+                info!(
+                    "MENU SHOTS OK: {} screenshots in {}",
+                    shots.taken.len(),
+                    launch.shots_dir.join("menu").display()
+                );
+                exit.write(AppExit::Success);
+            } else {
+                error!("MENU SHOTS FAIL: not written: {missing:?}");
+                exit.write(AppExit::error());
+            }
+            shots.exit_in = Some(u32::MAX);
+        } else if n != u32::MAX {
+            shots.exit_in = Some(n.saturating_sub(1));
+        }
+        return;
+    }
+    if shots.started.elapsed() > Duration::from_secs(240) {
+        error!("MENU SHOTS FAIL: gave up at step {}", shots.step);
+        exit.write(AppExit::error());
+        shots.exit_in = Some(u32::MAX);
+        return;
+    }
+    let Some(&(name, step)) = MENU_SHOTS.get(shots.step) else {
+        shots.exit_in = Some(30);
+        return;
+    };
+    let flow = *state.get();
+    if shots.frames % 300 == 299 {
+        info!(
+            "menu shots: waiting on {name} (flow {flow:?}, page {:?}, idle {})",
+            menu.page, shots.idle
+        );
+    }
+    // Arrange the step (the first frame of a step also sends its message).
+    let first = shots.frames == 0;
+    let ready = match step {
+        MenuStep::Title(stop, page) => {
+            night.t = stop as f32 * crate::ui::title::STOP + 8.0;
+            if menu.page != page {
+                menu.jump(page);
+            }
+            flow == Flow::Title
+        }
+        MenuStep::Begin => {
+            if first {
+                starts.write(crate::net::StartRun {
+                    mode: crate::net::transport::Mode::Solo,
+                    seed: launch.seed,
+                    night: launch.night,
+                });
+            }
+            flow == Flow::Briefing
+        }
+        MenuStep::Playing => {
+            if flow == Flow::Briefing {
+                next.set(Flow::Playing);
+            }
+            flow == Flow::Playing
+        }
+        MenuStep::Pause => {
+            if flow == Flow::Playing {
+                next.set(Flow::Paused);
+            }
+            let page = if name.ends_with("settings") {
+                Page::Settings
+            } else {
+                Page::Pause
+            };
+            if flow == Flow::Paused && menu.page != page {
+                menu.jump(page);
+            }
+            flow == Flow::Paused && menu.page == page
+        }
+        MenuStep::Leave => {
+            if first {
+                leaves.write(crate::net::LeaveRun);
+            }
+            if flow == Flow::Title {
+                night.t = 8.0;
+            }
+            flow == Flow::Title
+        }
+    };
+    shots.frames += 1;
+    if probe.0.load(Ordering::Relaxed) == 0 && ready {
+        shots.idle += 1;
+    } else {
+        shots.idle = 0;
+    }
+    // The first view waits for the whole world's pipelines; later ones for
+    // their own, and a moment for the fade and the menu to redraw.
+    let warm = shots.step > 0 || shots.started.elapsed() > Duration::from_secs(6);
+    if warm && shots.idle >= 40 && screenshots.is_empty() {
+        let path = launch.shots_dir.join("menu").join(format!("{name}.png"));
+        capture(&mut commands, path.clone());
+        shots.taken.push(path);
+        shots.step += 1;
+        shots.frames = 0;
+        shots.idle = 0;
     }
 }

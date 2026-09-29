@@ -1,5 +1,93 @@
 # Progress
 
+## Current handoff — 2026-09-29 (title screen, menus, profile)
+
+Main is at `5b8b971` (the overnight work, merged as PR #1). This section
+describes the uncommitted working tree on top of it: the start screen and
+a full menu system, asked for "as a finished game in alpha/beta", with a
+live llano scene behind the title. Nothing is committed.
+
+### What changed
+
+- **Title screen** (`ui/title.rs`): a plain launch opens on `Flow::Title`.
+  The camera drifts slowly past seven landmarks from the layout (ranch,
+  ceiba, corral, fields, caño, lookout, gate), 17 s each with fades through
+  black; faint whistles every 22–38 s; on a lightning strike (at most every
+  70 s) the phantom omen may show his shape. The torch and head bob are off;
+  a new cuatro loop, `title_theme.wav`, plays only here.
+- **Menus** (`ui/menu.rs`), keyboard (arrows/WASD, Enter, Esc) and mouse:
+  Main (Play, Play with friends, Journal, Settings, How to play, Credits,
+  Quit), Play (difficulty, night number or a new night), Host (this
+  machine's LAN address), Join (address, remembered), Journal (the 20 pages
+  found over every night, readable again, and the tally), Settings (volume,
+  sensitivity, invert Y, FOV, brightness, head bob, captions, fullscreen),
+  pause menu (resume, settings, journal, how to play, restart, leave to the
+  title), confirmations, and the outcome's choices. The old pause panel and
+  outcome buttons are gone.
+- **Profile** (`profile.rs`): settings, pages read and a tally (nights,
+  escapes, banishments, caught, fastest) saved as JSON under
+  `$XDG_DATA_HOME/el-silbon/` (else `~/.local/share/el-silbon/`); saving is
+  best effort. The debug drivers never read or write it.
+- **Nights begin at runtime** (`net::StartRun` / `net::LeaveRun`): the
+  tuning, layout and endpoint are replaced without a relaunch. The bundle
+  perches follow the night's layout (one perch per hiding place, shown
+  under tonight's); the briefing's night line updates.
+- **Joiners adopt the host's night**: a seed or difficulty mismatch is no
+  longer a refusal; the host answers `ServerMessage::Tonight`, the joiner
+  switches to that night and knocks again (once). Build fingerprint
+  mismatches are still refused.
+- The party roster always exists and shows only in a shared night.
+- `--play` skips the title; `--menu-shots` is a new labelled debug driver.
+- Fixed while verifying: a solo night started from the menu skipped its
+  briefing, and "Leave to the title" from the pause menu stuck on Paused
+  (both were a later system in the same frame overriding the pending state);
+  the `◂ ▸` and `▏` glyphs are not in the bundled Noto fonts (now `‹ ›`
+  and `|`, also in the naming panel); a `Res<Settings>`/`ResMut<Settings>`
+  conflict in the menu's input system panicked at startup.
+
+### Verified
+
+- Gate green: fmt, check, 55 unit + 7 district + 38 session tests (new:
+  the profile round trip; a loopback UDP test in which a joiner with
+  another night is told the host's and then admitted with it), clippy
+  `-D warnings`.
+- Rendered `--menu-shots` (release): `MENU SHOTS OK`, 19 captures reviewed
+  (title at four stops, every page, the briefing, play, pause, pause
+  settings and the return to the title), in a 1600×900 window and a
+  portrait tile.
+- Headless two-process UDP `--net-smoke` on the final build: host and
+  client `NET SMOKE PASS` (the protocol gained `Tonight`).
+- Audio regenerated: every older file byte-identical; the theme loop's
+  level and seam checked numerically.
+
+### Unverified (user-led)
+
+- The title in motion: the drift and fades, the faint whistles, the
+  lightning apparition (not captured), the theme's mood and level.
+- Mouse use of every page; typing seeds and addresses; fullscreen toggle;
+  settings persisting across launches; the journal filling as pages are
+  found; the tally after real nights.
+- Hosting and joining from the menus on two machines, including a joiner
+  on another night adopting the host's.
+- The sweep, rendered `--smoke`/`--tour` and the rendered UDP pair were not
+  re-run for this change (the rules are untouched; smoke and photos skip
+  the title).
+
+### Try it
+
+```sh
+cargo run --release --locked                  # title screen
+cargo run --release --locked -- --play        # straight into a night
+cargo run --release --locked -- --menu-shots --shots /tmp/menu   # captures
+```
+
+Checklist: move through every page by mouse and by keys; change each
+setting, quit, relaunch and see it kept; start a night from Play, press
+Esc, leave to the title, start another; host from one machine and join from
+another with a different difficulty chosen. Useful F12 views: the title
+at the ranch and at the ceiba, the journal after finding a page, the pause
+menu.
+
 ## Current handoff — 2026-09-29 overnight (gameplay, fear, the tale)
 
 This section describes the current working tree: the Tier 1 look pass (the
