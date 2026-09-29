@@ -739,6 +739,33 @@ pub fn shots(layout: &Layout, tuning: &Tuning) -> Vec<Shot> {
             false,
         );
     }
+    // The four survivors in a line ahead of the spawn, facing the camera
+    // (the staged teammates are each someone else: all four).
+    let ahead = Vec2::new(forward.x, forward.z);
+    let right = Vec2::new(-ahead.y, ahead.x);
+    let at = layout.spawn + ahead * 4.2;
+    let line: Vec<Companion> = [-1.5_f32, -0.5, 0.5, 1.5]
+        .iter()
+        .map(|&k| {
+            let pos = at + right * k * 0.95;
+            let to_cam = layout.spawn - pos;
+            Companion {
+                pos,
+                yaw: (-to_cam.x).atan2(-to_cam.y),
+                carrying: false,
+                crouch: false,
+            }
+        })
+        .collect();
+    let mid = Vec3::new(at.x, layout.surface_height(at) + 0.95, at.y);
+    let cam = Vec3::new(layout.spawn.x, mid.y + 0.25, layout.spawn.y);
+    push(
+        Shot {
+            party: line,
+            ..base("63_model_survivors".into(), cam, mid, 50.0)
+        },
+        false,
+    );
     out
 }
 

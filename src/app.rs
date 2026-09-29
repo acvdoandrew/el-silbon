@@ -95,6 +95,8 @@ pub struct Launch {
     /// DEBUG `--trailer`: render the teaser's shots frame by frame, exit.
     /// Implies `photos` (a staged presentation, never gameplay).
     pub trailer: bool,
+    /// `--survivor`: who to ask to be; otherwise the profile's choice.
+    pub survivor: Option<crate::survivor::Survivor>,
 }
 
 impl Default for Launch {
@@ -113,6 +115,7 @@ impl Default for Launch {
             menu: false,
             menu_shots: false,
             trailer: false,
+            survivor: None,
         }
     }
 }
@@ -137,6 +140,8 @@ USAGE: el_silbon [--seed N] [--size WxH] [--shots DIR] [--smoke]
   --trailer     DEBUG: render the teaser's shots frame by frame (1920x1080, 30 fps), exit
   --host ADDR   host and play, e.g. 127.0.0.1:5000 (loopback/private LAN only)
   --join ADDR   join a host before the run starts
+  --survivor S  who you are to the others: llanero, coplera, encargado or muchacho
+                (default: the choice saved from the menu)
   --net-smoke   DEBUG: real two-process shared-run route
   --headless    with --net-smoke: run real networking without graphics
 ";
@@ -184,6 +189,13 @@ impl Launch {
                 "--night" => {
                     let v = it.next().ok_or("--night needs gentle, normal or hard")?;
                     launch.night = crate::tuning::Night::parse(&v).ok_or_else(|| format!("bad --night value: {v}"))?;
+                }
+                "--survivor" => {
+                    let v = it
+                        .next()
+                        .ok_or("--survivor needs llanero, coplera, encargado or muchacho")?;
+                    launch.survivor =
+                        Some(crate::survivor::Survivor::parse(&v).ok_or_else(|| format!("bad --survivor value: {v}"))?);
                 }
                 "--shots" => {
                     launch.shots_dir = PathBuf::from(it.next().ok_or("--shots needs a folder")?);

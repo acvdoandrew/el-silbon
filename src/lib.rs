@@ -10,6 +10,7 @@
 //! - [`storm`]: rain, lightning and thunder as functions of the run clock.
 //! - [`skill`]: skill checks while working a long task.
 //! - [`director`]: when the night sends one player an omen.
+//! - [`survivor`]: who each player is, and how a party shares them out.
 //! - [`script`], [`photos`]: DEBUG smoke route and photo viewpoints.
 //!
 //! Bevy adapters and presentation: [`app`], [`player`], [`encounter`],
@@ -40,6 +41,7 @@ pub mod script;
 pub mod sim;
 pub mod skill;
 pub mod storm;
+pub mod survivor;
 pub mod trailer;
 pub mod tuning;
 pub mod ui;

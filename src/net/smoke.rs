@@ -203,7 +203,8 @@ pub fn run_headless(launch: Launch) -> Result<(), String> {
     if launch.network == Mode::Solo {
         return Err("headless requires --host/--join".into());
     }
-    let mut endpoint = Endpoint::new(launch.network.clone(), &layout, &tuning)?;
+    let mut endpoint =
+        Endpoint::new(launch.network.clone(), &layout, &tuning)?.with_survivor(launch.survivor.unwrap_or_default());
     let mut driver = Driver::new(&layout, &tuning);
     let mut pose = Pose::spawn(&layout);
     let mut run = 0;

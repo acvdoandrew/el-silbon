@@ -163,11 +163,12 @@ pub(crate) fn roster(
             continue;
         };
         let you = if Some(p.id) == me { " (you)" } else { "" };
+        let who = crate::survivor::Survivor::from_code(p.survivor).name();
         let text = match p.status {
-            1 => format!("P{}{you}  DOWN {:.0}s", line.0 + 1, p.bleed.max(0.0)),
-            2 => format!("P{}{you}  lost", line.0 + 1),
-            _ if p.carrying > 0 => format!("P{}{you}  carrying {}", line.0 + 1, p.carrying),
-            _ => format!("P{}{you}", line.0 + 1),
+            1 => format!("P{} {who}{you}  DOWN {:.0}s", line.0 + 1, p.bleed.max(0.0)),
+            2 => format!("P{} {who}{you}  lost", line.0 + 1),
+            _ if p.carrying > 0 => format!("P{} {who}{you}  carrying {}", line.0 + 1, p.carrying),
+            _ => format!("P{} {who}{you}", line.0 + 1),
         };
         set_text(&mut t, &text);
         set_color(&mut c, if p.status == 0 { player_color(line.0) } else { RED });

@@ -13,7 +13,8 @@ use bevy::prelude::*;
 use bevy::world_serialization::{WorldAsset, WorldAssetRoot, WorldInstanceReady};
 
 use super::CarriedSatchel;
-use super::dog::{DogHead, DogJaw, DogLeg, DogRoot, DogTail};
+use super::avatar::{AvatarBag, AvatarJoint, AvatarTorch, Bone, Rigged};
+use super::dog::{DogHead, DogJaw, DogLeg, DogPaw, DogRoot, DogTail};
 use super::dynamic::{BundleView, RadioSpot};
 use super::herd::Cow;
 use super::silbon::{Joint, JointKind, SilbonBody, SilbonRoot};
@@ -28,10 +29,12 @@ pub enum Model {
     Bundle,
     Radio,
     Truck,
+    /// A teammate: which one is the index (`Survivor` code).
+    Survivor,
 }
 
 impl Model {
-    fn path(self, index: usize) -> &'static str {
+    pub fn path(self, index: usize) -> &'static str {
         match self {
             Model::Silbon => "models/silbon.glb",
             Model::Tureco => "models/tureco.glb",
@@ -44,6 +47,12 @@ impl Model {
             Model::Bundle => "models/bone_bundle.glb",
             Model::Radio => "models/radio.glb",
             Model::Truck => "models/truck.glb",
+            Model::Survivor => match index {
+                1 => "models/survivor_coplera.glb",
+                2 => "models/survivor_encargado.glb",
+                3 => "models/survivor_muchacho.glb",
+                _ => "models/survivor_llanero.glb",
+            },
         }
     }
 
@@ -56,7 +65,7 @@ impl Model {
             Model::Cattle | Model::Radio => Transform::from_rotation(quarter),
             Model::Truck => Transform::from_scale(Vec3::splat(TRUCK_SCALE)),
             Model::Bundle => Transform::from_scale(Vec3::splat(BUNDLE_SCALE)),
-            Model::Silbon | Model::Tureco => Transform::IDENTITY,
+            Model::Silbon | Model::Tureco | Model::Survivor => Transform::IDENTITY,
         }
     }
 }
@@ -127,9 +136,13 @@ pub fn attach(
     }
 }
 
-/// A model that cannot load leaves its procedural stand-in in place.
-pub fn watch_failures(assets: Res<AssetServer>, mut pending: ResMut<ModelsPending>) {
-    pending.0.retain(|(_, handle)| {
+/// A model that cannot load leaves its procedural stand-in in place; one
+/// whose owner is gone (a teammate who left) is no longer waited for.
+pub fn watch_failures(assets: Res<AssetServer>, mut pending: ResMut<ModelsPending>, alive: Query<()>) {
+    pending.0.retain(|(e, handle)| {
+        if !alive.contains(*e) {
+            return false;
+        }
         let failed = matches!(assets.load_state(handle), LoadState::Failed(_));
         if failed {
             warn!(
@@ -163,6 +176,7 @@ pub fn ready(
         ),
     >,
     lamps: Query<&GltfMaterialName>,
+    carried: Query<(&Transform, Has<AvatarBag>, Has<AvatarTorch>), Or<(With<AvatarBag>, With<AvatarTorch>)>>,
     truck: Option<Res<TruckAssets>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -238,6 +252,9 @@ pub fn ready(
                 if let Some(e) = named(name) {
                     commands.entity(e).insert(DogLeg(phase));
                 }
+                if let Some(e) = named(&name.replace("Leg", "Paw")) {
+                    commands.entity(e).insert(DogPaw(phase, name.starts_with("LegF")));
+                }
             }
         }
         Model::Truck => {
@@ -260,6 +277,43 @@ pub fn ready(
                 commands.entity(*e).insert(MeshMaterial3d(material));
             }
         }
-        Model::Cattle | Model::Bundle | Model::Radio => {}
+        Model::Survivor => {
+            let mut nodes_of = std::collections::HashMap::new();
+            for (name, bone, _, _) in Bone::ALL {
+                if let Some(e) = named(name)
+                    && let Ok((_, tf)) = names.get(e)
+                {
+                    commands.entity(e).insert(AvatarJoint {
+                        bone,
+                        rest: tf.translation,
+                    });
+                    nodes_of.insert(bone, e);
+                }
+            }
+            commands.entity(owner).insert(Rigged);
+            // The beam goes with the hand, the bundle on the back with the
+            // chest, wherever the walk takes them.
+            for child in children.get(owner).into_iter().flatten() {
+                let Ok((tf, bag, torch)) = carried.get(*child) else {
+                    continue;
+                };
+                let joint = if torch { Bone::HandR } else { Bone::Chest };
+                if !(bag || torch) {
+                    continue;
+                }
+                if let Some(&node) = nodes_of.get(&joint) {
+                    let local = tf.with_translation(tf.translation - joint.rest());
+                    commands.entity(*child).insert((local, ChildOf(node)));
+                }
+            }
+        }
+        Model::Cattle => {
+            for (name, part) in super::herd::CowPart::ALL {
+                if let Some(e) = named(name) {
+                    commands.entity(e).insert(part);
+                }
+            }
+        }
+        Model::Bundle | Model::Radio => {}
     }
 }

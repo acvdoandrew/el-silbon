@@ -232,10 +232,84 @@ pub fn spawn(ctx: &mut SpawnCtx, materials: &mut Assets<StandardMaterial>) {
 }
 
 /// Idle breathing, and a shudder while the herd bellows.
-pub fn animate(time: Res<Time>, net: Res<Network>, mut cows: Query<(&Cow, &mut Transform)>) {
+/// A joint of a cattle model (`tools/models/cattle.py`) the herd moves.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CowPart {
+    Neck,
+    Head,
+    EarL,
+    EarR,
+    Tail,
+}
+
+impl CowPart {
+    pub const ALL: [(&'static str, CowPart); 5] = [
+        ("Neck", CowPart::Neck),
+        ("Head", CowPart::Head),
+        ("EarL", CowPart::EarL),
+        ("EarR", CowPart::EarR),
+        ("Tail", CowPart::Tail),
+    ];
+}
+
+/// How a beast holds itself at `t` seconds (its own `phase` keeps the herd
+/// out of step): grazing with the head down for a while, then up, looking
+/// round; ears flicking at flies; the tail swishing. Spooked, every head
+/// comes up and every tail lashes. Rotations about each joint's rest.
+pub fn cow_pose(part: CowPart, t: f32, phase: f32, alarm: bool) -> Quat {
+    // A slow cycle: about a minute, most of it grazing.
+    let cycle = ((t + phase * 13.0) / 55.0).fract();
+    let graze = if alarm {
+        0.0
+    } else {
+        smoothstep(0.05, 0.15, cycle) * (1.0 - smoothstep(0.7, 0.8, cycle))
+    };
+    let look = (t * 0.21 + phase * 2.0).sin() * (1.0 - graze) * if alarm { 0.15 } else { 0.4 };
+    let chew = (t * 3.1 + phase).sin() * 0.04 * graze;
+    let flick = |off: f32| {
+        let k = ((t * 0.37 + phase * 3.0 + off) % 7.0) / 7.0;
+        (1.0 - smoothstep(0.0, 0.05, k)) * (k * 180.0).sin() * 0.35
+    };
+    match part {
+        // head down into the grass from the withers, up and alert when spooked
+        CowPart::Neck => Quat::from_rotation_x(-0.75 * graze + if alarm { 0.18 } else { 0.0 }),
+        CowPart::Head => Quat::from_rotation_y(look) * Quat::from_rotation_x(-0.25 * graze + chew),
+        CowPart::EarL => Quat::from_rotation_z(flick(0.0) + if alarm { -0.3 } else { 0.0 }),
+        CowPart::EarR => Quat::from_rotation_z(-flick(3.1) + if alarm { 0.3 } else { 0.0 }),
+        CowPart::Tail => {
+            let swish = if alarm {
+                (t * 7.0 + phase).sin() * 0.7
+            } else {
+                (t * 1.3 + phase).sin() * 0.35 * (0.5 + 0.5 * (t * 0.17 + phase).sin())
+            };
+            Quat::from_rotation_z(swish) * Quat::from_rotation_x(0.06)
+        }
+    }
+}
+
+fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
+    let k = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    k * k * (3.0 - 2.0 * k)
+}
+
+pub fn animate(
+    time: Res<Time>,
+    net: Res<Network>,
+    mut cows: Query<(Entity, &Cow, &mut Transform)>,
+    tree: Query<&Children>,
+    mut parts: Query<(&CowPart, &mut Transform), Without<Cow>>,
+) {
     let t = time.elapsed_secs();
     let alarm = net.snapshot().is_some_and(|s| s.world.cattle > 0.0);
-    for (cow, mut tf) in &mut cows {
+    for (entity, cow, mut tf) in &mut cows {
+        for e in tree.iter_descendants(entity) {
+            if let Ok((part, mut ptf)) = parts.get_mut(e) {
+                let want = cow_pose(*part, t, cow.phase, alarm);
+                if ptf.rotation != want {
+                    ptf.rotation = want;
+                }
+            }
+        }
         let breath = (t * 1.3 + cow.phase).sin() * 0.006;
         let sway = (t * 0.4 + cow.phase).sin() * 0.05;
         let shudder = if alarm {

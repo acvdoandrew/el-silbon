@@ -45,6 +45,7 @@ cargo test --locked                          # headless rules and route tests
 | `--shots DIR` | folder for F12 screenshots and the debug drivers (default `./screenshots`) |
 | `--host ADDR` | host a shared session, e.g. `127.0.0.1:5000` (loopback or private LAN only) |
 | `--join ADDR` | join a host before its run starts |
+| `--survivor S` | who the others see you as: `llanero`, `coplera`, `encargado` or `muchacho` (default: the menu's saved choice) |
 | `--smoke` | **debug**: deterministic scripted run (win, restart, caught, restart), then exit |
 | `--tour` | **debug**: walk to every landmark and up the lookout, then the full `--smoke` route |
 | `--photos` | **debug**: presentation review captures from searched viewpoints, then exit |
@@ -158,6 +159,7 @@ Surviving him:
 | F12 | screenshot of the game window |
 | R | outcome screen: play again (host) |
 | Enter / F6 / F10 | shared session: host starts / host restarts / host ends or client leaves |
+| F7 | shared session lobby: be the next free survivor |
 
 The menu adjusts master volume, mouse sensitivity and whistle captions. Solo
 pause freezes the run; in a shared session menus and focus loss stop only
@@ -172,6 +174,13 @@ applications:
 ./target/release/el_silbon --host 127.0.0.1:5000 --shots screenshots/host
 ./target/release/el_silbon --join 127.0.0.1:5000 --shots screenshots/p2
 ```
+
+Each player is one of four survivors — El Llanero, La Coplera, El Encargado
+or El Muchacho — chosen on the **With friends** page (saved in the profile)
+or with `--survivor`. The host grants each wish unless someone already has
+that survivor, then gives the first one free; in the lobby **F7** steps to the
+next free one. It only changes how the others see you and the name in the
+party list.
 
 Players join in the lobby before the first start; the host presses **Enter**
 to start. Restarts keep the connected players and do not reopen admission.

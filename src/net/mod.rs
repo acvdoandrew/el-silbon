@@ -22,6 +22,7 @@ use crate::{
     perception::{WhistlePhrase, WhistleVariant},
     player::{CurrentIntent, LightOn, Player},
     sim::{Encounter, Outcome, Presence, Stats, ThreatState},
+    survivor::Survivor,
     tuning::{Night, Tuning},
 };
 use bevy::prelude::*;
@@ -263,12 +264,15 @@ impl Plugin for NetworkPlugin {
         // From the title screen, the menu opens the session when a night
         // begins; otherwise the command line has already chosen it.
         if !launch.menu {
+            let who = launch
+                .survivor
+                .unwrap_or(app.world().resource::<crate::app::ProfileRes>().profile.survivor);
             match Endpoint::new(
                 launch.network.clone(),
                 &app.world().resource::<LayoutRes>().0,
                 &app.world().resource::<TuningRes>().0,
             ) {
-                Ok(e) => net.endpoint = Some(e),
+                Ok(e) => net.endpoint = Some(e.with_survivor(who)),
                 Err(e) => net.error = e,
             }
         }
@@ -279,7 +283,12 @@ impl Plugin for NetworkPlugin {
             .add_systems(Startup, setup)
             .add_systems(Update, (net_keys, begin_or_leave).chain().in_set(GameSet::Control))
             .add_systems(Update, update.in_set(GameSet::Simulate))
-            .add_systems(Update, (avatars, banner).in_set(GameSet::Present));
+            .add_systems(
+                Update,
+                (avatars, crate::world::avatar::animate, banner)
+                    .chain()
+                    .in_set(GameSet::Present),
+            );
         if launch.net_smoke {
             app.add_plugins(render_smoke::NetworkSmokePlugin);
         }
@@ -326,6 +335,7 @@ fn begin_or_leave(
     mut truth: ResMut<Truth>,
     mut next: ResMut<NextState<Flow>>,
     mut reset: MessageWriter<RunReset>,
+    profile: Res<crate::app::ProfileRes>,
 ) {
     let fresh = |net: &mut Network, truth: &mut Truth, layout: &Layout, reset: &mut MessageWriter<RunReset>| {
         net.applied_run = 0;
@@ -373,7 +383,7 @@ fn begin_or_leave(
     layout.0 = Layout::with_seed(start.seed);
     match Endpoint::new(start.mode.clone(), &layout.0, &tuning.0) {
         Ok(e) => {
-            net.endpoint = Some(e);
+            net.endpoint = Some(e.with_survivor(launch.survivor.unwrap_or(profile.profile.survivor)));
             net.error.clear();
         }
         Err(e) => {
@@ -391,9 +401,31 @@ fn begin_or_leave(
     });
 }
 
-fn net_keys(keys: Res<ButtonInput<KeyCode>>, launch: Res<Launch>, mut controls: MessageWriter<NetControl>) {
+fn net_keys(
+    keys: Res<ButtonInput<KeyCode>>,
+    launch: Res<Launch>,
+    net: Res<Network>,
+    mut controls: MessageWriter<NetControl>,
+) {
     if launch.smoke || launch.net_smoke || launch.photos {
         return;
+    }
+    // In the lobby: step to the next person nobody else is.
+    if keys.just_pressed(KeyCode::F7)
+        && let Some(s) = net.snapshot().filter(|s| !s.started)
+        && let Some(me) = s.players.iter().find(|p| Some(p.id) == net.id())
+    {
+        let taken: Vec<Survivor> = s
+            .players
+            .iter()
+            .filter(|p| p.id != me.id)
+            .map(|p| Survivor::from_code(p.survivor))
+            .collect();
+        let mut next = Survivor::from_code(me.survivor).cycle(1);
+        while taken.contains(&next) {
+            next = next.cycle(1);
+        }
+        controls.write(NetControl::Action(Action::Become { survivor: next.code() }));
     }
     if keys.just_pressed(KeyCode::Enter) && launch.network.is_host() && !launch.network.is_solo() {
         controls.write(NetControl::Action(Action::Start));
@@ -592,9 +624,18 @@ fn avatars(
     time: Res<Time<Real>>,
     net: Res<Network>,
     kit: Res<crate::world::avatar::AvatarKit>,
+    mut pending: ResMut<crate::world::models::ModelsPending>,
     layout: Res<LayoutRes>,
     mut roster: Local<std::collections::BTreeMap<u64, Entity>>,
-    mut roots: Query<(&RemotePlayer, &mut Transform, &mut Visibility, &Children)>,
+    mut roots: Query<(
+        Entity,
+        &RemotePlayer,
+        &mut Transform,
+        &mut Visibility,
+        &mut crate::world::avatar::AvatarMotion,
+        Has<crate::world::avatar::Rigged>,
+    )>,
+    tree: Query<&Children>,
     mut parts: Query<
         (
             &mut Visibility,
@@ -613,6 +654,19 @@ fn avatars(
         }
         keep
     });
+    // Someone who became someone else in the lobby is drawn anew.
+    roster.retain(|id, entity| {
+        let changed = players.iter().any(|p| {
+            p.id == *id
+                && roots
+                    .get(*entity)
+                    .is_ok_and(|(.., m, _)| m.survivor != Survivor::from_code(p.survivor))
+        });
+        if changed {
+            commands.entity(*entity).despawn();
+        }
+        !changed
+    });
     for (slot, p) in players.iter().enumerate().filter(|(_, p)| Some(p.id) != local) {
         roster.entry(p.id).or_insert_with(|| {
             let at = Vec3::new(
@@ -622,23 +676,34 @@ fn avatars(
             );
             kit.spawn(
                 &mut commands,
+                &mut pending,
                 slot,
+                Survivor::from_code(p.survivor),
                 format!("remote player {}", p.id),
                 RemotePlayer(p.id),
                 at,
             )
         });
     }
-    for (id, mut transform, mut vis, children) in &mut roots {
+    for (entity, id, mut transform, mut vis, mut motion, rigged) in &mut roots {
         let Some(p) = players.iter().find(|p| p.id == id.0) else {
             continue;
         };
+        motion.pitch = p.pitch;
+        motion.sprint = p.sprint && p.status == 0;
+        motion.crouch = p.crouch && p.status == 0;
+        motion.down = p.status != 0;
+        motion.carrying = p.carrying > 0;
         let pos = Vec2::from_array(p.position);
         let ground = layout.0.surface_height(pos);
-        // Standing, crouched, or down on the ground.
+        // Standing, crouched, or down on the ground. A rigged survivor
+        // crouches and leans by their own joints; the stand-in is squashed
+        // and tipped instead.
         let (lift, squash, roll) = match p.status {
-            0 if p.crouch => (0.0, 0.72, 0.0),
-            0 => (0.0, 1.0, if p.sprint { 0.16 } else { 0.0 }),
+            0 if p.crouch && !rigged => (0.0, 0.72, 0.0),
+            0 if !rigged => (0.0, 1.0, if p.sprint { 0.16 } else { 0.0 }),
+            0 => (0.0, 1.0, 0.0),
+            _ if rigged => (0.09, 1.0, 1.5),
             _ => (0.16, 1.0, 1.35),
         };
         let to = Vec3::new(pos.x, ground + lift, pos.y);
@@ -657,7 +722,9 @@ fn avatars(
         } else {
             Visibility::Inherited
         };
-        for &child in children {
+        // The bundle and the beam ride on the rig's chest and hand once it
+        // is in: look for them anywhere under the teammate.
+        for child in tree.iter_descendants(entity) {
             if let Ok((mut child_vis, bag, torch)) = parts.get_mut(child) {
                 if bag {
                     *child_vis = if p.carrying > 0 {
@@ -724,7 +791,7 @@ fn banner(
         buffer.push_str(&e.status);
     } else if let Some(s) = &e.snapshot {
         let state = if !s.started {
-            "Lobby: the host presses Enter when everyone is connected"
+            "Lobby: the host presses Enter when everyone is connected | F7: be someone else"
         } else if s.outcome == 1 {
             "SHARED VICTORY: the truck is away with everyone still standing."
         } else if s.outcome == 2 {

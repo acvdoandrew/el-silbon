@@ -4,9 +4,10 @@ parametric body gives three variants: the cow (dusty white-grey, modest
 hump, loose dewlap, short curved horns), the bull (larger, light brown-grey,
 big hump, thick neck) and the calf (reddish brown, slim, horn nubs).
 
-Flat per-facet colours, no rig (the game moves each cow as one mesh, see
-`src/world/herd.rs`). Each variant is its own glTF, facing -Z in Bevy,
-hooves on the ground.
+Flat per-facet colours, skinned to a small rig per variant (Body, Neck,
+Head, EarL, EarR, Tail) that `src/world/herd.rs` moves: grazing, looking
+round, flicking ears and swishing tails. Each variant is its own glTF,
+facing -Z in Bevy, hooves on the ground.
 
     PATH=/usr/bin:$PATH blender -b --factory-startup --python tools/models/cattle.py -- [--renders DIR]
 """
@@ -35,7 +36,8 @@ ONLY = ARGS[ARGS.index("--only") + 1].split(",") if "--only" in ARGS else None
 BLACK = (0.012, 0.011, 0.01)
 HOOF = (0.02, 0.017, 0.015)
 HORN = (0.05, 0.045, 0.04)
-EAR_IN = (0.3, 0.1, 0.035)
+EAR_IN = (0.3, 0.16, 0.1)
+MUZZLE = (0.04, 0.036, 0.034)
 
 VARIANTS = {
     "cow": dict(scale=1.0, hump=0.13, neck=1.0, dewlap=1.0, horn=1.0, head=1.15, legs=1.0, udder=True,
@@ -90,8 +92,8 @@ def build_variant(name, p):
     # ---- body: a deep barrel with a hump over the withers
     ys = [-0.86, -0.78, -0.55, -0.25, 0.1, 0.4, 0.62, 0.74]
     top = [1.22, 1.3, 1.31, 1.27, 1.28, 1.33, 1.3, 1.16]
-    bot = [1.0, 0.82, 0.72, 0.65, 0.64, 0.66, 0.69, 0.92]
-    wid = [0.12, 0.25, 0.29, 0.31, 0.3, 0.27, 0.24, 0.13]
+    bot = [1.0, 0.8, 0.69, 0.61, 0.6, 0.63, 0.67, 0.9]
+    wid = [0.13, 0.28, 0.33, 0.35, 0.34, 0.31, 0.27, 0.14]
     path = [V(0, y, (t + b) / 2 + lift) for y, t, b in zip(ys, top, bot)]
 
     def body_r(c):
@@ -108,7 +110,7 @@ def build_variant(name, p):
         r += p["hump"] * gauss(y - 0.45, 0.13) * max(0.0, up) ** 2.5 * gauss(side, 0.55)
         return r
 
-    a.part("body", tube(path, 40, 26, body_r, ref=UP, cap=True, ru=0.2), "facet", None, smooth=False,
+    a.part("body", tube(path, 40, 26, body_r, ref=UP, cap=True, ru=0.2), "facet", "Body", smooth=False,
            decimate=0.42, paint=paint_body)
 
     # ---- neck and head
@@ -116,7 +118,7 @@ def build_variant(name, p):
     neck = tube([V(0, 0.5, 1.08 + lift), V(0, 0.72, 1.15 + lift), V(0, 0.9, 1.21 + lift)], 10, 14,
                 lambda c: ellipse(c.th, lerp(0.28, 0.15, c.t) * nk, lerp(0.21, 0.12, c.t) * nk), ref=UP, cap=True,
                 ru=0.2)
-    a.part("neck", neck, "facet", None, smooth=False, decimate=0.6, paint=paint_body)
+    a.part("neck", neck, "facet", neck_w, smooth=False, decimate=0.6, paint=paint_body)
     hs = p["head"]
     anchor = V(0, 0.9, 1.22 + lift)
 
@@ -125,28 +127,30 @@ def build_variant(name, p):
 
     head = tube([H(0, 0.86, 1.3), H(0, 0.95, 1.3), H(0, 1.05, 1.21), H(0, 1.14, 1.1), H(0, 1.2, 1.03),
                  H(0, 1.235, 0.99)], 20, 14,
-                lambda c: ellipse(c.th, hs * tab(c.t, [0, 0.2, 0.55, 0.85, 1], [0.075, 0.105, 0.09, 0.08, 0.055]),
-                                  hs * tab(c.t, [0, 0.2, 0.55, 0.85, 1], [0.09, 0.13, 0.095, 0.09, 0.065])),
+                lambda c: ellipse(c.th, hs * tab(c.t, [0, 0.2, 0.55, 0.85, 1], [0.085, 0.12, 0.1, 0.09, 0.062]),
+                                  hs * tab(c.t, [0, 0.2, 0.55, 0.85, 1], [0.11, 0.16, 0.112, 0.1, 0.075])),
                 ref=FRONT, cap=True, ru=0.1)
 
     def paint_head(c, n):
         col = mottle(c, coat)
         col = mixc(col, dark, sstep(0.3, 0.9, n.z) * 0.3)
-        return mixc(col, BLACK, sstep(1.19, 1.225, (c.y - anchor.y) / hs + 0.9))
+        return mixc(col, MUZZLE, sstep(1.18, 1.215, (c.y - anchor.y) / hs + 0.9))
 
-    a.part("head", head, "facet", None, smooth=False, decimate=0.6, paint=paint_head)
-    a.part("muzzle", blob(tuple(H(0, 1.215, 0.995)), (0.058 * hs, 0.034 * hs, 0.046 * hs), 10, 6), "facet", None,
-           smooth=False, paint=flat(BLACK))
+    a.part("head", head, "facet", "Head", smooth=False, decimate=0.6, paint=paint_head)
+    a.part("muzzle", blob(tuple(H(0, 1.212, 0.99)), (0.068 * hs, 0.04 * hs, 0.055 * hs), 12, 7), "facet", "Head",
+           smooth=False, paint=lambda c, n: mottle(c, MUZZLE, 0.2, 40.0))
     for s in (1, -1):
-        a.part(f"eye{s}", blob(tuple(H(s * 0.098, 1.05, 1.2)), (0.018 * hs, 0.026 * hs, 0.018 * hs), 8, 5), "facet",
-               None, smooth=False, paint=flat(BLACK))
-        # drooping zebu ears
-        base, tip = H(s * 0.12, 0.99, 1.23), H(s * 0.27, 1.01, 1.02)
-        ear = tube([base, (base + tip) / 2 + V(s * 0.03, 0, 0.03), tip], 8, 10,
-                   lambda c: ellipse(c.th, 0.014 * hs, tab(c.t, [0, 0.35, 0.8, 1], [0.035, 0.075, 0.06, 0.012]) * hs),
+        a.part(f"nostril{s}", blob(tuple(H(s * 0.028, 1.245, 0.995)), (0.012 * hs, 0.008 * hs, 0.014 * hs), 8, 5),
+               "facet", "Head", smooth=False, paint=flat(BLACK))
+        a.part(f"eye{s}", blob(tuple(H(s * 0.108, 1.05, 1.2)), (0.02 * hs, 0.03 * hs, 0.02 * hs), 10, 6), "facet",
+               "Head", smooth=False, paint=lambda c, n: BLACK if n.y > -0.2 else (0.12, 0.08, 0.06))
+        # big drooping zebu ears: coat outside, pinkish brown within
+        base, tip = H(s * 0.125, 0.99, 1.24), H(s * 0.27, 1.02, 0.99)
+        ear = tube([base, (base + tip) / 2 + V(s * 0.04, 0.01, 0.02), tip], 10, 12,
+                   lambda c: ellipse(c.th, 0.022 * hs, tab(c.t, [0, 0.3, 0.75, 1], [0.036, 0.078, 0.066, 0.014]) * hs),
                    ref=FRONT, cap=True, ru=0.05)
-        a.part(f"ear{s}", ear, "facet", None, smooth=False,
-               paint=lambda c, n, s=s: mixc(mottle(c, coat), EAR_IN, sstep(0.0, 0.6, n.y + 0.3 * s * n.x)))
+        a.part(f"ear{s}", ear, "facet", f"Ear{'L' if s < 0 else 'R'}", smooth=False,
+               paint=lambda c, n, s=s: mixc(mottle(c, coat), EAR_IN, sstep(0.1, 0.7, n.y - 0.4 * n.z)))
         if p["horn"] > 0:
             hn = p["horn"]
             pts = [H(s * 0.07, 0.93, 1.33), H(s * (0.07 + 0.11 * hn), 0.92, 1.36), H(s * (0.08 + 0.15 * hn), 0.93,
@@ -154,7 +158,7 @@ def build_variant(name, p):
                    H(s * (0.05 + 0.14 * hn), 0.96, 1.36 + 0.17 * hn)]
             horn = tube(pts, 10, 8, lambda c: lerp(0.034 * min(hn, 1.2), 0.004, c.t ** 0.8) * hs, ref=FRONT,
                         cap=True, ru=0.03)
-            a.part(f"horn{s}", horn, "facet", None, smooth=False,
+            a.part(f"horn{s}", horn, "facet", "Head", smooth=False,
                    paint=lambda c, n: mixc(HORN, BLACK, sstep(1.4 + lift, 1.5 + lift, c.z)))
     # the dewlap: a loose fold of skin from the jaw to the brisket
     dw = p["dewlap"]
@@ -163,7 +167,7 @@ def build_variant(name, p):
         return ellipse(c.th, 0.05 + 0.07 * dw * math.sin(math.pi * c.t) ** 0.7, w)
 
     under = [V(0, 0.95, 1.05 + lift), V(0, 0.84, 0.93 + lift), V(0, 0.72, 0.8 + lift), V(0, 0.6, 0.72 + lift)]
-    a.part("dewlap", tube(under, 12, 8, fold, ref=UP, cap=True, ru=0.1), "facet", None, smooth=False,
+    a.part("dewlap", tube(under, 12, 8, fold, ref=UP, cap=True, ru=0.1), "facet", neck_w, smooth=False,
            decimate=0.7, paint=paint_body)
 
     # ---- legs and hooves
@@ -174,44 +178,77 @@ def build_variant(name, p):
             if front:
                 pts = [V(x, y0, 1.0), V(x, y0 + 0.02, 0.78), V(x, y0 + 0.01, 0.48), V(x, y0, 0.2), V(x, y0 + 0.02,
                                                                                                      0.06)]
-                rad = [0.13, 0.095, 0.068, 0.056, 0.06]
+                rad = [0.15, 0.115, 0.08, 0.06, 0.066]
             else:
                 pts = [V(x, y0, 1.05), V(x, y0 + 0.08, 0.82), V(x, y0 - 0.06, 0.55), V(x, y0 - 0.02, 0.2),
                        V(x, y0, 0.06)]
-                rad = [0.17, 0.125, 0.075, 0.056, 0.06]
+                rad = [0.2, 0.15, 0.085, 0.06, 0.066]
             pts = [V(q.x, q.y, q.z * L if q.z < 0.8 else q.z + lift) for q in pts]
             zs = [q.z for q in pts]
 
             def lr(c, zs=zs, rad=rad):
-                return tab(c.p.z, zs[::-1], rad[::-1]) * (1 + 0.1 * math.cos(2 * c.th))
+                r = tab(c.p.z, zs[::-1], rad[::-1]) * (1 + 0.1 * math.cos(2 * c.th))
+                return r + 0.012 * gauss(c.p.z - zs[2], 0.05)  # the knobbly knee or hock
 
             leg = tube(pts, 16, 10, lr, ref=FRONT, cap=True, ru=0.06)
-            a.part(f"leg{s}{front}", leg, "facet", None, smooth=False, decimate=0.65, paint=paint_leg)
+            a.part(f"leg{s}{front}", leg, "facet", "Body", smooth=False, decimate=0.65, paint=paint_leg)
             for k in (-1, 1):  # cloven hooves
                 hoof = tube([V(x + k * 0.022, pts[-1].y + 0.01, 0.07), V(x + k * 0.025, pts[-1].y + 0.035, 0.0)], 2, 7,
                             lambda c: lerp(0.03, 0.036, c.t), ref=FRONT, raw=True, cap=True, ru=0.03)
-                a.part(f"hoof{s}{front}{k}", hoof, "facet", None, smooth=False, paint=flat(HOOF))
+                a.part(f"hoof{s}{front}{k}", hoof, "facet", "Body", smooth=False, paint=flat(HOOF))
 
     # ---- tail with its black switch
     tail = [V(0, -0.84, 1.25 + lift), V(0, -0.9, 1.12 + lift), V(0, -0.91, 0.85 + lift), V(0, -0.9, 0.62 * L)]
     a.part("tail", tube(tail, 14, 7, lambda c: lerp(0.035, 0.018, c.t), ref=FRONT, cap=True, ru=0.03), "facet",
-           None, smooth=False, decimate=0.8, paint=lambda c, n: mottle(c, coat))
+           "Tail", smooth=False, decimate=0.8, paint=lambda c, n: mottle(c, coat))
     sw = [V(0, -0.9, 0.66 * L), V(0, -0.905, 0.52 * L), V(0, -0.9, 0.36 * L)]
     a.part("switch", tube(sw, 8, 7, lambda c: 0.045 * math.sin(math.pi * (0.12 + 0.88 * c.t)) ** 0.6 + 0.004,
-                          ref=FRONT, cap=True, ru=0.03), "facet", None, smooth=False, paint=flat(BLACK))
+                          ref=FRONT, cap=True, ru=0.03), "facet", "Tail", smooth=False, paint=flat(BLACK))
     if p["udder"]:
-        a.part("udder", blob((0, -0.42, 0.7 + lift), (0.11, 0.13, 0.08), 10, 6), "facet", None, smooth=False,
+        a.part("udder", blob((0, -0.42, 0.7 + lift), (0.11, 0.13, 0.08), 10, 6), "facet", "Body", smooth=False,
                paint=flat((0.42, 0.3, 0.26)))
 
     # scale the whole animal
     S = Matrix.Scale(p["scale"], 4)
     for ob, _s, _w in a.parts:
         ob.data.transform(S)
-    # painters see the unscaled animal, so every variant is coloured alike
+    # painters and weights see the unscaled animal, so every variant is alike
     k = 1.0 / p["scale"]
     for key, f in list(a.painters.items()):
         a.painters[key] = (lambda f: lambda c, n: f(c * k, n))(f)
+    a.parts = [(ob, st, (lambda f: lambda co: f(co * k))(w) if callable(w) else w) for ob, st, w in a.parts]
     return a
+
+
+def joints(p):
+    """The rig in Bevy space (x, up, back), scaled with the animal: the neck
+    swings from the withers, the head from the poll, the ears from their
+    roots, the tail from its head."""
+    lift = (p["legs"] - 1.0) * 0.72
+    hs = p["head"]
+    anchor = (0.0, 0.9, 1.22 + lift)
+
+    def head_pt(x, y, z):  # the same head-local mapping as the model
+        return (anchor[0] + (x - 0.0) * hs, anchor[1] + (y - 0.9) * hs, anchor[2] + (z - 1.22) * hs)
+
+    def bevy(b):  # Blender (x, fwd, up) to Bevy (x, up, back), scaled
+        s = p["scale"]
+        return (b[0] * s, b[2] * s, -b[1] * s)
+
+    return [
+        ("Body", None, (0.0, 0.0, 0.0)),
+        ("Neck", "Body", bevy((0.0, 0.52, 1.12 + lift))),
+        ("Head", "Neck", bevy(head_pt(0.0, 0.92, 1.28))),
+        ("EarL", "Head", bevy(head_pt(-0.125, 0.99, 1.24))),
+        ("EarR", "Head", bevy(head_pt(0.125, 0.99, 1.24))),
+        ("Tail", "Body", bevy((0.0, -0.84, 1.25 + lift))),
+    ]
+
+
+def neck_w(co):
+    t = sstep(0.5, 0.64, co.y)
+    h = sstep(0.86, 0.95, co.y)
+    return {"Body": 1.0 - t, "Neck": t * (1.0 - h), "Head": t * h}
 
 
 def main():
@@ -223,7 +260,8 @@ def main():
         built.append(a)
         if STAGE == "preview":
             continue
-        joined, _ = a.finish(out=os.path.join(ROOT, "assets", "models", f"{name}.glb"))
+        out = None if "--live" in ARGS else os.path.join(ROOT, "assets", "models", f"{name}.glb")
+        joined, _ = a.finish(out=out, joints=joints(p))
         tris = 0
         for ob in joined.values():
             ob.data.calc_loop_triangles()

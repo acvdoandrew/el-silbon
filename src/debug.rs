@@ -947,6 +947,8 @@ fn photo_drive(
                     revive: 0.0,
                     bleed: 0.0,
                     hauled: false,
+                    // Each staged teammate someone else.
+                    survivor: ((i + 1) % 4) as u8,
                 });
             }
             if shot.surface == Surface::Downed

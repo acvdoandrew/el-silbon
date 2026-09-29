@@ -1,6 +1,158 @@
 # Progress
 
-## Current handoff — 2026-09-29 (models in the game, and the teaser)
+## Current handoff — 2026-09-29 (models v2 and their animation)
+
+Uncommitted, on top of the survivors pass below. The user asked for every
+model to look like its concept sheet and to be animated well, working in
+Blender through the MCP.
+
+### What changed
+
+- **Survivors v2** (`tools/models/survivors.py`, rewritten): sculpted heads
+  (brow, sockets, cheekbones, jaw, nose, ears), larger per the sheet;
+  sloped shoulders, fuller limbs, hands with four fingers and a thumb (the
+  right one a fist round the torch); turned-down collars, pockets, belts,
+  boots, sneakers with laces, a ruffled blouse and a gathered skirt with a
+  ruffled hem, combed hair. One baked 2048 texture per survivor: per-facet
+  colour times numpy patterns chosen per face (`pat` attribute: flowers,
+  plaid, denim, straw, linen weave, jute, canvas), a painted face decal
+  (eyes, lids, brows, nostrils, lips, age lines) and contact shadow (AO);
+  normals are recalculated outward so the AO only sees real occluders.
+  17-joint rig: Pelvis, Torso, Chest, Neck, Head, Hip/Knee/Foot and
+  Shoulder/Elbow/Hand L/R.
+- **Teammate animation** (`world::avatar`): a pure `pose(bone, &Gait)`
+  gives the walk (stride sized to speed: pelvis bob and turn, knees folding
+  through the swing, feet kept level, counter-swinging arms, head steadied),
+  the sprint (lean, bent elbows, high heel kick), the crouch (pelvis down
+  0.3 m, hips and knees folded, lean) and the crawl when down (arms reaching
+  ahead in turn, head up), breathing and idle glances; the torch arm keeps
+  the beam where they look. The beam and the carried bundle ride on the
+  hand and chest joints once the model is in (`Rigged`); the stand-in keeps
+  the old squash. Tests: forward kinematics keeps feet on the ground
+  standing, crouching, walking and sprinting, the leading foot is ahead and
+  its arm swings back; the beam follows the look while sprinting; a
+  downed survivor reaches past the head.
+- **El Silbón** (`tools/silbon_model.py`): a woven llanero sombrero after
+  the sheet — flat-topped, slightly tapered crown, a drooping cone of a
+  brim, a frayed fringe of hanging straws; darker straw and rags. Face,
+  eyes and joints untouched (the user's stare is kept; the catch frames
+  were re-shot).
+- **Tureco** (`tools/models/dog.py`): fuller body and neck, thicker legs
+  and paws, bigger amber eyes with pupils, taller ears, a brush of a tail,
+  a deeper coat; new wrist/hock joints (`PawFL/FR/BL/BR`) that `dog.rs`
+  folds through the trot (`DogPaw`), and folds the hocks when he sits tied.
+- **The herd** (`tools/models/cattle.py`): heavier bodies and legs with
+  knobbly knees, a broader head, a big dark muzzle with nostrils, droopy
+  ears in coat colour (pinkish inside); a rig per variant (Neck, Head,
+  EarL/R, Tail). `herd.rs` `cow_pose`: each beast grazes for most of a
+  minute-long cycle, lifts its head to look round, chews, flicks its ears
+  and swishes its tail, out of step with the others; spooked, heads come up
+  and tails lash.
+- **The truck** was already closest to its sheet and is unchanged.
+- Trailer driver: review-only shots `90_survivors_walk` (sprint, crouch,
+  carrying, walk, side on) and `91_survivors_down` (a crawl, a crouch
+  beside it); not in the cut (`TRAILER_ONLY=90`, `TRAILER_ONLY=91`; a
+  full `--trailer` render now includes them, and `edit.py` ignores them).
+- `tools/models/review.py`: review renders of any exported `.glb` (the
+  Silbón's sheet).
+
+### Verified
+
+- Gate: fmt, clippy `-D warnings`, 65 unit + 7 district + 41 session tests.
+- Cycles sheets (`assets/models/src/renders/`): survivors, Tureco, herd.
+- In game (release): `63_model_survivors`, `55_tureco`, `62_model_herd`
+  (a cow grazing), the catch frames 53/54/58/59 (his stare as before, under
+  the new hat), and the trailer driver's walk/crawl shots (stride, sprint
+  kick, crouched creep, crawl reading correctly).
+- Rendered solo `--smoke`: `SMOKE PASS` (589.5 s simulated, two restarts,
+  census unchanged). Rendered two-process UDP `--net-smoke`: host and client
+  `NET SMOKE PASS` and `NET RENDER SMOKE PASS` (census kept through run 3).
+
+### Unverified / next
+
+- Hands-on: a teammate walking, sprinting, crouching, going down and
+  aiming the torch, seen live in two windows; the herd's cycle over a
+  minute; Tureco trotting.
+- The survivor `.glb`s are 9–12 MB each (PNG textures, flat-shaded split
+  vertices); JPEG colour or 1024 textures would shrink them if needed.
+
+## Earlier handoff — 2026-09-29 (the four survivors)
+
+Uncommitted. The user sent a "Survivors" concept sheet (El Llanero, La
+Coplera, El Encargado, El Muchacho) and asked for playable-character models
+built in Blender through the MCP, and a way to choose them with friends.
+
+### The models (`tools/models/survivors.py`)
+
+One shared low-poly body dressed four ways in the sheet's faceted style
+(flat per-facet colours, like Tureco): the llanero's cream liquiliqui with
+stand collar, pockets and buttons and a black flat-brimmed hat; the
+coplera's ruffled white blouse, flowered red skirt with a ruffled hem and a
+low bun with a red ribbon; the encargado's khaki shirt with rolled sleeves,
+belt, dark trousers in rubber boots, striped towel, grey hair, moustache
+and straw hat; the muchacho's open plaid overshirt over a white tee, jeans,
+sneakers and red bracelet. The sheet's alternative trousers for the coplera
+were not made. Each holds a torch in the right hand where the game hangs the
+beam, and is skinned to Body, Torso, Head, Shoulder/Elbow L/R and Hip/Knee
+L/R (8–19k triangles). Iterated live through the Blender MCP in its own
+scene (nothing saved over the open file); the final `.glb`s, `survivors.blend`,
+the review sheet and the menu portraits come from a headless run:
+`PATH=/usr/bin:$PATH blender -b --factory-startup --python tools/models/survivors.py -- --renders DIR --portraits assets/ui/survivors --blend assets/models/src/survivors.blend`.
+
+### In the game
+
+- `survivor` (pure): the four, their names and roles, and `assign` (your
+  wish unless taken, else the first free). `net::session` keeps who each
+  player is across restarts, gives out a free one on joining, and
+  `choose_survivor` changes it only in the lobby; `PlayerView.survivor` and
+  `Hello.survivor` carry it (`#[serde(default)]`), `Action::Become` changes it
+  from the lobby. `Endpoint::with_survivor` sets the wish (solo/host at
+  once, client in the handshake).
+- Choosing: "Who you are ‹ … ›" on the **With friends** page with the chosen
+  survivor's portrait beside the rail (saved as `Profile.survivor`);
+  `--survivor NAME` on the command line; **F7** in the lobby steps to the
+  next free one. The party list shows `P2 La Coplera (you)`.
+- Teammates (`world::avatar`): the survivor model loads over the old
+  procedural llanero (which stays if it cannot load); a changed survivor is
+  respawned. `avatar::animate` walks them from their speed over the ground
+  (hips, knees and arms, same signs as the Silbón's rig), leans into a
+  sprint, breathes at rest, and turns the head and the torch arm, with its
+  beam, to their look pitch. A teammate who leaves mid-load no longer keeps
+  `ModelsPending` waiting.
+- Photo `63_model_survivors`: the four in a line at the gate
+  (`PHOTOS_ONLY=63`). Staged photo/trailer teammates are each someone else.
+
+### Verified
+
+- Gate green: `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D
+  warnings`, `cargo test --locked` (63 unit + 7 district + 41 session).
+- New tests: a party of four wishing for the same one gets four different
+  people, free wishes are granted, codes round-trip (`survivor`); in a
+  session, a clash gives someone free, a leaver frees theirs, only the lobby
+  can change it, and it survives a restart (`tests/session.rs`).
+- Rendered `--photos` frame `63_model_survivors`: all four load and read
+  clearly at night at the ranch gate.
+- Two-process UDP `--net-smoke`, both processes `--survivor llanero`:
+  headless, host and client `NET SMOKE PASS`; rendered, both `NET SMOKE PASS`
+  and `NET RENDER SMOKE PASS` (census kept through run 3). The host stays El
+  Llanero and the client is given La Coplera; both rosters show it, through
+  both restarts. (A first rendered attempt failed when the host's scripted
+  route was downed by him at 158 s mid-route; the identical rerun passed,
+  so it reads as the real-time route's timing, not this change.)
+- `--menu-shots` (`06_multiplayer`): the "Who you are" row and the
+  portrait with name and role beside the rail.
+
+### Unverified / next
+
+- The walk in motion was only seen from behind in tall grass (the trailer's
+  friends shot); a user look at a teammate walking, sprinting, crouching and
+  aiming the torch is still wanted (two windows on one machine is enough:
+  `--host 127.0.0.1:5000` and `--join 127.0.0.1:5000 --survivor coplera`).
+- F7 in the lobby and ‹ › on the menu row by hand.
+- The night's awards still name players as P1/P2; they could use the
+  survivors' names.
+
+## Earlier handoff — 2026-09-29 (models in the game, and the teaser)
 
 ### The Blender models (`130ebf7`, local, not pushed)
 

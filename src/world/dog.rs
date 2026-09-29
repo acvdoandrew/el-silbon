@@ -23,6 +23,11 @@ pub struct DogHead;
 #[derive(Component)]
 pub struct DogLeg(pub f32);
 
+/// The model's wrists and hocks: the gait phase, and whether it is a
+/// fore leg (the paw folds back) or a hind leg (the hock flexes).
+#[derive(Component)]
+pub struct DogPaw(pub f32, pub bool);
+
 /// The model's jaw and tail (the procedural dog has neither).
 #[derive(Component)]
 pub struct DogJaw;
@@ -267,6 +272,17 @@ pub fn animate_dog(
     mut head: Query<&mut Transform, (With<DogHead>, Without<DogLeg>, Without<DogRope>)>,
     mut legs: Query<(&DogLeg, &mut Transform), (Without<DogHead>, Without<DogRope>)>,
     mut rope: Query<(&mut Transform, &mut Visibility), (With<DogRope>, Without<DogHead>, Without<DogLeg>)>,
+    mut paws: Query<
+        (&DogPaw, &mut Transform),
+        (
+            Without<DogLeg>,
+            Without<DogHead>,
+            Without<DogRope>,
+            Without<DogJaw>,
+            Without<DogTail>,
+            Without<DogRoot>,
+        ),
+    >,
 ) {
     let Some(view) = net.snapshot().map(|s| s.dog) else {
         return;
@@ -327,6 +343,17 @@ pub fn animate_dog(
             0.6 * (dog.phase + leg.0).sin() * pace
         };
         l.rotation = Quat::from_rotation_x(swing);
+    }
+    // The lower legs fold as each foot comes through: the fore paws flick
+    // back, the hocks bend; tied, he sits on his haunches.
+    for (paw, mut p) in &mut paws {
+        let lift = (dog.phase + paw.0).cos().max(0.0) * pace;
+        let fold = match (paw.1, tied) {
+            (true, _) => -0.9 * lift,
+            (false, true) => 0.5,
+            (false, false) => 0.7 * lift,
+        };
+        p.rotation = Quat::from_rotation_x(fold);
     }
     // The rope runs from the post to his collar while he is tied.
     let post = layout.0.district.dog_post;

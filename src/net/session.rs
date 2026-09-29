@@ -6,6 +6,7 @@
 //! inputs and actions; they never write truth.
 use super::protocol::*;
 use crate::awards::Deeds;
+use crate::survivor::Survivor;
 use crate::{
     body::{Body, BodyInput, FearInput, Ground, Status},
     control::{Pose, SceneData, TargetKind, evaluate_target},
@@ -149,6 +150,8 @@ pub struct Session {
     noises: Vec<(Vec2, f32)>,
     events: Vec<(Option<PlayerId>, Event)>,
     pub outbox: Vec<(PlayerId, ServerMessage)>,
+    /// Who each player is (kept across restarts, given out in the lobby).
+    survivors: BTreeMap<PlayerId, Survivor>,
 }
 
 impl Session {
@@ -171,6 +174,7 @@ impl Session {
             noises: Vec::new(),
             events: Vec::new(),
             outbox: Vec::new(),
+            survivors: BTreeMap::new(),
         };
         s.add_player(HOST, layout, tuning).expect("empty host session");
         s
@@ -195,7 +199,35 @@ impl Session {
         let pose = Self::spawn_pose(layout, self.players.len());
         self.players
             .insert(id, Participant::new(pose, tuning.seed ^ id, layout));
+        let free = Survivor::assign(Survivor::default(), &self.taken_survivors(id));
+        self.survivors.insert(id, free);
         Ok(())
+    }
+
+    fn taken_survivors(&self, except: PlayerId) -> Vec<Survivor> {
+        self.survivors
+            .iter()
+            .filter(|(id, _)| **id != except)
+            .map(|(_, s)| *s)
+            .collect()
+    }
+
+    /// A player asks to be someone: granted unless another player already
+    /// is, then the first one free. Only in the lobby.
+    pub fn choose_survivor(&mut self, id: PlayerId, wanted: Survivor) -> Result<Survivor, String> {
+        if self.started {
+            return Err("Choose who you are before the night begins.".into());
+        }
+        if !self.players.contains_key(&id) {
+            return Err("Unknown player.".into());
+        }
+        let given = Survivor::assign(wanted, &self.taken_survivors(id));
+        self.survivors.insert(id, given);
+        Ok(given)
+    }
+
+    pub fn survivor(&self, id: PlayerId) -> Survivor {
+        self.survivors.get(&id).copied().unwrap_or_default()
     }
 
     pub fn remove_player(&mut self, id: PlayerId) {
@@ -204,6 +236,7 @@ impl Session {
             self.encounter.release_all(id, at);
         }
         self.players.remove(&id);
+        self.survivors.remove(&id);
         self.outbox.retain(|(recipient, _)| *recipient != id);
         self.pings.retain(|p| p.by != id);
         if self.target == Some(id) || self.captive == Some(id) {
@@ -252,6 +285,7 @@ impl Session {
         }
         p.action_sequence = sequence;
         match action {
+            Action::Become { survivor } => self.choose_survivor(id, Survivor::from_code(survivor)).map(|_| ()),
             Action::Start => {
                 if id != HOST {
                     return Err("Only the host can start.".into());
@@ -1442,6 +1476,7 @@ impl Session {
                         _ => 0.0,
                     },
                     hauled: self.captive == Some(pid),
+                    survivor: self.survivor(pid).code(),
                 })
                 .collect(),
             relics: progress.relics.iter().map(RelicView::from_relic).collect(),

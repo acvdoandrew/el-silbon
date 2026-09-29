@@ -18,4 +18,5 @@ __pycache__/
 !/assets/models/src/renders/props_sheet.png
 !/assets/models/src/renders/truck/sheet.png
 !/assets/models/src/renders/tureco/sheet.png
+!/assets/models/src/renders/survivors/sheet.png
 *.blend1

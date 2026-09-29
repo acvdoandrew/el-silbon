@@ -55,6 +55,10 @@ pub enum Action {
     },
     Start,
     Restart,
+    /// In the lobby: be someone else (`survivor::Survivor` code), if free.
+    Become {
+        survivor: u8,
+    },
     /// Drive off in the ready truck now, with whoever is aboard; everyone
     /// else is left behind.
     DriveOff,
@@ -68,6 +72,9 @@ pub enum ClientMessage {
         /// The night's difficulty (`tuning::Night` code): every peer must agree.
         #[serde(default = "normal_night")]
         night: u8,
+        /// Who the player would like to be (`survivor::Survivor` code).
+        #[serde(default)]
+        survivor: u8,
     },
     Input(Input),
     Action {
@@ -137,6 +144,9 @@ pub struct PlayerView {
     /// In his sack, being carried off.
     #[serde(default)]
     pub hauled: bool,
+    /// Who they are (`survivor::Survivor` code): only how they look.
+    #[serde(default)]
+    pub survivor: u8,
 }
 
 /// Only sent when physically present, in the listener's view cone and with

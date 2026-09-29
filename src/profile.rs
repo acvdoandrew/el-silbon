@@ -65,6 +65,8 @@ pub struct Profile {
     pub tally: Tally,
     /// The last host address joined, offered again next time.
     pub join: String,
+    /// Who the player likes to be with friends.
+    pub survivor: crate::survivor::Survivor,
 }
 
 impl Profile {

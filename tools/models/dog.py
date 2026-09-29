@@ -28,13 +28,13 @@ from modelkit import (  # noqa: E402
 
 ARGS = globals().get("ARGS") or (sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
 STAGE = "preview" if "--preview" in ARGS else "final"
-OUT = os.path.join(ROOT, "assets", "models", "tureco.glb")
+OUT = None if "--live" in ARGS else os.path.join(ROOT, "assets", "models", "tureco.glb")
 RENDERS = ARGS[ARGS.index("--renders") + 1] if "--renders" in ARGS else None
 
 # Linear colours after the sheet's fur swatches.
-FUR = (0.42, 0.165, 0.055)
-FUR_LIGHT = (0.58, 0.28, 0.11)
-SADDLE = (0.14, 0.055, 0.02)
+FUR = (0.34, 0.13, 0.045)
+FUR_LIGHT = (0.48, 0.22, 0.085)
+SADDLE = (0.1, 0.04, 0.016)
 CREAM = (0.66, 0.44, 0.25)
 MUZZLE = (0.045, 0.022, 0.012)
 BLACK = (0.01, 0.009, 0.008)
@@ -53,6 +53,11 @@ JOINTS = [
     ("LegBL", "Body", (-0.08, 0.46, 0.24)),
     ("LegBR", "Body", (0.08, 0.46, 0.24)),
     ("Tail", "Body", (0.0, 0.55, 0.37)),
+    # the wrists and hocks, so a trot can fold the lower legs
+    ("PawFL", "LegFL", (-0.072, 0.18, -0.225)),
+    ("PawFR", "LegFR", (0.072, 0.18, -0.225)),
+    ("PawBL", "LegBL", (-0.078, 0.22, 0.235)),
+    ("PawBR", "LegBR", (0.078, 0.22, 0.235)),
 ]
 
 
@@ -119,10 +124,14 @@ def paint_tail(c, n):
 
 
 # ---------------------------------------------------------------- weights
-def leg_w(bone):
+def leg_w(bone, low=None, knee=0.2):
     def f(co):
         up = sstep(0.43, 0.52, co.z)
-        return {bone: 1.0 - up, "Body": up}
+        down = sstep(knee + 0.03, knee - 0.03, co.z) if low else 0.0
+        w = {bone: (1.0 - up) * (1.0 - down), "Body": up}
+        if low:
+            w[low] = down
+        return w
 
     return f
 
@@ -149,8 +158,8 @@ def blob(centre, radii, sides=10, rings=6):
 def build_body(a):
     ys = [-0.41, -0.33, -0.18, -0.02, 0.12, 0.22, 0.31, 0.37]
     top = [0.55, 0.6, 0.59, 0.6, 0.62, 0.635, 0.63, 0.6]
-    bot = [0.49, 0.43, 0.46, 0.43, 0.355, 0.35, 0.41, 0.5]
-    wid = [0.055, 0.1, 0.088, 0.098, 0.114, 0.116, 0.1, 0.062]
+    bot = [0.49, 0.42, 0.44, 0.41, 0.335, 0.33, 0.4, 0.5]
+    wid = [0.062, 0.114, 0.1, 0.11, 0.13, 0.132, 0.114, 0.07]
     path = [V(0, y, (t + b) / 2) for y, t, b in zip(ys, top, bot)]
 
     def r(c):
@@ -169,7 +178,7 @@ def build_body(a):
     bm = tube(path, 30, 20, r, ref=UP, cap=True, ru=0.1)
     a.part("torso", bm, "facet", "Body", smooth=False, decimate=0.45, paint=paint_torso)
     neck = tube([V(0, 0.2, 0.585), V(0, 0.29, 0.64), V(0, 0.35, 0.7), V(0, 0.39, 0.735)], 12, 14,
-                lambda c: ellipse(c.th, lerp(0.095, 0.068, c.t), lerp(0.085, 0.06, c.t)), ref=UP, cap=True, ru=0.1)
+                lambda c: ellipse(c.th, lerp(0.11, 0.08, c.t), lerp(0.1, 0.07, c.t)), ref=UP, cap=True, ru=0.1)
     a.part("neck", neck, "facet", neck_w, smooth=False, decimate=0.6, paint=paint_neck)
 
 
@@ -200,13 +209,14 @@ def build_head(a):
                          lambda c: ellipse(c.th, 0.005, lerp(0.034, 0.02, c.t)), ref=UP, raw=True, cap=True, ru=0.02),
            "facet", "Head", smooth=False, paint=flat(BLACK))
     for s in (1, -1):
-        eye = blob((s * 0.052, 0.466, 0.752), (0.011, 0.012, 0.011), 8, 5)
+        eye = blob((s * 0.05, 0.468, 0.754), (0.015, 0.016, 0.013), 10, 7)
         a.part(f"eye{s}", eye, "facet", "Head", smooth=False,
-               paint=lambda c, n: IRIS if n.y > 0.55 and abs(n.x) < 0.8 else BLACK)
-        base, tip = V(s * 0.05, 0.365, 0.79), V(s * 0.088, 0.338, 0.94)
+               paint=lambda c, n, s=s: BLACK if (abs(c.x) < 0.047 and n.y > 0.3 and abs(c.z - 0.756) < 0.006)
+               else (IRIS if n.y > 0.2 and s * n.x > -0.2 else BLACK))
+        base, tip = V(s * 0.05, 0.365, 0.79), V(s * 0.092, 0.335, 0.975)
 
         def ear_r(c):
-            w = lerp(0.046, 0.003, c.t ** 0.85)
+            w = lerp(0.056, 0.003, c.t ** 0.85)
             return ellipse(c.th, w * 0.62, w)
 
         ear = tube([base, (base + tip) / 2 + V(s * 0.004, 0.006, 0), tip], 8, 10, ear_r, ref=FRONT,
@@ -216,7 +226,7 @@ def build_head(a):
 
 def paw(a, centre, side, bone, name):
     x, y, z = centre
-    a.part(name, blob((x, y, z), (0.026, 0.038, 0.021), 8, 5), "facet", bone, smooth=False,
+    a.part(name, blob((x, y, z), (0.032, 0.046, 0.024), 10, 6), "facet", bone, smooth=False,
            paint=lambda c, n: mottle(c, CREAM, 0.1))
     for i in range(4):
         dx = (i - 1.5) * 0.012
@@ -235,25 +245,27 @@ def build_legs(a):
 
         def fr(c):
             z = c.p.z
-            return ellipse(c.th, tab(z, [0.03, 0.1, 0.2, 0.33, 0.44, 0.52], [0.023, 0.021, 0.026, 0.038, 0.055,
-                                                                              0.05]),
-                           tab(z, [0.03, 0.1, 0.2, 0.33, 0.44, 0.52], [0.021, 0.018, 0.021, 0.03, 0.043, 0.038]))
+            return 1.3 * ellipse(c.th, tab(z, [0.03, 0.1, 0.2, 0.33, 0.44, 0.52], [0.023, 0.021, 0.026, 0.038,
+                                                                                    0.055, 0.05]),
+                                 tab(z, [0.03, 0.1, 0.2, 0.33, 0.44, 0.52], [0.021, 0.018, 0.021, 0.03, 0.043,
+                                                                              0.038]))
 
-        a.part(f"leg_f{side}", tube(front, 18, 10, fr, ref=FRONT, cap=True, ru=0.04), "facet", leg_w(f"LegF{side}"),
-               smooth=False, decimate=0.6, paint=paint_leg(s))
-        paw(a, (x, 0.28, 0.021), s, f"LegF{side}", f"paw_f{side}")
+        a.part(f"leg_f{side}", tube(front, 18, 10, fr, ref=FRONT, cap=True, ru=0.04), "facet",
+               leg_w(f"LegF{side}", f"PawF{side}", 0.18), smooth=False, decimate=0.6, paint=paint_leg(s))
+        paw(a, (x, 0.28, 0.024), s, f"PawF{side}", f"paw_f{side}")
         xb = s * 0.078
         rear = [V(xb * 0.6, -0.255, 0.53), V(xb, -0.21, 0.455), V(xb, -0.17, 0.35), V(xb, -0.235, 0.24), V(xb, -0.3, 0.14),
                 V(xb, -0.292, 0.07), V(xb, -0.272, 0.03)]
 
         def rr(c):
             t = c.t
-            return ellipse(c.th, tab(t, [0, 0.22, 0.45, 0.65, 0.8, 1], [0.065, 0.078, 0.04, 0.029, 0.022, 0.022]),
-                           tab(t, [0, 0.22, 0.45, 0.65, 0.8, 1], [0.042, 0.054, 0.031, 0.022, 0.019, 0.02]))
+            return 1.25 * ellipse(c.th, tab(t, [0, 0.22, 0.45, 0.65, 0.8, 1], [0.065, 0.078, 0.04, 0.029, 0.022,
+                                                                                0.022]),
+                                  tab(t, [0, 0.22, 0.45, 0.65, 0.8, 1], [0.042, 0.054, 0.031, 0.022, 0.019, 0.02]))
 
-        a.part(f"leg_b{side}", tube(rear, 20, 10, rr, ref=FRONT, cap=True, ru=0.04), "facet", leg_w(f"LegB{side}"),
-               smooth=False, decimate=0.6, paint=paint_leg(s))
-        paw(a, (xb, -0.255, 0.021), s, f"LegB{side}", f"paw_b{side}")
+        a.part(f"leg_b{side}", tube(rear, 20, 10, rr, ref=FRONT, cap=True, ru=0.04), "facet",
+               leg_w(f"LegB{side}", f"PawB{side}", 0.22), smooth=False, decimate=0.6, paint=paint_leg(s))
+        paw(a, (xb, -0.255, 0.024), s, f"PawB{side}", f"paw_b{side}")
 
 
 def build_tail(a):
@@ -261,8 +273,8 @@ def build_tail(a):
             V(0, -0.495, 0.2)]
 
     def r(c):
-        rr = tab(c.t, [0, 0.3, 0.6, 0.85, 1], [0.032, 0.044, 0.04, 0.026, 0.007])
-        return rr * (1 + 0.15 * nz(c.q, 30.0, 2.0))
+        rr = tab(c.t, [0, 0.3, 0.6, 0.85, 1], [0.036, 0.058, 0.056, 0.036, 0.008])
+        return rr * (1 + 0.2 * nz(c.q, 30.0, 2.0))  # a brush of a tail
 
     a.part("tail", tube(path, 16, 9, r, ref=UP, cap=True, ru=0.04), "facet", tail_w, smooth=False, decimate=0.7,
            paint=paint_tail)
@@ -276,15 +288,15 @@ def build_collar(a):
     ring = []
     for i in range(33):
         t = TAU * i / 32
-        rr = 0.083 + 0.004 * math.sin(t)
+        rr = 0.097 + 0.004 * math.sin(t)
         ring.append(centre + (u * math.cos(t) + w * math.sin(t)) * rr)
     band = tube(ring, 33, 6, lambda c: ellipse(c.th, 0.017, 0.006), ref=axis, loop=True, raw=True, ru=0.02,
                 transport=False)
     a.part("collar", band, "facet", neck_w, smooth=False,
            paint=lambda c, n: mottle(c, LEATHER, 0.25, 30.0))
-    low = centre - w * 0.09  # under the throat
+    low = centre - w * 0.104  # under the throat
     for k, t in enumerate((-0.9, -0.3, 0.3, 0.9)):
-        p = centre + (u * math.cos(-math.pi / 2 + t) + w * math.sin(-math.pi / 2 + t)) * 0.09
+        p = centre + (u * math.cos(-math.pi / 2 + t) + w * math.sin(-math.pi / 2 + t)) * 0.104
         a.part(f"stud{k}", blob(p, (0.006, 0.006, 0.006), 6, 4), "facet", neck_w, smooth=False, paint=flat(BRASS))
     ring2 = [low + V(0, 0.012 * math.sin(t), -0.014 - 0.014 * math.cos(t)) + V(0.014 * 0, 0, 0) for t in
              [TAU * i / 12 for i in range(13)]]

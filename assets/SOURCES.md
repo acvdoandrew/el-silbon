@@ -101,7 +101,9 @@ maps cover ground, road, wood, zinc, bark, burlap, straw, cloth and water.
 ## Meshes and characters — original, generated at runtime
 
 Everything is built procedurally from `Layout` data, so what is seen is what
-collides (`src/world/`). The game does not yet load the glTF models below.
+collides (`src/world/`). Where a glTF model below exists, it replaces the
+procedural stand-in once loaded (`src/world/models.rs`); the stand-in stays
+if the model cannot load.
 
 | Kit | Source |
 |---|---|
@@ -121,7 +123,7 @@ collides (`src/world/`). The game does not yet load the glTF models below.
 | Omens: drag-mark furrows, his hat on the trail, the unlit phantom silhouette, the stolen torch; the caught lunge light | `world/omen.rs` |
 | Tureco: lean llanero dog (body, head with snout and pricked ears, four legs, tail), his post and rope | `world/dog.rs` |
 | El Silbón: three-metre gaunt figure, broad woven sombrero hiding the face (two small pale eyes deep under the brim, seen only when light finds them), ragged strips, long bony clawed hands, burlap femur sack; small joint hierarchy animated from the truth layer, and the caught lunge pose | `world/silbon.rs` |
-| Teammates: llanero in a straw hat and party-coloured scarf and ruana, belt, boots, torch, carried bundle on the back | `world/avatar.rs` |
+| Teammates' stand-in (until a survivor model loads): llanero in a straw hat and party-coloured scarf and ruana, belt, boots, torch, carried bundle on the back | `world/avatar.rs` |
 
 The Silbón and the shrine are a fictional, stylized interpretation of the
 legend; nothing depicts real ritual practice. The eleven user-supplied
@@ -129,7 +131,7 @@ concept images were inspected only as authoring references (see
 `docs/PROGRESS.md`); their licensing was not established and they are not
 copied or shipped.
 
-## glTF models — original, built by script in Blender (not yet loaded)
+## glTF models — original, built by script in Blender
 
 Every model is built from code (lofted tubes, ribbons and primitives; no
 scans, downloads or AI meshes), with procedural Cycles materials baked to
@@ -140,13 +142,15 @@ or run the same file through the Blender MCP. Binaries are kept in Git LFS.
 
 | File | Built by | Content |
 |---|---|---|
-| `models/silbon.glb` | `tools/silbon_model.py` | El Silbón after the concept sheet: skin, cloth and gear textures, eyes, skinned to the game's `JointKind` joints; about 3 m tall |
-| `models/cow.glb`, `bull.glb`, `calf.glb` | `tools/models/cattle.py` | Zebu-type cattle of the herd |
-| `models/tureco.glb` | `tools/models/dog.py` | Tureco, flat per-facet colours, skinned to the dog's joints |
+| `models/silbon.glb` | `tools/silbon_model.py` | El Silbón after the concept sheet: skin, cloth and gear textures, eyes, a woven llanero sombrero (flat-topped crown, drooping brim, frayed straw fringe), skinned to the game's `JointKind` joints; about 3 m tall |
+| `models/cow.glb`, `bull.glb`, `calf.glb` | `tools/models/cattle.py` | Zebu-type cattle of the herd (hump, dewlap, droopy ears, horns), flat per-facet colours, skinned to Neck, Head, ears and Tail for the herd's grazing and alarm |
+| `models/tureco.glb` | `tools/models/dog.py` | Tureco, flat per-facet colours, amber eyes, skinned to the dog's joints including wrists and hocks for the trot |
 | `models/bone_bundle.glb`, `radio.glb` | `tools/models/props.py` | The burlap bone bundle and the shelf radio, baked textures |
 | `models/truck.glb` | `tools/models/truck.py` | The 1970s–80s llanos utility truck, faded olive over cream, separate lamp-lens materials |
-| `models/src/silbon.blend`, `models/src/llano_models.blend` | the scripts above | The Blender scenes the models are exported from |
-| `models/src/renders/sheet.png`, `herd_sheet.png`, `props_sheet.png`, `truck/sheet.png`, `tureco/sheet.png` | the scripts above | One review sheet per asset (single views are re-rendered, not kept) |
+| `models/survivor_llanero.glb`, `survivor_coplera.glb`, `survivor_encargado.glb`, `survivor_muchacho.glb` | `tools/models/survivors.py` | The four playable survivors after the user's "Survivors" concept sheet (ranch hand in a liquiliqui, song keeper in a flowered skirt, old caretaker in a straw hat and rubber boots, young local in a plaid shirt and jeans): flat-shaded facets and one baked 2048 texture each (the flowers, plaid, denim, straw and painted faces are numpy patterns and a face decal, baked with contact shadow), a torch in the right hand, skinned to a 17-joint rig (`world/avatar.rs` `Bone`); about 1.8 m |
+| `models/src/silbon.blend`, `models/src/llano_models.blend`, `models/src/survivors.blend` | the scripts above | The Blender scenes the models are exported from; the `.glb`s are rebuilt from the scripts, and `llano_models.blend` predates the v2 dog and cattle |
+| `models/src/renders/sheet.png`, `herd_sheet.png`, `props_sheet.png`, `truck/sheet.png`, `tureco/sheet.png`, `survivors/sheet.png` | the scripts above (`--renders`); the Silbón's from `tools/models/review.py` | One review sheet per asset (single views are re-rendered, not kept) |
+| `ui/survivors/{llanero,coplera,encargado,muchacho}.png` | `tools/models/survivors.py --portraits assets/ui/survivors` | Cycles portraits (transparent, 360×540) shown on the "With friends" menu page |
 
 Shared helpers: `tools/models/modelkit.py`.
 

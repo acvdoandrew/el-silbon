@@ -63,6 +63,26 @@ pub struct Mate {
     pub from: Vec2,
     pub to: Vec2,
     pub crouch: bool,
+    pub sprint: bool,
+    /// Down, crawling.
+    pub down: bool,
+    pub carrying: bool,
+    /// An even pace from start to end (otherwise eased in and out).
+    pub steady: bool,
+}
+
+impl Mate {
+    fn walk(from: Vec2, to: Vec2) -> Self {
+        Self {
+            from,
+            to,
+            crouch: false,
+            sprint: false,
+            down: false,
+            carrying: false,
+            steady: false,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -306,16 +326,8 @@ pub fn shots(layout: &Layout) -> Vec<Shot> {
     );
     s.powered = true;
     s.mates = vec![
-        Mate {
-            from: truck + Vec2::new(3.5, -3.0),
-            to: truck + Vec2::new(2.5, -2.0),
-            crouch: false,
-        },
-        Mate {
-            from: truck + Vec2::new(-1.0, -4.5),
-            to: truck + Vec2::new(0.0, -3.0),
-            crouch: false,
-        },
+        Mate::walk(truck + Vec2::new(3.5, -3.0), truck + Vec2::new(2.5, -2.0)),
+        Mate::walk(truck + Vec2::new(-1.0, -4.5), truck + Vec2::new(0.0, -3.0)),
     ];
     out.push(s);
 
@@ -334,16 +346,8 @@ pub fn shots(layout: &Layout) -> Vec<Shot> {
     s.torch = true;
     s.fov = 68.0;
     s.mates = vec![
-        Mate {
-            from: a + Vec2::new(1.5, 0.0),
-            to: a + Vec2::new(4.5, -4.0),
-            crouch: false,
-        },
-        Mate {
-            from: a + Vec2::new(4.0, 2.0),
-            to: a + Vec2::new(7.0, -2.0),
-            crouch: false,
-        },
+        Mate::walk(a + Vec2::new(1.5, 0.0), a + Vec2::new(4.5, -4.0)),
+        Mate::walk(a + Vec2::new(4.0, 2.0), a + Vec2::new(7.0, -2.0)),
     ];
     s.him = Some(Him {
         keys: vec![HimKey {
@@ -503,6 +507,88 @@ pub fn shots(layout: &Layout) -> Vec<Shot> {
     s.still = 0.6;
     out.push(s);
 
+    // Not in the cut, for review (TRAILER_ONLY=90): the four survivors going
+    // past on the road outside the gate, side on — one sprinting, one
+    // creeping crouched, one carrying bones, one walking — then one down,
+    // crawling, as another crouches to them.
+    // In front of the spawn, where the gate lamps light the road.
+    let ahead = Vec2::new(-layout.spawn_yaw.sin(), -layout.spawn_yaw.cos());
+    let right = Vec2::new(-ahead.y, ahead.x);
+    let lane = layout.spawn + ahead * 6.0;
+    let cam = |side: f32, up: f32| {
+        let p = layout.spawn + right * side;
+        at(p.x, p.y, up)
+    };
+    let walkers = [
+        (-9.0, 9.0, 1.6, true, false, false),
+        (-3.2, 3.2, -1.2, false, true, false),
+        (-6.0, 6.0, 0.8, false, false, true),
+        (-6.0, 6.0, -0.2, false, false, false),
+    ];
+    let mut s = Shot::new(
+        "90_survivors_walk",
+        4.0,
+        vec![
+            key(0.0, cam(-0.8, 1.3), at(lane.x, lane.y, 1.0)),
+            key(4.0, cam(0.8, 1.3), at(lane.x, lane.y, 1.0)),
+        ],
+    );
+    s.fov = 60.0;
+    s.handheld = 0.0;
+    s.key_light = Some((
+        at(layout.spawn.x + ahead.x * 3.0, layout.spawn.y + ahead.y * 3.0, 4.0),
+        40_000.0,
+    ));
+    s.mates = walkers
+        .iter()
+        .map(|&(a, b, dz, sprint, crouch, carrying)| Mate {
+            sprint,
+            crouch,
+            carrying,
+            steady: true,
+            ..Mate::walk(lane + right * a + ahead * dz, lane + right * b + ahead * dz)
+        })
+        .collect();
+    out.push(s);
+    let mut s = Shot::new(
+        "91_survivors_down",
+        3.0,
+        vec![
+            key(
+                0.0,
+                at(
+                    lane.x - ahead.x * 3.5 + right.x * 1.5,
+                    lane.y - ahead.y * 3.5 + right.y * 1.5,
+                    1.3,
+                ),
+                at(lane.x, lane.y, 0.4),
+            ),
+            key(
+                3.0,
+                at(
+                    lane.x - ahead.x * 3.5 + right.x * 0.5,
+                    lane.y - ahead.y * 3.5 + right.y * 0.5,
+                    1.2,
+                ),
+                at(lane.x, lane.y, 0.4),
+            ),
+        ],
+    );
+    s.fov = 50.0;
+    s.handheld = 0.0;
+    s.key_light = Some((at(lane.x - ahead.x * 2.0, lane.y - ahead.y * 2.0, 3.5), 30_000.0));
+    s.mates = vec![
+        Mate {
+            down: true,
+            steady: true,
+            ..Mate::walk(lane - right * 1.2, lane + right * 1.2)
+        },
+        Mate {
+            crouch: true,
+            ..Mate::walk(lane + right * 1.6 + ahead * 0.6, lane + right * 1.7 + ahead * 0.5)
+        },
+    ];
+    out.push(s);
     out
 }
 
@@ -745,8 +831,12 @@ pub(crate) fn drive(
                 p.carrying = u8::from(shot.carrying);
                 p.status = 0;
             }
-            let k = smooth(t / shot.dur);
             for (i, m) in shot.mates.iter().enumerate() {
+                let k = if m.steady {
+                    (t / shot.dur).clamp(0.0, 1.0)
+                } else {
+                    smooth(t / shot.dur)
+                };
                 let at = m.from.lerp(m.to, k);
                 let dir = (m.to - m.from).normalize_or(Vec2::NEG_Y);
                 s.players.push(crate::net::protocol::PlayerView {
@@ -754,14 +844,16 @@ pub(crate) fn drive(
                     position: at.to_array(),
                     yaw: (-dir.x).atan2(-dir.y),
                     pitch: -0.15,
-                    status: 0,
+                    status: u8::from(m.down),
                     crouch: m.crouch,
-                    sprint: false,
+                    sprint: m.sprint,
                     light: true,
-                    carrying: 0,
+                    carrying: u8::from(m.carrying),
                     revive: 0.0,
                     bleed: 0.0,
                     hauled: false,
+                    // Each staged teammate someone else.
+                    survivor: ((i + 1) % 4) as u8,
                 });
             }
         }

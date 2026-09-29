@@ -1,7 +1,7 @@
 //! Renet/netcode direct-address transport. Deliberately independent of Bevy:
 //! the same endpoint runs in rendered applications and real-process smoke runs.
 use super::{protocol::*, session::Session};
-use crate::{geometry::Layout, tuning::Tuning};
+use crate::{geometry::Layout, survivor::Survivor, tuning::Tuning};
 use renet::{DefaultChannel, RenetClient, RenetServer, ServerEvent};
 use renet_netcode::{
     ClientAuthentication, NetcodeClientTransport, NetcodeServerTransport, ServerAuthentication, ServerConfig,
@@ -83,6 +83,8 @@ pub struct Endpoint {
     elapsed: f32,
     last_snapshot_at: f32,
     error_until: f32,
+    /// Who this player asked to be.
+    survivor: Survivor,
 }
 impl Endpoint {
     pub fn new(mode: Mode, layout: &Layout, tuning: &Tuning) -> Result<Self, String> {
@@ -161,7 +163,23 @@ impl Endpoint {
             elapsed: 0.0,
             last_snapshot_at: 0.0,
             error_until: 0.0,
+            survivor: Survivor::default(),
         })
+    }
+    /// Ask to be `survivor`: set at once where this process holds the
+    /// session, sent in the handshake when joining.
+    pub fn with_survivor(mut self, survivor: Survivor) -> Self {
+        self.survivor = survivor;
+        match &mut self.side {
+            SocketSide::Solo(session) => {
+                let _ = session.choose_survivor(HOST, survivor);
+            }
+            SocketSide::Host(host) => {
+                let _ = host.session.choose_survivor(HOST, survivor);
+            }
+            SocketSide::Client(_) => {}
+        }
+        self
     }
     pub fn run(&self) -> u64 {
         self.snapshot.as_ref().map_or(1, |s| s.run)
@@ -373,6 +391,7 @@ impl Endpoint {
                                 fingerprint: version,
                                 seed,
                                 night,
+                                survivor,
                             } = message
                             {
                                 let result = if version != fingerprint() {
@@ -399,6 +418,7 @@ impl Endpoint {
                                     Ok(()) => {
                                         let id = *next_id;
                                         *next_id += 1;
+                                        let _ = session.choose_survivor(id, Survivor::from_code(survivor));
                                         peers.insert(client_id, id);
                                         pending.remove(&client_id);
                                         server.send_message(
@@ -470,6 +490,7 @@ impl Endpoint {
                                 fingerprint: fingerprint(),
                                 seed: tuning.seed,
                                 night: tuning.night.code(),
+                                survivor: self.survivor.code(),
                             }),
                         );
                         *hello = true;

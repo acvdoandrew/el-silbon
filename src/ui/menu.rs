@@ -68,6 +68,7 @@ enum Act {
     Go(Page),
     Back,
     Difficulty,
+    Survivor,
     Edit(Field),
     Adjust(Knob),
     Solo,
@@ -316,9 +317,19 @@ fn rows(menu: &Menu, settings: &Settings, ctx: &Context, profile: &ProfileRes) -
         Page::Multiplayer => (
             "With friends".into(),
             "Up to four players on the same local network. One hosts the night; the others join with the \
-             host's address and receive the host's night and difficulty."
+             host's address and receive the host's night and difficulty.\nChoose who the others will see. \
+             If a friend is already them, you are someone else (F7 in the lobby changes)."
                 .into(),
             vec![
+                Row::value(
+                    "Who you are",
+                    format!(
+                        "‹ {} · {} ›",
+                        profile.profile.survivor.name(),
+                        profile.profile.survivor.role()
+                    ),
+                    Act::Survivor,
+                ),
                 Row::go("Host a night", Act::Go(Page::Host)),
                 Row::go("Join a friend", Act::Go(Page::Join)),
                 Row::go("Back", Act::Back),
@@ -567,6 +578,7 @@ fn build(
     heading: &str,
     body: &str,
     rows: &[Row],
+    portrait: Option<(Handle<Image>, crate::survivor::Survivor)>,
 ) {
     commands.entity(root).despawn_children();
     // The title screen keeps its rail; a paused night shows a card; after a
@@ -614,6 +626,30 @@ fn build(
             column.bottom = percent(6);
             column.width = px(360);
             column.margin = UiRect::left(px(-180));
+        }
+        // Who you will be to the others, beside the rail.
+        if let Some((image, who)) = &portrait {
+            r.spawn(Node {
+                position_type: PositionType::Absolute,
+                left: px(610),
+                top: percent(50),
+                margin: UiRect::top(px(-300)),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                ..default()
+            })
+            .with_children(|p| {
+                p.spawn((
+                    ImageNode::new(image.clone()),
+                    Node {
+                        width: px(360),
+                        height: px(540),
+                        ..default()
+                    },
+                ));
+                p.spawn((Text::new(who.name()), font(&fonts.serif, 30.0), TextColor(INK)));
+                p.spawn((Text::new(who.role()), font(&fonts.italic, 18.0), TextColor(AMBER)));
+            });
         }
         let mut col = r.spawn((column, bg));
         if let Some(g) = gradient {
@@ -761,6 +797,7 @@ fn draw(
     settings: Res<Settings>,
     ctx: Context,
     profile: Res<ProfileRes>,
+    assets: Res<AssetServer>,
     mut menu: ResMut<Menu>,
     root: Single<(Entity, &mut Visibility), With<MenuRoot>>,
     mut rows_ui: Query<(&MenuRow, &mut BackgroundColor, &mut BorderColor)>,
@@ -789,7 +826,21 @@ fn draw(
     }
     let shape = (menu.page, rows.len(), *state.get());
     if menu.built != Some(shape) {
-        build(&mut commands, root, &fonts, &menu, *state.get(), &heading, &body, &rows);
+        let portrait = (menu.page == Page::Multiplayer && *state.get() == Flow::Title).then(|| {
+            let who = profile.profile.survivor;
+            (assets.load(format!("ui/survivors/{}.png", who.key())), who)
+        });
+        build(
+            &mut commands,
+            root,
+            &fonts,
+            &menu,
+            *state.get(),
+            &heading,
+            &body,
+            &rows,
+            portrait,
+        );
         menu.built = Some(shape);
         return;
     }
@@ -955,7 +1006,7 @@ fn navigate(
     // Left/right only turn choosers; they do not press buttons.
     if let Some((a, dir)) = chosen
         && dir < 0
-        && !matches!(a, Act::Difficulty | Act::Adjust(_))
+        && !matches!(a, Act::Difficulty | Act::Survivor | Act::Adjust(_))
     {
         chosen = None;
     }
@@ -998,6 +1049,12 @@ fn activate(act: Act, dir: i32, menu: &mut Menu, ctx: &Context, fx: &mut Effects
             let all = [Night::Gentle, Night::Normal, Night::Hard];
             let at = all.iter().position(|&n| n == menu.night).unwrap_or(1) as i32;
             menu.night = all[(at + dir).clamp(0, 2) as usize];
+        }
+        Act::Survivor => {
+            fx.profile.profile.survivor = fx.profile.profile.survivor.cycle(dir);
+            fx.profile.save();
+            // The portrait changes with them.
+            menu.built = None;
         }
         Act::Edit(_) => {}
         Act::Adjust(knob) => adjust(knob, dir, &mut fx.settings, &fx.tuning, &mut fx.window),

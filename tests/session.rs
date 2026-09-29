@@ -11,6 +11,7 @@ use el_silbon::{
     },
     script::{Observation, RouteScript, crosshair},
     sim::{Encounter, Event, Outcome, Presence, Relic, ThreatState},
+    survivor::Survivor,
     tuning::Tuning,
 };
 use std::collections::BTreeMap;
@@ -195,6 +196,43 @@ impl Rig {
 }
 
 const TABLE: Vec2 = Vec2::new(2.9, -3.3);
+
+#[test]
+fn each_player_is_someone_different_chosen_in_the_lobby_and_kept_across_restarts() {
+    let l = Layout::new();
+    let t = Tuning::default();
+    let mut s = Session::new(&l, &t);
+    // The host wants the coplera and gets her; a joiner who wants her too is
+    // given someone free, and another's free wish is granted.
+    assert_eq!(s.choose_survivor(HOST, Survivor::Coplera), Ok(Survivor::Coplera));
+    s.add_player(2, &l, &t).unwrap();
+    assert_eq!(s.choose_survivor(2, Survivor::Coplera), Ok(Survivor::Llanero));
+    s.add_player(3, &l, &t).unwrap();
+    assert_eq!(s.choose_survivor(3, Survivor::Muchacho), Ok(Survivor::Muchacho));
+    // A player may change their mind to someone free, never to someone taken.
+    assert_eq!(s.choose_survivor(2, Survivor::Muchacho), Ok(Survivor::Llanero));
+    assert_eq!(s.choose_survivor(2, Survivor::Encargado), Ok(Survivor::Encargado));
+    // A leaver's person is free again.
+    s.remove_player(3);
+    assert_eq!(s.choose_survivor(2, Survivor::Muchacho), Ok(Survivor::Muchacho));
+    // Everyone sees who everyone is, and it survives a restart.
+    let seen = |s: &Session| -> Vec<(u64, u8)> {
+        s.snapshot(HOST, &l, &t)
+            .players
+            .iter()
+            .map(|p| (p.id, p.survivor))
+            .collect()
+    };
+    let before = seen(&s);
+    assert_eq!(
+        before,
+        vec![(HOST, Survivor::Coplera.code()), (2, Survivor::Muchacho.code())]
+    );
+    s.command(HOST, s.run, 1, Action::Start, &l, &t).unwrap();
+    assert!(s.choose_survivor(2, Survivor::Llanero).is_err(), "only in the lobby");
+    s.restart(&l, &t);
+    assert_eq!(seen(&s), before);
+}
 
 #[test]
 fn pickups_have_one_owner_drop_transfers_and_the_first_wakes_him_far_away() {

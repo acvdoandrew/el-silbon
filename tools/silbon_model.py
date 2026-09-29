@@ -421,13 +421,13 @@ MAT_SPECS = {
              dict(detail="streaks", tile=(0.02, 1.0), dh=0.15, dk=0.4, ao=0.5)),
     "coat": ("cloth", (0.095, 0.062, 0.037), (0.04, 0.028, 0.019), 0.93,
              dict(detail="homespun", tile=(0.07, 0.07), dh=0.35, dk=0.28, dirt=1.4, ao=0.8, grime=0.5, wrinkle=0.6)),
-    "tan": ("cloth", (0.22, 0.155, 0.095), (0.1, 0.07, 0.043), 0.95,
+    "tan": ("cloth", (0.17, 0.12, 0.075), (0.075, 0.053, 0.034), 0.95,
             dict(detail="homespun", tile=(0.09, 0.09), dh=0.4, dk=0.3, dirt=2.0, ao=0.8, grime=0.6, wrinkle=0.6)),
     "pants": ("cloth", (0.085, 0.074, 0.062), (0.035, 0.031, 0.027), 0.9,
               dict(detail="fabric", tile=(0.06, 0.06), dh=0.3, dk=0.22, dirt=0.9, ao=0.8, grime=0.6, wrinkle=0.6)),
     "sash": ("cloth", (0.2, 0.14, 0.085), (0.09, 0.065, 0.04), 0.9,
              dict(detail="rope", tile=(0.05, 0.05), dh=0.5, dk=0.3, ao=0.7)),
-    "straw": ("gear", (0.15, 0.11, 0.068), (0.055, 0.04, 0.025), 0.85,
+    "straw": ("gear", (0.12, 0.092, 0.062), (0.042, 0.032, 0.022), 0.85,
               dict(detail="braid", tile=(0.1, 0.1), dh=0.6, dk=0.4, ao=0.85, grime=0.5)),
     "burlap": ("gear", (0.25, 0.185, 0.115), (0.11, 0.08, 0.05), 0.96,
                dict(detail="burlap", tile=(0.07, 0.07), dh=0.7, dk=0.45, dirt=1.9, ao=0.8, grime=0.55, wrinkle=0.4)),
@@ -1292,9 +1292,9 @@ def build_hat():
             u = i / nr
             r = lerp(r0, rmax, u)
             w = (r - 0.14) / 0.48
-            cz = -0.07 * max(w, 0.0) ** 1.7
-            cz += 0.03 * max(w, 0) ** 2 * nz((math.cos(th) * 1.4, math.sin(th) * 1.4, 3.0))
-            cz += 0.008 * max(w, 0) ** 3 * math.sin(th * 7 + 1.0)
+            cz = -0.105 * max(w, 0.0) ** 1.35
+            cz += 0.04 * max(w, 0) ** 2 * nz((math.cos(th) * 1.4, math.sin(th) * 1.4, 3.0))
+            cz += 0.012 * max(w, 0) ** 3 * math.sin(th * 7 + 1.0)
             p = V(r * math.sin(th), -r * math.cos(th), cz)
             uvr.append((th * r, r))
             if j < nt:
@@ -1311,13 +1311,9 @@ def build_hat():
     part("hat_brim", bm, "straw", "Head", solidify=0.012)
 
     def crown_r(c):
-        z = c.p.z - HAT_POS.z
         lz = c.t * 0.215 - 0.02
-        if lz < 0.09:
-            r = 0.152 - 0.008 * (lz / 0.09)
-        else:
-            k = (lz - 0.09) / 0.105
-            r = 0.144 * math.sqrt(max(1 - k**2.2, 0.015))
+        r = 0.152 - 0.022 * sstep(-0.02, 0.18, lz)
+        r *= 1.0 - 0.12 * sstep(0.17, 0.195, lz) ** 2  # the rolled edge of a flat top
         r += 0.004 * nz(c.q, 18.0, 4.0) + 0.0012 * math.sin(c.t * 60)
         return r
 
@@ -1334,16 +1330,17 @@ def build_hat():
     part("hat_band", bm, "rope", "Head")
     # frayed straw sticking out of the rim
     rng = random.Random(101)
-    for i in range(90):
+    for i in range(240):
         j = rng.randrange(nt)
         th = TAU * j / nt + rng.uniform(-0.02, 0.02)
         r = edge[j] - rng.uniform(0.0, 0.03)
         w = (r - 0.14) / 0.48
-        cz = -0.07 * w**1.7
+        cz = -0.105 * w**1.35
         start = V(r * math.sin(th), -r * math.cos(th), cz)
-        out = V(math.sin(th), -math.cos(th), rng.uniform(-1.2, 0.1)).normalized()
+        # most straws hang from the ragged rim; a few stick out
+        out = V(math.sin(th), -math.cos(th), rng.uniform(-3.0, 0.1)).normalized()
         out = (out + V(rng.uniform(-0.4, 0.4), rng.uniform(-0.4, 0.4), 0)).normalized()
-        ln = rng.uniform(0.015, 0.05)
+        ln = rng.uniform(0.02, 0.05) if rng.random() < 0.6 else rng.uniform(0.06, 0.13)
         pts = [m @ (start - out * 0.01), m @ start, m @ (start + out * ln)]
         bm = tube(pts, 4, 3, lambda c: 0.0018 * (1 - 0.7 * c.t), ref=UP, ru=0.005)
         part(f"straw{i}", bm, "straw", "Head")
