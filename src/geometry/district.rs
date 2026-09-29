@@ -160,7 +160,18 @@ pub struct Lamp {
     pub pos: Vec3,
     pub radius: f32,
     pub powered: bool,
+    /// Which line feeds a powered lamp: 0 the hacienda and the western road,
+    /// 1 the middle road and the corral, 2 the eastern road and the bridge.
+    pub circuit: u8,
 }
+
+/// Every line switched on (bit per `Lamp::circuit`).
+pub const ALL_CIRCUITS: u8 = 0b111;
+/// The lines the old dynamo feeds when the pump first brings it up: the
+/// bridge stays dark until someone switches it on at the panel.
+pub const FIRST_CIRCUITS: u8 = 0b011;
+/// The panel's switch settings, in the order a press steps through them.
+pub const CIRCUIT_SETTINGS: [u8; 3] = [0b011, 0b110, 0b101];
 
 /// A painted board; `text` indexes `lore::sign`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -237,13 +248,24 @@ pub struct District {
     pub lamps: Vec<Lamp>,
     /// Bone bundle spawn points; the first lies on the house table.
     pub relics: Vec<Vec3>,
+    /// Where each bundle may have been hidden (the first of each is the
+    /// authored spot): one is picked per night (`Layout::with_seed`).
+    pub relic_sites: Vec<Vec<Vec3>>,
     pub aji: Vec<Vec3>,
+    /// Spare torch batteries: one pair at each, beside the landmarks' clutter.
+    pub batteries: Vec<Vec3>,
     pub notes: Vec<NoteSite>,
     /// Painted boards; `text` indexes `lore::sign`.
     pub signs: Vec<SignSite>,
     pub pump: Vec3,
     pub beacon: Vec3,
     pub ignition: Vec3,
+    /// The padlocked box with the truck key, on the crates by the windmill.
+    pub lockbox: Vec3,
+    /// Where Tureco is tied, behind the house by the back door.
+    pub dog_post: Vec2,
+    /// The dynamo's line panel, on its post beside the pump.
+    pub panel: Vec3,
     pub truck: TruckSite,
     pub tower_half: Vec2,
     pub tower_height: f32,
@@ -748,13 +770,29 @@ impl District {
         ];
 
         let table_relic = Vec3::new(3.25, 0.93, -4.6);
-        let relics = vec![
-            table_relic,
-            Vec3::new(35.0, 0.78, -26.5),
-            Vec3::new(62.0, 1.05, 4.0),
-            Vec3::new(26.0, 1.2, -75.5),
-            Vec3::new(43.0, watch_height + 0.72, -89.6),
+        // Each bundle's hiding places within its landmark. The table bundle
+        // is where the story starts; the others move from night to night.
+        let relic_sites = vec![
+            vec![table_relic],
+            vec![
+                Vec3::new(35.0, 0.78, -26.5),
+                Vec3::new(27.0, 0.78, -6.5),
+                Vec3::new(41.0, 0.78, -3.0),
+            ],
+            vec![
+                Vec3::new(62.0, 1.05, 4.0),
+                Vec3::new(56.0, 0.73, 9.0),
+                Vec3::new(66.0, 0.73, -2.5),
+            ],
+            vec![Vec3::new(26.0, 1.2, -75.5), Vec3::new(24.5, 1.13, -73.0)],
+            // Not the deck's open front: seen from the whole llano, with
+            // nowhere up there to break his line of sight.
+            vec![
+                Vec3::new(43.0, watch_height + 0.72, -89.6),
+                Vec3::new(52.5, 0.78, -87.5),
+            ],
         ];
+        let relics: Vec<Vec3> = relic_sites.iter().map(|s| s[0]).collect();
         let aji = vec![
             Vec3::new(-9.0, 1.55, 24.5),
             Vec3::new(-3.7, 0.62, 2.75),
@@ -763,6 +801,17 @@ impl District {
             Vec3::new(-38.6, TOWER_GROUND + 1.02, -30.4),
             Vec3::new(32.4, 0.72, -28.2),
             Vec3::new(24.6, 1.22, -75.4),
+        ];
+        // Spare batteries lie beside other finds, where a hand would have set
+        // them down: the porch, the windmill shed, the corral, the stilt hut,
+        // the fields' shelter and the lookout deck.
+        let batteries = vec![
+            Vec3::new(-3.2, 0.62, 3.0),
+            Vec3::new(-38.1, TOWER_GROUND + 1.02, -30.9),
+            Vec3::new(32.9, 0.72, -27.9),
+            Vec3::new(25.0, 1.22, -74.9),
+            Vec3::new(61.4, 1.05, 4.5),
+            Vec3::new(41.9, watch_height + 0.9, -89.1),
         ];
         // Hand-lettered boards, after the places they warn about; the words
         // live in `lore::sign`. They face the way people arrive.
@@ -822,6 +871,63 @@ impl District {
                 pos: Vec3::new(-38.4, TOWER_GROUND + 1.1, -29.8),
                 id: 6,
             },
+            // The rest of the story, where people left it: pasted up at the
+            // gate, on the cart, on the house shelf (a photograph and the
+            // radio), on the coop, the windmill barrel, the corral hay, the
+            // fields barrel, in the tool shed, on the stilt hut's crates, at
+            // the tower's foot, and in the truck's cargo.
+            NoteSite {
+                pos: Vec3::new(-8.0, 1.42, 24.8),
+                id: 7,
+            },
+            NoteSite {
+                pos: Vec3::new(-11.0, 1.27, 6.5),
+                id: 8,
+            },
+            NoteSite {
+                pos: Vec3::new(-4.74, 1.82, -4.5),
+                id: 9,
+            },
+            NoteSite {
+                pos: Vec3::new(-4.74, 1.82, -5.4),
+                id: 10,
+            },
+            NoteSite {
+                pos: Vec3::new(-17.0, 1.12, -7.5),
+                id: 11,
+            },
+            NoteSite {
+                pos: Vec3::new(-42.0, TOWER_GROUND + 1.42, -24.0),
+                id: 12,
+            },
+            NoteSite {
+                pos: Vec3::new(41.0, 1.27, -26.0),
+                id: 13,
+            },
+            NoteSite {
+                pos: Vec3::new(64.0, 0.92, 1.0),
+                id: 14,
+            },
+            NoteSite {
+                pos: Vec3::new(-14.5, 0.9, -2.0),
+                id: 15,
+            },
+            NoteSite {
+                pos: Vec3::new(29.0, 1.32, -71.0),
+                id: 16,
+            },
+            NoteSite {
+                pos: Vec3::new(54.0, 0.78, -84.0),
+                id: 17,
+            },
+            NoteSite {
+                pos: Vec3::new(50.0, 0.92, 34.0),
+                id: 18,
+            },
+            NoteSite {
+                pos: Vec3::new(-11.8, 0.9, -5.0),
+                id: 19,
+            },
         ];
         let lamps = {
             let mut v = Vec::new();
@@ -830,6 +936,7 @@ impl District {
                     pos: Vec3::new(x, y, z),
                     radius: 8.0,
                     powered: false,
+                    circuit: 0,
                 })
             };
             // Main entry: two on the gate posts, one on the sign.
@@ -872,11 +979,23 @@ impl District {
             lamp(60.9, 2.5, 27.5);
             lamp(60.9, 2.5, 34.9);
             // Power poles: dark until the windmill pump runs.
-            let mut powered = |x, z| {
+            let mut powered = |x: f32, z: f32| {
+                // West of the gate and the yard: the hacienda's line; the
+                // corral and the middle road: the second; east: the bridge's.
+                let circuit = if z < 20.0 {
+                    if x < 15.0 { 0 } else { 1 }
+                } else if x < 0.0 {
+                    0
+                } else if x < 30.0 {
+                    1
+                } else {
+                    2
+                };
                 v.push(Lamp {
                     pos: Vec3::new(x, 5.4, z),
                     radius: 11.0,
                     powered: true,
+                    circuit,
                 })
             };
             for x in pole_xs {
@@ -906,12 +1025,17 @@ impl District {
             groves: Vec::new(),
             lamps,
             relics,
+            relic_sites,
             aji,
+            batteries,
             notes,
             signs,
             pump: Vec3::new(-46.0, TOWER_GROUND + 1.25, -22.05),
             beacon: Vec3::new(43.0, watch_height + 1.5, -91.0),
             ignition: Vec3::new(55.7, 1.45, 30.9),
+            lockbox: Vec3::new(-37.0, TOWER_GROUND + 0.98, -25.0),
+            dog_post: Vec2::new(-7.5, -8.5),
+            panel: Vec3::new(-44.2, TOWER_GROUND + 1.35, -21.2),
             truck,
             tower_half: p(2.3, 2.3),
             tower_height: 9.0,
@@ -1315,9 +1439,21 @@ fn subtract(r: Rect2, cut: Rect2, out: &mut Vec<Rect2>) {
 }
 
 impl Layout {
-    /// The one authored map.
+    /// The one authored map, every bundle in its authored hiding place.
     pub fn new() -> Self {
         Self::assemble(District::authored())
+    }
+
+    /// The map for one night: each bundle in one of its hiding places,
+    /// chosen by the seed (the same on every machine in a shared session).
+    pub fn with_seed(seed: u64) -> Self {
+        let mut layout = Self::new();
+        let mut rng = crate::rng::Rng::fork(seed, 0xB0E5);
+        let d = &mut layout.district;
+        for (i, sites) in d.relic_sites.iter().enumerate() {
+            d.relics[i] = sites[rng.below(sites.len())];
+        }
+        layout
     }
 
     /// Ground height under `p`: terrain and any authored deck, ramp or bridge.

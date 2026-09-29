@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::sim::PlayerId;
 pub const HOST: PlayerId = 1;
-pub const PROTOCOL: u64 = 0x5349_4c42_4f4e_0002;
+pub const PROTOCOL: u64 = 0x5349_4c42_4f4e_0003;
 pub const MAX_PLAYERS: usize = 4;
 pub const STEP: f32 = 1.0 / 60.0;
 pub const SEND_INTERVAL: f32 = 1.0 / 20.0;
@@ -40,15 +40,38 @@ pub enum Action {
     Ping {
         at: [f32; 3],
     },
+    /// Press for skill check `id`, claiming the needle stood at `needle`.
+    Skill {
+        id: u32,
+        needle: f32,
+    },
+    /// Try a combination on the key box's padlock.
+    TryCode {
+        code: [u8; 3],
+    },
+    /// Name which of him walks tonight, at the ceiba (`sim::Variant` code).
+    Name {
+        variant: u8,
+    },
     Start,
     Restart,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ClientMessage {
-    Hello { fingerprint: u64, seed: u64 },
+    Hello {
+        fingerprint: u64,
+        seed: u64,
+        /// The night's difficulty (`tuning::Night` code): every peer must agree.
+        #[serde(default = "normal_night")]
+        night: u8,
+    },
     Input(Input),
-    Action { run: u64, sequence: u64, action: Action },
+    Action {
+        run: u64,
+        sequence: u64,
+        action: Action,
+    },
     Leave,
 }
 
@@ -108,6 +131,9 @@ pub struct PlayerView {
     pub revive: f32,
     /// Seconds a downed player has left.
     pub bleed: f32,
+    /// In his sack, being carried off.
+    #[serde(default)]
+    pub hauled: bool,
 }
 
 /// Only sent when physically present, in the listener's view cone and with
@@ -118,8 +144,18 @@ pub struct VisibleThreat {
     pub facing: [f32; 2],
     pub speed: f32,
     pub visibility: f32,
-    /// 0 dormant, 1 stalking, 2 warning, 3 hunting, 4 counting.
+    /// 0 dormant, 1 stalking, 2 warning, 3 hunting, 4 counting, 5 hauling.
     pub state: u8,
+}
+
+/// A skill check in flight for the listener: its id, where the host's
+/// needle is (negative during the warning) and where the zone starts. Widths
+/// and timing come from the shared tuning.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CheckView {
+    pub id: u32,
+    pub needle: f32,
+    pub zone: f32,
 }
 
 /// The listener's own body.
@@ -128,6 +164,8 @@ pub struct Vitals {
     pub fear: f32,
     pub stamina: f32,
     pub aji: u8,
+    /// Torch charge, 0..1 (at 0 the torch is dead whatever the switch says).
+    pub battery: f32,
     /// Seconds still frozen by a susto.
     pub stun: f32,
     /// What the local player is holding on, and how far along it is (0..1):
@@ -135,6 +173,8 @@ pub struct Vitals {
     /// 4 the ignition, 5 the beacon, 6 reviving a teammate.
     pub hold_kind: u8,
     pub hold: f32,
+    /// A skill check the listener is being asked for.
+    pub check: Option<CheckView>,
 }
 
 /// Shared progress of the run.
@@ -149,10 +189,29 @@ pub struct WorldView {
     /// Seconds the beacon still burns; whether it can be lit now.
     pub beacon: f32,
     pub beacon_ready: bool,
+    /// The truck key is out of its box.
+    pub key: bool,
+    /// The lamp lines lit right now (bit per circuit; 0 without power).
+    #[serde(default)]
+    pub circuits: u8,
+    /// He was named rightly and laid to rest.
+    pub banished: bool,
+    /// Seconds before the ceiba will hear another name.
+    pub naming: f32,
     /// Seconds of bellowing left.
     pub cattle: f32,
     /// 0..1 through the night.
     pub night: f32,
+}
+
+/// Tureco as everyone sees him: where he is and faces, and what he does
+/// (0 tied, 1 following, 2 growling, 3 barking).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct DogView {
+    pub pos: [f32; 2],
+    pub facing: [f32; 2],
+    pub mood: u8,
+    pub owner: PlayerId,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -171,6 +230,8 @@ pub struct Snapshot {
     pub relics: Vec<RelicView>,
     /// Which peppers are gone.
     pub aji: Vec<bool>,
+    /// Which spare batteries are gone.
+    pub batteries: Vec<bool>,
     /// 0 running, 1 won, 2 failed.
     pub outcome: u8,
     pub world: WorldView,
@@ -186,6 +247,8 @@ pub struct Snapshot {
     /// Pepper wards: x, z, seconds left.
     pub zones: Vec<[f32; 3]>,
     pub pings: Vec<PingView>,
+    #[serde(default)]
+    pub dog: DogView,
 }
 
 impl Snapshot {
@@ -203,12 +266,16 @@ impl Snapshot {
         SceneData {
             relics: self.relics.iter().map(|r| r.to_relic()).collect(),
             aji_taken: self.aji.clone(),
+            batteries_taken: self.batteries.clone(),
             power_on: self.world.power >= 1.0,
             truck_running: self.world.truck >= 1.0,
             bones_home: self.world.delivered == self.world.total,
             beacon_ready: self.world.beacon_ready,
+            key: self.world.key,
+            dog_tied: (self.dog.mood == 0).then(|| Vec2::from_array(self.dog.pos)),
             carrying: mine.map_or(0, |p| p.carrying as usize),
             aji_held: self.me.aji,
+            battery: self.me.battery,
             bodies: self
                 .players
                 .iter()
@@ -237,6 +304,8 @@ pub enum ServerMessage {
         serial: u64,
         variant: u8,
         speed: f32,
+        /// Heard only in this listener's fear: there was no whistle.
+        phantom: bool,
     },
     Events {
         run: u64,
@@ -266,6 +335,8 @@ pub fn fingerprint() -> u64 {
         include_str!("../body.rs"),
         include_str!("../storm.rs"),
         include_str!("../perception.rs"),
+        include_str!("../skill.rs"),
+        include_str!("../director.rs"),
         include_str!("../../Cargo.lock"),
     ] {
         for byte in text.bytes() {
@@ -273,6 +344,10 @@ pub fn fingerprint() -> u64 {
         }
     }
     hash
+}
+
+fn normal_night() -> u8 {
+    crate::tuning::Night::Normal.code()
 }
 
 pub fn encode<T: Serialize>(message: &T) -> Vec<u8> {
@@ -311,6 +386,7 @@ pub fn threat_state(code: u8) -> crate::sim::ThreatState {
         2 => ThreatState::Warning,
         3 => ThreatState::Hunting,
         4 => ThreatState::Counting,
+        5 => ThreatState::Hauling,
         _ => ThreatState::Dormant,
     }
 }
@@ -323,6 +399,7 @@ pub fn threat_code(s: crate::sim::ThreatState) -> u8 {
         ThreatState::Warning => 2,
         ThreatState::Hunting => 3,
         ThreatState::Counting => 4,
+        ThreatState::Hauling => 5,
     }
 }
 
@@ -349,6 +426,7 @@ mod tests {
             crate::sim::ThreatState::Warning,
             crate::sim::ThreatState::Hunting,
             crate::sim::ThreatState::Counting,
+            crate::sim::ThreatState::Hauling,
         ] {
             assert_eq!(threat_state(threat_code(s)), s);
         }

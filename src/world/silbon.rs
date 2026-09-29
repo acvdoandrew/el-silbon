@@ -463,6 +463,18 @@ pub fn spawn(ctx: &mut SpawnCtx) {
                 cheek * jaw
             },
         );
+        // Two pale eyes sunk in the dark: only light finds them.
+        for x in [-0.032_f32, 0.032] {
+            mb.blob(
+                Vec3::new(x, 0.165, -0.1),
+                Vec3::splat(0.012),
+                4,
+                6,
+                1.0,
+                srgb(0.92, 0.88, 0.74),
+                &|_| 1.0,
+            );
+        }
         mb
     };
 
@@ -836,12 +848,54 @@ pub fn animate_silbon(
     mut roots: Query<(&mut Transform, &mut Visibility, &mut SilbonAnim), With<SilbonRoot>>,
     mut bodies: Query<&mut Transform, (With<SilbonBody>, Without<SilbonRoot>, Without<Joint>)>,
     mut joints: Query<(&Joint, &mut Transform), (Without<SilbonRoot>, Without<SilbonBody>)>,
+    fright: Res<super::omen::Fright>,
+    camera: Single<
+        &Transform,
+        (
+            With<crate::player::Player>,
+            Without<SilbonRoot>,
+            Without<SilbonBody>,
+            Without<Joint>,
+        ),
+    >,
 ) {
     let dt = time.delta_secs();
     let th = &truth.encounter.threat;
     let Ok((mut root, mut vis, mut anim)) = roots.single_mut() else {
         return;
     };
+    // Caught: he is in your face, arms up, whatever the snapshot says.
+    if let Some(s) = fright.lunge {
+        let k = (s / super::omen::LUNGE_IN).min(1.0);
+        let ease = k * k * (3.0 - 2.0 * k);
+        let f3 = camera.rotation * Vec3::NEG_Z;
+        let fwd = Vec3::new(f3.x, 0.0, f3.z).normalize_or(Vec3::NEG_Z);
+        // He looms at arm's length, his face a little above the eye; from the
+        // ground he rises out of the earth to meet it.
+        let (near, lift, torso, head) = (1.7, HIP_Y + CHEST + 0.25, -0.15, 0.6);
+        let dist = 3.6 + (near - 3.6) * ease;
+        let shake = 0.025 * (s * 61.0).sin() * (1.0 - (s / super::omen::LUNGE).min(1.0));
+        root.translation = camera.translation + fwd * dist - Vec3::Y * lift + Vec3::X * shake;
+        root.rotation = Quat::from_rotation_y(fwd.x.atan2(fwd.z));
+        if *vis != Visibility::Visible {
+            *vis = Visibility::Visible;
+        }
+        anim.placed = false;
+        for (joint, mut tf) in &mut joints {
+            tf.translation = joint.rest;
+            tf.rotation = match joint.kind {
+                // The head snaps back: the brim lifts off the face. Arms thrown
+                // wide, the hooked hands at the edges of sight.
+                JointKind::Torso => Quat::from_rotation_x(torso),
+                JointKind::Head => Quat::from_rotation_x(head) * Quat::from_rotation_z(0.2 * (s * 9.0).sin()),
+                JointKind::ShoulderL => Quat::from_rotation_x(-0.7) * Quat::from_rotation_z(-1.1),
+                JointKind::ShoulderR => Quat::from_rotation_x(-0.7) * Quat::from_rotation_z(1.1),
+                JointKind::ElbowL | JointKind::ElbowR => Quat::from_rotation_x(0.7),
+                _ => Quat::IDENTITY,
+            };
+        }
+        return;
+    }
     let v = th.visibility(&tuning.0);
     let shown = v > 0.001;
     let want = if shown { Visibility::Visible } else { Visibility::Hidden };

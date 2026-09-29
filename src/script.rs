@@ -79,6 +79,7 @@ const LEAD: f32 = 0.35;
 const BAIT_RANGE: f32 = 2.5;
 /// Never bait him from closer than this (metres).
 const BAIT_MIN: f32 = 9.0;
+
 /// How far (metres) beyond the truck's boarding zone hiding may stray while
 /// the engine warms.
 const TRUCK_STRAY: f32 = 12.0;
@@ -830,7 +831,7 @@ impl Reflex {
         // Fear grows in the dark: lying low there only waits for a susto
         // (frozen, standing up and screaming). Lamplight calms it, so only a
         // lit hiding place is worth waiting in until he gives up.
-        if !layout.is_lit(pos, snap.world.power >= 1.0) || self.calm >= LOW_MAX {
+        if !layout.is_lit(pos, snap.world.circuits) || self.calm >= LOW_MAX {
             return true;
         }
         let Some((at, age)) = self.seen else {
@@ -951,6 +952,8 @@ impl Reflex {
         if !self.evading {
             return Turn::Clear;
         }
+        // Hiding: the beam off, as anyone would.
+        out.dark = true;
         if snap.threat.is_some() {
             self.located = true;
         }
@@ -1194,9 +1197,14 @@ impl Reflex {
 enum Want {
     Bundle(usize),
     Aji(usize),
+    Batteries(usize),
     Altar,
     Pump,
     Ignition,
+    /// The key box: tried with the code from the three pages that hold it.
+    Lockbox,
+    /// The dynamo's line panel.
+    Panel,
 }
 
 impl Want {
@@ -1204,18 +1212,21 @@ impl Want {
         match (self, kind) {
             (Want::Bundle(i), TargetKind::Relic(j)) => i == j as usize,
             (Want::Aji(i), TargetKind::Aji(j)) => i == j as usize,
+            (Want::Batteries(i), TargetKind::Batteries(j)) => i == j as usize,
             (Want::Altar, TargetKind::Altar)
             | (Want::Pump, TargetKind::Pump)
-            | (Want::Ignition, TargetKind::Ignition) => true,
+            | (Want::Ignition, TargetKind::Ignition)
+            | (Want::Lockbox, TargetKind::Lockbox)
+            | (Want::Panel, TargetKind::Panel) => true,
             _ => false,
         }
     }
 
     fn reach(self, tuning: &Tuning) -> f32 {
         match self {
-            Want::Bundle(_) | Want::Aji(_) => tuning.relic_reach,
+            Want::Bundle(_) | Want::Aji(_) | Want::Batteries(_) => tuning.relic_reach,
             Want::Altar => tuning.altar_reach,
-            Want::Pump | Want::Ignition => tuning.site_reach,
+            Want::Pump | Want::Ignition | Want::Lockbox | Want::Panel => tuning.site_reach,
         }
     }
 
@@ -1229,9 +1240,12 @@ impl Want {
                 .filter(|r| r.state == 0)
                 .map_or(d.relics[i], |r| Vec3::from_array(r.pos)),
             Want::Aji(i) => d.aji[i],
+            Want::Batteries(i) => d.batteries[i],
             Want::Altar => layout.ceiba.offering,
             Want::Pump => d.pump,
             Want::Ignition => d.ignition,
+            Want::Lockbox => d.lockbox,
+            Want::Panel => d.panel,
         }
     }
 }
@@ -1245,7 +1259,13 @@ enum Cond {
     Delivered(usize),
     /// Pepper `i` has been picked up.
     AjiTaken(usize),
+    /// Spare batteries `i` have been picked up.
+    BatteriesTaken(usize),
     Power,
+    /// The truck key is out of its box.
+    Key,
+    /// Lamp line `c` is live.
+    Line(u8),
     /// The engine runs.
     Truck,
     /// He has warned at least once this run.
@@ -1410,6 +1430,8 @@ pub struct ScriptFrame {
     pub ping: Option<[f32; 3]>,
     /// Disconnect now.
     pub leave: bool,
+    /// Keep the torch switched off: a lit torch he can see draws him.
+    pub dark: bool,
     pub log: Option<String>,
     /// Some(Ok) = route complete, Some(Err) = the route failed.
     pub finished: Option<Result<(), String>>,
@@ -1460,6 +1482,9 @@ pub struct RouteScript {
     captured: bool,
     reflex: Reflex,
     spawn: Vec2,
+    /// The skill check we are watching: its id, the needle in the snapshot
+    /// we last saw, seconds since that snapshot, and whether we pressed.
+    check: Option<(u32, f32, f32, bool)>,
 }
 
 // ------------------------------------------------------------------ routes
@@ -1492,6 +1517,15 @@ fn pepper(i: usize) -> Step {
 
 fn deliver(n: usize) -> Job {
     Job::new(Want::Altar, Cond::Delivered(n))
+}
+
+/// Spare batteries beside the route: taken when the torch has run low enough
+/// to want them and they are quick to reach, otherwise left.
+fn batteries(i: usize) -> Step {
+    Step::Do(Job {
+        timeout: 25.0,
+        ..Job::new(Want::Batteries(i), Cond::BatteriesTaken(i)).soft()
+    })
 }
 
 /// Run one: every bundle, the pump, the truck, the escape; then restart.
@@ -1548,11 +1582,13 @@ fn win_rest(s: &mut Vec<Step>, layout: &Layout) {
         Capture("04_ceiba"),
         Log("route: the corral and the fields"),
         pepper(5),
+        batteries(2),
         bundle(1),
         bundle(2),
         Do(deliver(3)),
         Log("route: the caño and the lookout"),
         pepper(6),
+        batteries(3),
         bundle(3),
         Go {
             to: tower.approach,
@@ -1574,9 +1610,14 @@ fn win_rest(s: &mut Vec<Step>, layout: &Layout) {
         Do(deliver(5)),
         Log("route: the windmill"),
         pepper(4),
+        batteries(1),
         Do(Job::new(Want::Pump, Cond::Power).shot(0.5, "05_pump")),
         Face([d.pump.x, d.pump.y + 3.0, d.pump.z]),
         Capture("06_power"),
+        Log("route: the key box at the windmill, with the numbers from the pages"),
+        Do(Job::new(Want::Lockbox, Cond::Key)),
+        Log("route: the bridge line on at the panel, for the wait at the truck"),
+        Do(Job::new(Want::Panel, Cond::Line(2))),
         Log("route: the truck"),
         Do(Job::new(Want::Ignition, Cond::Truck).shot(0.5, "09_ignition")),
         Face([d.truck.center.x, 1.5, d.truck.center.y]),
@@ -1662,6 +1703,7 @@ impl RouteScript {
             captured: false,
             reflex: Reflex::default(),
             spawn: layout.spawn,
+            check: None,
         }
     }
 
@@ -1890,7 +1932,7 @@ impl RouteScript {
             },
             Await {
                 cond: Cond::Outcome(Outcome::Won),
-                timeout: 400.0,
+                timeout: 900.0,
                 guard: true,
                 leash: Leash::Truck,
             },
@@ -1976,7 +2018,10 @@ impl RouteScript {
             Cond::Carried(i) => snap.relics.get(i).is_some_and(|r| r.state == 1 && r.owner != me),
             Cond::Delivered(n) => snap.world.delivered as usize >= n,
             Cond::AjiTaken(i) => snap.aji.get(i).copied().unwrap_or(false),
+            Cond::BatteriesTaken(i) => snap.batteries.get(i).copied().unwrap_or(false),
             Cond::Power => snap.world.power >= 1.0,
+            Cond::Key => snap.world.key,
+            Cond::Line(c) => snap.world.circuits & (1 << c) != 0,
             Cond::Truck => snap.world.truck >= 1.0,
             Cond::Warned => snap.stats[0] >= 1,
             Cond::Recovered => snap.stats[2] >= 1,
@@ -2026,6 +2071,24 @@ impl RouteScript {
             obs.encounter.threat.movement,
             self.reflex.note(),
         ))
+    }
+
+    /// Watch the skill check in flight and press just inside the start of
+    /// its zone (the great part). The needle runs on between snapshots.
+    fn skill_press(&mut self, snap: &Snapshot, tuning: &Tuning, dt: f32) -> Option<(u32, f32)> {
+        let Some(c) = snap.me.check else {
+            self.check = None;
+            return None;
+        };
+        let (id, base, since, pressed) = match self.check {
+            Some((id, base, since, pressed)) if id == c.id && base == c.needle => (id, base, since + dt, pressed),
+            Some((id, _, _, pressed)) if id == c.id => (id, c.needle, 0.0, pressed),
+            _ => (c.id, c.needle, 0.0, false),
+        };
+        let at = base + since / tuning.check_sweep;
+        let press = !pressed && at >= c.zone + tuning.check_great * 0.5;
+        self.check = Some((id, base, since, pressed || press));
+        press.then_some((id, at))
     }
 
     /// Walk the planned corners.
@@ -2157,6 +2220,8 @@ impl RouteScript {
         } else {
             self.reflex.stand_down();
         }
+        // Seen lately, he is about: the torch stays off (its beam draws him).
+        out.dark |= self.reflex.seen.is_some_and(|s| s.1 < HINT);
         if self.stale {
             self.stale = false;
             if matches!(step, Step::Via(_)) {
@@ -2250,10 +2315,25 @@ impl RouteScript {
                     self.next();
                     return out;
                 }
+                if matches!(job.want, Want::Batteries(_)) && snap.me.battery >= tuning.battery_full {
+                    out.log = Some("torch still fresh: leaving the batteries".into());
+                    self.next();
+                    return out;
+                }
                 let aim = job.want.point(layout, snap);
                 let usable = obs.target.is_some_and(|t| t.usable() && job.want.matches(t.kind));
                 let mut gave_up: Option<String> = None;
-                if usable {
+                if usable && job.want == Want::Lockbox {
+                    // The combination the Madrina, the foreman and the guard
+                    // wrote down, tried now and then until the box opens.
+                    self.stare = 0.0;
+                    out.intent.look_delta = aim_at(layout, tuning, &obs.pose, aim, dt);
+                    self.press -= dt;
+                    if self.press <= 0.0 {
+                        out.intent.code = Some(crate::sim::lock_code(tuning.seed));
+                        self.press = 0.6;
+                    }
+                } else if usable {
                     self.stare = 0.0;
                     out.intent.look_delta = aim_at(layout, tuning, &obs.pose, aim, dt);
                     out.intent.interact_held = true;
@@ -2263,6 +2343,7 @@ impl RouteScript {
                         out.intent.interact_pressed = true;
                         self.press = 0.3;
                     }
+                    out.intent.skill = self.skill_press(snap, tuning, dt);
                     if let Some((frac, name)) = job.shot
                         && !self.captured
                         && snap.me.hold >= frac

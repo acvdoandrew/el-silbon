@@ -24,6 +24,8 @@ struct Rig {
     action_seq: BTreeMap<u64, u64>,
     /// Keep the threat from ever warning (map/route tests, not AI tests).
     calm: bool,
+    /// Every player's torch is switched on.
+    lit: bool,
 }
 
 impl Rig {
@@ -41,6 +43,7 @@ impl Rig {
             input_seq: BTreeMap::new(),
             action_seq: BTreeMap::new(),
             calm: false,
+            lit: false,
         };
         rig.act(HOST, Action::Start).unwrap();
         rig
@@ -87,7 +90,7 @@ impl Rig {
             hold,
             crouch,
             sprint,
-            light: false,
+            light: self.lit,
         };
         self.s.input(id, input, &self.t).unwrap();
     }
@@ -112,6 +115,24 @@ impl Rig {
     fn hold(&mut self, id: u64, secs: f32) {
         for _ in 0..(secs / STEP) as usize {
             self.send(id, [0.0; 2], true, false, false);
+            self.tick();
+        }
+    }
+
+    /// Hold interact for `secs`, answering every skill check just inside
+    /// the start of its zone, as a practised hand does.
+    fn work(&mut self, id: u64, secs: f32) {
+        for _ in 0..(secs / STEP) as usize {
+            self.send(id, [0.0; 2], true, false, false);
+            let t = &self.t;
+            let press = self.s.players[&id]
+                .rhythm
+                .check
+                .filter(|c| c.needle(t) >= c.zone + t.check_great * 0.5)
+                .map(|c| (c.id, c.needle(t)));
+            if let Some((check, needle)) = press {
+                self.act(id, Action::Skill { id: check, needle }).unwrap();
+            }
             self.tick();
         }
     }
@@ -276,13 +297,38 @@ fn the_hunted_player_goes_down_drops_the_load_and_a_teammate_revives_them() {
     );
     assert!(!r.s.encounter.outcome.is_over(), "a teammate still stands");
     assert_eq!(r.s.encounter.stats.downs, 1);
-    // He backs off instead of standing over the body.
-    assert_eq!(r.s.encounter.threat.state, ThreatState::Stalking);
     assert!(r.act(2, Action::Interact).is_err(), "a downed player cannot act");
+    // With a teammate still standing, he puts the fallen in his sack and
+    // walks off with them, slower than a walking player.
+    assert_eq!(r.s.encounter.threat.state, ThreatState::Hauling);
+    assert!(r.events(1).contains(&Event::Hauled));
+    let snap = r.s.snapshot(1, &r.l, &r.t);
+    assert!(snap.player(2).unwrap().hauled, "the teammate sees them carried off");
+    r.idle(2.0);
+    assert!(
+        r.pose(2).pos.distance(r.s.encounter.threat.pos) < 1.0,
+        "in the sack, with him"
+    );
+    assert!(r.pose(2).pos.distance(Vec2::new(0.0, 8.0)) > 1.0, "carried off");
+    // Pepper in his path: he stops to count, and drops them.
+    let th = r.s.encounter.threat.pos;
+    let ahead = th + r.s.encounter.threat.facing * 2.5;
+    r.s.encounter.place_aji(&r.t, ahead, &mut Vec::new());
+    let mut dropped = false;
+    for _ in 0..(10.0 / STEP) as usize {
+        r.tick();
+        if r.s.encounter.threat.state == ThreatState::Counting {
+            dropped = true;
+            break;
+        }
+    }
+    assert!(dropped, "the ward stopped him");
+    assert!(r.events(1).contains(&Event::SackDropped));
     // The teammate kneels beside them and holds.
     let body = r.pose(2).pos;
     let above = Vec3::new(body.x, r.l.surface_height(body) + 0.3, body.y);
-    r.stand(1, body + Vec2::new(0.0, 1.6), above);
+    let side = (body - r.s.encounter.threat.pos).normalize_or(Vec2::Y);
+    r.stand(1, body + side * 1.4, above);
     r.calm = true;
     r.hold(1, r.t.revive_hold * 0.5);
     let half = r.s.players[&2].revive;
@@ -297,6 +343,27 @@ fn the_hunted_player_goes_down_drops_the_load_and_a_teammate_revives_them() {
     assert!(r.s.players[&2].body.fear <= 0.5 + 1e-3, "revived shaken, not terrified");
     let ev = r.events(2);
     assert!(ev.contains(&Event::Revived) && ev.contains(&Event::Downed));
+}
+
+#[test]
+fn nobody_stops_him_and_the_one_in_his_sack_is_gone() {
+    let mut r = Rig::new(2);
+    r.put(1, Vec2::new(-30.0, 20.0));
+    doom(&mut r, 2, Vec2::new(0.0, 8.0));
+    r.idle(0.05);
+    assert_eq!(r.s.encounter.threat.state, ThreatState::Hauling);
+    // A body in his sack is no body to kneel beside.
+    let body = r.pose(2).pos;
+    let above = Vec3::new(body.x, r.l.surface_height(body) + 0.3, body.y);
+    r.stand(1, body + Vec2::new(0.0, 1.4), above);
+    r.hold(1, 1.0);
+    assert_eq!(r.s.players[&2].revive, 0.0);
+    r.calm = true;
+    r.put(1, Vec2::new(-30.0, 20.0));
+    r.idle(r.t.haul_time + 1.0);
+    assert!(matches!(r.s.players[&2].status, Status::Dead), "taken");
+    assert!(r.events(1).contains(&Event::Taken));
+    assert!(!r.s.encounter.outcome.is_over(), "one still stands");
 }
 
 #[test]
@@ -355,22 +422,388 @@ fn only_the_carrier_lays_bones_down_one_bundle_at_a_time() {
     r.hold(1, r.t.deliver_hold * 3.0);
     assert_eq!(r.s.encounter.progress.delivered(), 0);
     // Player 2 lays one down per deliver_hold seconds.
-    r.hold(2, r.t.deliver_hold + 0.1);
+    r.work(2, r.t.deliver_hold + 0.1);
     assert_eq!(r.s.encounter.progress.delivered(), 1);
     assert_eq!(r.s.encounter.progress.carried_by(2), 1);
-    r.hold(2, r.t.deliver_hold + 0.1);
+    r.work(2, r.t.deliver_hold + 0.1);
     assert_eq!(r.s.encounter.progress.delivered(), 2);
     assert_eq!(r.s.encounter.progress.carried_by(2), 0);
     // Interrupted progress does not carry over to the next bundle.
     r.take(2, 2);
     stand_at_altar(&mut r, 2);
-    r.hold(2, r.t.deliver_hold * 0.6);
+    r.work(2, r.t.deliver_hold * 0.6);
     r.idle(0.5);
-    r.hold(2, r.t.deliver_hold * 0.6);
+    r.work(2, r.t.deliver_hold * 0.6);
     assert_eq!(r.s.encounter.progress.delivered(), 2, "a broken hold starts over");
     let snap = r.s.snapshot(2, &r.l, &r.t);
     assert_eq!(snap.world.delivered, 2);
     assert_eq!(snap.world.total as usize, r.l.district.relics.len());
+}
+
+#[test]
+fn long_tasks_ask_for_skill_checks_a_miss_screeches_and_a_great_press_speeds_the_work() {
+    let rig = |id: u64| {
+        let mut r = Rig::new(1);
+        r.calm = true;
+        let pump = r.l.district.pump;
+        r.stand(id, ground(pump) + Vec2::new(0.0, 1.45), pump);
+        r
+    };
+    // Crank until the first check's needle is sweeping.
+    let until_sweep = |r: &mut Rig| {
+        for _ in 0..(8.0 / STEP) as usize {
+            r.send(HOST, [0.0; 2], true, false, false);
+            r.tick();
+            if r.s.players[&HOST].rhythm.check.is_some_and(|c| c.t > 0.0) {
+                return;
+            }
+        }
+        panic!(
+            "no skill check in 8 s of cranking (hold kind {}, power {})",
+            r.s.players[&HOST].hold_kind, r.s.encounter.progress.power
+        );
+    };
+    // Let it sweep past: a miss the whole llano hears, and work lost.
+    let mut r = rig(HOST);
+    until_sweep(&mut r);
+    assert!(r.events(HOST).contains(&Event::SkillCheck), "the worker is warned");
+    let snap = r.s.snapshot(HOST, &r.l, &r.t);
+    let c = snap.me.check.expect("the check is in the worker's snapshot");
+    assert!(c.needle > 0.0 && c.zone >= r.t.check_zone_at.0);
+    // He stands calm somewhere he can hear the pump.
+    let th = &mut r.s.encounter.threat;
+    th.state = ThreatState::Stalking;
+    th.presence = Presence::Present;
+    th.pos = ground(r.l.district.pump) + Vec2::new(25.0, 0.0);
+    th.focus = None;
+    let fear = r.s.players[&HOST].body.fear;
+    let mut before = r.s.encounter.progress.power;
+    let mut missed = false;
+    for _ in 0..(2.0 / STEP) as usize {
+        before = before.max(r.s.encounter.progress.power);
+        r.send(HOST, [0.0; 2], true, false, false);
+        r.tick();
+        if r.s.players[&HOST].rhythm.check.is_none() {
+            missed = true;
+            break;
+        }
+    }
+    assert!(missed, "the unanswered check swept past");
+    assert!(r.s.encounter.progress.power < before, "a miss costs work");
+    assert!(r.s.encounter.threat.focus.is_some(), "he heard the screech");
+    assert!(r.s.players[&HOST].body.fear > fear, "the worker startles");
+    assert!(r.events(HOST).contains(&Event::SkillMissed));
+    // A press at the start of the zone is great and speeds the work.
+    let mut r = rig(HOST);
+    until_sweep(&mut r);
+    let c = r.s.players[&HOST].rhythm.check.unwrap();
+    assert!(
+        r.act(
+            HOST,
+            Action::Skill {
+                id: c.id,
+                needle: c.zone + 0.01
+            }
+        )
+        .is_err(),
+        "a needle from the future is refused"
+    );
+    while r.s.players[&HOST].rhythm.check.unwrap().needle(&r.t) < c.zone + 0.01 {
+        r.send(HOST, [0.0; 2], true, false, false);
+        r.tick();
+    }
+    let at = r.s.players[&HOST].rhythm.check.unwrap().needle(&r.t);
+    let before = r.s.encounter.progress.power;
+    r.act(HOST, Action::Skill { id: c.id, needle: at }).unwrap();
+    assert!(r.s.encounter.progress.power >= before + r.t.check_bonus * 0.99);
+    assert!(r.events(HOST).contains(&Event::SkillGreat));
+    assert!(r.s.players[&HOST].rhythm.check.is_none());
+    assert!(
+        r.act(HOST, Action::Skill { id: c.id, needle: at }).is_err(),
+        "one press per check"
+    );
+    // Letting go mid-check costs nothing.
+    r.s.encounter.progress.power = 0.0;
+    until_sweep(&mut r);
+    let power = r.s.encounter.progress.power;
+    r.idle(3.0);
+    assert!(r.s.players[&HOST].rhythm.check.is_none());
+    assert_eq!(r.s.encounter.progress.power, power);
+}
+
+#[test]
+fn the_truck_key_is_padlocked_and_only_the_pages_numbers_open_it_at_the_box() {
+    let mut r = Rig::new(1);
+    r.calm = true;
+    let code = el_silbon::sim::lock_code(r.t.seed);
+    let wrong = [code[0] % 9 + 1, code[1], code[2]];
+    // From across the yard, nothing can be tried.
+    r.stand(HOST, Vec2::new(0.0, 20.0), r.l.district.lockbox);
+    assert!(r.act(HOST, Action::TryCode { code }).is_err(), "out of reach");
+    // At the box: a wrong combination rattles, loud enough for him.
+    let at = r.l.district.lockbox;
+    let spot = [
+        Vec2::new(0.0, 1.5),
+        Vec2::new(-1.5, 0.0),
+        Vec2::new(0.0, -1.5),
+        Vec2::new(1.5, 0.0),
+    ]
+    .into_iter()
+    .map(|o| ground(at) + o)
+    .find(|&p| {
+        r.l.is_free(p, r.t.player_radius) && {
+            let mut pose = Pose::at(p, 0.0);
+            pose.look_at(&r.t, &r.l, at);
+            matches!(
+                r.l.aim(pose.eye(&r.t, &r.l), pose.look_dir(), at, 0.2, r.t.site_reach),
+                el_silbon::geometry::AimStatus::Ready { .. }
+            )
+        }
+    })
+    .expect("somewhere to stand at the box");
+    r.stand(HOST, spot, at);
+    let th = &mut r.s.encounter.threat;
+    th.state = ThreatState::Stalking;
+    th.presence = Presence::Present;
+    th.pos = ground(at) + Vec2::new(0.0, -9.0);
+    th.focus = None;
+    r.act(HOST, Action::TryCode { code: wrong }).unwrap();
+    assert!(!r.s.encounter.progress.key);
+    assert!(r.events(HOST).contains(&Event::LockRattle));
+    r.tick();
+    assert!(r.s.encounter.threat.focus.is_some(), "he heard the rattle");
+    assert!(
+        r.act(HOST, Action::TryCode { code: [10, 0, 0] }).is_err(),
+        "no such dial"
+    );
+    // The right one opens it, once, and everyone hears the key come free.
+    r.act(HOST, Action::TryCode { code }).unwrap();
+    assert!(r.s.encounter.progress.key);
+    assert!(r.events(HOST).contains(&Event::KeyFound));
+    assert!(r.s.snapshot(HOST, &r.l, &r.t).world.key);
+    assert!(
+        r.act(HOST, Action::TryCode { code }).is_err(),
+        "the box is already open"
+    );
+}
+
+/// A rig on a night when `variant` walks.
+fn rig_for(variant: el_silbon::sim::Variant, players: u64) -> Rig {
+    let seed = (1..500)
+        .find(|&s| el_silbon::sim::Variant::of(s) == variant)
+        .expect("every return has its nights");
+    let mut r = Rig::new(players);
+    r.t = Tuning::with_seed(seed);
+    r.s = Session::new(&r.l, &r.t);
+    for id in 2..=players {
+        r.s.add_player(id, &r.l, &r.t).unwrap();
+    }
+    r.action_seq.clear();
+    r.input_seq.clear();
+    r.act(HOST, Action::Start).unwrap();
+    r
+}
+
+#[test]
+fn naming_him_rightly_at_the_ceiba_lays_him_to_rest_and_wrongly_enrages_him() {
+    use el_silbon::sim::Variant;
+    for tonight in Variant::ALL {
+        let mut r = rig_for(tonight, 1);
+        r.calm = true;
+        stand_at_altar(&mut r, HOST);
+        assert!(
+            r.act(
+                HOST,
+                Action::Name {
+                    variant: tonight.code()
+                }
+            )
+            .is_err(),
+            "not before every bone is home"
+        );
+        r.s.encounter.progress.relics.fill(Relic::Delivered);
+        let wrong = Variant::ALL.into_iter().find(|v| *v != tonight).unwrap();
+        r.act(HOST, Action::Name { variant: wrong.code() }).unwrap();
+        assert!(r.events(HOST).contains(&Event::NameWrong));
+        assert_ne!(r.s.encounter.threat.state, ThreatState::Dormant, "he comes, furious");
+        assert!(
+            r.act(
+                HOST,
+                Action::Name {
+                    variant: tonight.code()
+                }
+            )
+            .is_err(),
+            "the ceiba is not listening yet"
+        );
+        assert_eq!(r.s.encounter.outcome, Outcome::Running);
+        r.s.encounter.progress.naming_cooldown = 0.0;
+        // From across the clearing, no name reaches the roots.
+        r.put(HOST, ground(r.l.ceiba.offering) + Vec2::new(0.0, 14.0));
+        assert!(
+            r.act(
+                HOST,
+                Action::Name {
+                    variant: tonight.code()
+                }
+            )
+            .is_err()
+        );
+        stand_at_altar(&mut r, HOST);
+        r.act(
+            HOST,
+            Action::Name {
+                variant: tonight.code(),
+            },
+        )
+        .unwrap();
+        assert!(r.events(HOST).contains(&Event::Banished));
+        assert_eq!(r.s.encounter.outcome, Outcome::Won);
+        let snap = r.s.snapshot(HOST, &r.l, &r.t);
+        assert!(snap.world.banished && snap.outcome == 1);
+    }
+}
+
+#[test]
+fn each_return_leaves_its_own_signs() {
+    use el_silbon::sim::Variant;
+    // The Son weeps when a bundle of his father's bones is laid down.
+    for (v, weeps) in [(Variant::Hijo, true), (Variant::Arriero, false)] {
+        let mut r = rig_for(v, 1);
+        r.calm = true;
+        r.take(HOST, 0);
+        stand_at_altar(&mut r, HOST);
+        r.work(HOST, r.t.deliver_hold + 0.3);
+        assert_eq!(r.s.encounter.progress.delivered(), 1);
+        assert_eq!(r.events(HOST).contains(&Event::Weeping), weeps, "{v:?}");
+    }
+    // While he walks the llano: a whip for the Drover, glass for the Drunkard.
+    for (v, sign) in [
+        (Variant::Arriero, Event::WhipCrack),
+        (Variant::Borracho, Event::BottleClink),
+    ] {
+        let mut r = rig_for(v, 1);
+        lurker(&mut r, Vec2::new(-30.0, 0.0));
+        r.idle(r.t.tell_every.1 + 1.0);
+        let seen = r.events(HOST);
+        assert!(seen.contains(&sign), "{v:?} never gave its sign");
+        let other = if sign == Event::WhipCrack {
+            Event::BottleClink
+        } else {
+            Event::WhipCrack
+        };
+        assert!(!seen.contains(&other));
+    }
+    // The herd knows the Drover: it bellows when he passes, nobody near it.
+    let mut r = rig_for(Variant::Arriero, 1);
+    lurker(&mut r, Vec2::new(-30.0, 0.0));
+    r.s.encounter.threat.pos = Vec2::new(35.0, -12.0);
+    r.idle(1.0);
+    assert!(r.events(HOST).contains(&Event::CattleSpooked));
+}
+
+#[test]
+fn tureco_follows_whoever_unties_him_growls_when_he_is_near_and_barks_him_off() {
+    let mut r = Rig::new(1);
+    r.calm = true;
+    let post = r.l.district.dog_post;
+    let dog_at = Vec3::new(post.x, r.l.surface_height(post) + 0.45, post.y);
+    r.stand(HOST, post + Vec2::new(0.0, 1.5), dog_at);
+    r.hold(HOST, r.t.untie_hold + 0.2);
+    assert!(
+        r.s.dog.free && r.s.dog.owner == Some(HOST),
+        "untied, and he knows whose he is"
+    );
+    assert!(r.events(HOST).contains(&Event::DogFreed));
+    assert_eq!(r.s.snapshot(HOST, &r.l, &r.t).dog.mood, 1);
+    // He keeps at your heels.
+    r.walk(HOST, &[Vec2::new(-3.0, -8.0), Vec2::new(-10.0, -23.0)], (false, false));
+    r.idle(1.5);
+    assert!(r.s.dog.pos.distance(r.pose(HOST).pos) < 3.5, "Tureco follows");
+    // He growls when he is near, true whatever the whistle says...
+    let me = r.pose(HOST).pos;
+    let th = &mut r.s.encounter.threat;
+    th.state = ThreatState::Stalking;
+    th.presence = Presence::Present;
+    th.pos = r.s.dog.pos + Vec2::new(15.0, 0.0);
+    th.movement = el_silbon::sim::Movement::Still;
+    th.cooldown = 1.0e9;
+    r.tick();
+    assert!(r.events(HOST).contains(&Event::DogGrowl));
+    assert_eq!(r.s.snapshot(HOST, &r.l, &r.t).dog.mood, 2);
+    // ...and barks him off when he comes close: he flinches away.
+    r.calm = false;
+    let th = &mut r.s.encounter.threat;
+    th.state = ThreatState::Hunting;
+    th.pos = r.s.dog.pos + Vec2::new(4.0, 0.0);
+    r.tick();
+    assert!(r.events(HOST).contains(&Event::DogBark));
+    assert!(matches!(
+        r.s.encounter.threat.presence,
+        Presence::Sinking { relocate: true, .. }
+    ));
+    assert!(r.s.dog.courage > 0.0);
+    // His courage needs time: close again at once, no second bark.
+    r.idle(r.t.sink_time + r.t.rise_time + 0.2);
+    let th = &mut r.s.encounter.threat;
+    th.state = ThreatState::Stalking;
+    th.presence = Presence::Present;
+    th.pos = r.s.dog.pos + Vec2::new(4.0, 0.0);
+    r.tick();
+    assert!(!r.events(HOST).contains(&Event::DogBark));
+    assert!(matches!(r.s.encounter.threat.presence, Presence::Present));
+    let _ = me;
+}
+
+#[test]
+fn tureco_barks_the_sack_open() {
+    let mut r = Rig::new(2);
+    r.put(1, Vec2::new(-30.0, 20.0));
+    r.s.dog.free = true;
+    r.s.dog.owner = Some(1);
+    doom(&mut r, 2, Vec2::new(0.0, 8.0));
+    r.idle(0.05);
+    assert_eq!(r.s.encounter.threat.state, ThreatState::Hauling);
+    // Tureco catches up with him.
+    r.s.dog.pos = r.s.encounter.threat.pos + Vec2::new(3.0, 0.0);
+    r.tick();
+    let ev = r.events(1);
+    assert!(ev.contains(&Event::DogBark) && ev.contains(&Event::SackDropped));
+    assert_ne!(r.s.encounter.threat.state, ThreatState::Hauling);
+    assert!(
+        !r.s.snapshot(1, &r.l, &r.t).player(2).unwrap().hauled,
+        "out of the sack"
+    );
+    assert!(r.s.players[&2].status.is_downed(), "down, and can be helped up");
+}
+
+#[test]
+fn the_dynamo_carries_two_lines_and_the_panel_chooses_which() {
+    use el_silbon::geometry::district::{ALL_CIRCUITS, FIRST_CIRCUITS};
+    let mut r = Rig::new(1);
+    r.calm = true;
+    let panel = r.l.district.panel;
+    let spot = ground(panel) + Vec2::new(0.0, 1.3);
+    r.stand(HOST, spot, panel);
+    assert!(r.act(HOST, Action::Interact).is_err(), "no power, nothing to switch");
+    // The bridge's lamps: dark until their line is switched on.
+    let bridge = Vec2::new(42.0, 26.6);
+    assert!(r.l.is_lit(bridge, ALL_CIRCUITS) && !r.l.is_lit(bridge, FIRST_CIRCUITS));
+    r.s.encounter.progress.power = 1.0;
+    r.idle(0.1);
+    assert_eq!(r.s.snapshot(HOST, &r.l, &r.t).world.circuits, FIRST_CIRCUITS);
+    r.stand(HOST, spot, panel);
+    r.act(HOST, Action::Interact).expect("the panel is in reach");
+    let now = r.s.encounter.progress.circuits;
+    assert!(now & 0b100 != 0, "the bridge line is live");
+    assert_eq!(now.count_ones(), 2, "never all three");
+    assert!(r.events(HOST).contains(&Event::LinesSwitched));
+    // Every setting is two lines, and the switch comes round again.
+    for _ in 0..3 {
+        r.act(HOST, Action::Interact).unwrap();
+        assert_eq!(r.s.encounter.progress.circuits.count_ones(), 2);
+    }
+    assert_eq!(r.s.encounter.progress.circuits, now);
 }
 
 #[test]
@@ -409,7 +842,7 @@ fn cranking_the_pump_adds_up_across_players_and_lights_the_lamps() {
     let powered = d.lamps.iter().filter(|l| l.powered).count();
     assert!(powered >= 8, "the power poles are lamps that need the pump");
     let far = Vec2::new(-30.0, 31.0);
-    assert!(!r.l.is_lit(far, false) || r.l.is_lit(far, true));
+    assert!(!r.l.is_lit(far, 0) || r.l.is_lit(far, el_silbon::geometry::district::ALL_CIRCUITS));
     // One player alone takes the full pump_hold; two take half.
     r.hold(1, r.t.pump_hold * 0.5);
     let solo = r.s.encounter.progress.power;
@@ -425,10 +858,10 @@ fn cranking_the_pump_adds_up_across_players_and_lights_the_lamps() {
     );
     assert!(r.events(2).contains(&Event::PowerRestored));
     assert!(
-        r.l.is_lit(Vec2::new(-24.0, 27.0), true),
+        r.l.is_lit(Vec2::new(-24.0, 27.0), el_silbon::geometry::district::ALL_CIRCUITS),
         "powered pole lights the road once on"
     );
-    assert!(!r.l.is_lit(Vec2::new(-24.0, 27.0), false));
+    assert!(!r.l.is_lit(Vec2::new(-24.0, 27.0), 0));
 }
 
 #[test]
@@ -438,7 +871,7 @@ fn the_truck_waits_for_bones_and_power_then_its_engine_is_the_finale() {
     let stand = ground(ign) + Vec2::new(0.0, -1.7);
     r.stand(1, stand, ign);
     r.stand(2, stand + Vec2::new(1.0, 0.0), ign);
-    r.hold(1, r.t.truck_hold + 1.0);
+    r.work(1, r.t.truck_hold + 1.0);
     assert_eq!(r.s.encounter.progress.truck, 0.0, "no bones, no power");
     for x in r.s.encounter.progress.relics.iter_mut() {
         *x = Relic::Delivered;
@@ -446,7 +879,10 @@ fn the_truck_waits_for_bones_and_power_then_its_engine_is_the_finale() {
     r.hold(1, 2.0);
     assert_eq!(r.s.encounter.progress.truck, 0.0, "power still missing");
     r.s.encounter.progress.power = 1.0;
-    r.hold(1, r.t.truck_hold + 1.0);
+    r.hold(1, 2.0);
+    assert_eq!(r.s.encounter.progress.truck, 0.0, "the key is still padlocked away");
+    r.s.encounter.progress.key = true;
+    r.work(1, r.t.truck_hold + 1.0);
     assert!(r.s.encounter.progress.truck_running());
     assert!(r.events(1).contains(&Event::TruckStarted));
     // The engine wakes and rouses him and maxes the night.
@@ -505,6 +941,84 @@ fn shuffle(r: &mut Rig, mode: (bool, bool)) -> bool {
         heard |= r.s.encounter.threat.focus.is_some();
     }
     heard
+}
+
+#[test]
+fn a_torch_runs_down_and_dies_and_spare_batteries_bring_it_back() {
+    let mut r = Rig::new(1);
+    r.calm = true;
+    r.lit = true;
+    r.idle(1.0);
+    let fresh = r.s.players[&HOST].battery;
+    assert!(fresh < 1.0 && r.s.players[&HOST].light, "a lit torch drains");
+    // Switched off, it keeps its charge.
+    r.lit = false;
+    r.idle(1.0);
+    assert_eq!(r.s.players[&HOST].battery, fresh);
+    // Nearly flat: it dies, and a dead torch gives no light whatever the switch says.
+    r.lit = true;
+    r.s.players.get_mut(&HOST).unwrap().battery = 0.002;
+    r.idle(2.0);
+    assert_eq!(r.s.players[&HOST].battery, 0.0);
+    assert!(!r.s.players[&HOST].light);
+    assert_eq!(r.s.snapshot(HOST, &r.l, &r.t).me.battery, 0.0);
+    // Spare batteries revive it, once.
+    let at = r.l.district.batteries[2];
+    r.stand(HOST, ground(at) + Vec2::new(0.0, 1.8), at);
+    r.act(HOST, Action::Interact).expect("the spare batteries are in reach");
+    assert!((r.s.players[&HOST].battery - r.t.battery_pickup).abs() < 1e-5);
+    assert!(r.s.encounter.progress.batteries_taken[2]);
+    assert!(r.events(HOST).contains(&Event::BatteriesTaken));
+    r.idle(0.1);
+    assert!(r.s.players[&HOST].light);
+    assert!(r.act(HOST, Action::Interact).is_err(), "already taken");
+    // A fresh torch leaves spares where they lie.
+    let other = r.l.district.batteries[3];
+    r.s.players.get_mut(&HOST).unwrap().battery = 1.0;
+    r.stand(HOST, ground(other) + Vec2::new(0.0, 1.8), other);
+    assert!(r.act(HOST, Action::Interact).is_err());
+    assert!(!r.s.encounter.progress.batteries_taken[3]);
+}
+
+#[test]
+fn a_lit_torch_he_can_see_draws_him_from_beyond_his_notice() {
+    let node = Vec2::new(35.0, 2.0);
+    let l = Layout::new();
+    let t = Tuning::default();
+    // Somewhere in the open he can see, farther than he would notice a
+    // lit player but within the torch's lure.
+    let notice = t.warn_distance * t.sight_light;
+    let spot = (0..200)
+        .flat_map(|i| (0..60).map(move |k| (i, k)))
+        .map(|(i, k)| {
+            let a = k as f32 / 60.0 * std::f32::consts::TAU;
+            node + Vec2::new(a.cos(), a.sin()) * (notice + 3.0 + i as f32 * 0.05)
+        })
+        .find(|&p| {
+            p.distance(node) < t.light_lure_range - 2.0
+                && l.bounds.contains(p)
+                && l.is_free(p, t.player_radius)
+                && l.line_of_sight(p, node)
+        })
+        .expect("an open spot in his view");
+    for (lit, drawn) in [(true, true), (false, false)] {
+        let mut r = Rig::new(1);
+        lurker(&mut r, spot);
+        r.lit = lit;
+        r.idle(0.5);
+        assert_eq!(
+            r.s.encounter.threat.focus.is_some(),
+            drawn,
+            "torch {} at {:.0} m",
+            if lit { "on" } else { "off" },
+            spot.distance(node)
+        );
+        assert_ne!(
+            r.s.encounter.threat.state,
+            ThreatState::Warning,
+            "too far to be noticed"
+        );
+    }
 }
 
 #[test]
@@ -621,7 +1135,7 @@ fn fear_climbs_alone_in_the_dark_and_company_and_lamplight_calm_it() {
     alone.calm = true;
     alone.put(1, dark);
     alone.put(2, Vec2::new(60.0, -10.0));
-    assert!(!alone.l.is_lit(dark, false));
+    assert!(!alone.l.is_lit(dark, 0));
     alone.idle(20.0);
     let scared = alone.s.players[&1].body.fear;
     assert!(scared > 0.3, "{scared}");
@@ -639,7 +1153,7 @@ fn fear_climbs_alone_in_the_dark_and_company_and_lamplight_calm_it() {
     lit.put(1, Vec2::new(-4.0, 24.0));
     lit.put(2, Vec2::new(60.0, -10.0));
     lit.s.players.get_mut(&1).unwrap().body.fear = 0.5;
-    assert!(lit.l.is_lit(Vec2::new(-4.0, 24.0), false));
+    assert!(lit.l.is_lit(Vec2::new(-4.0, 24.0), 0));
     lit.idle(10.0);
     assert!(lit.s.players[&1].body.fear < 0.2);
     // The snapshot tells the local player their own fear and nobody else's.
@@ -896,7 +1410,7 @@ fn the_whole_map_is_playable_end_to_end() {
     to_altar.push(altar_stand);
     r.walk(1, &to_altar, walk);
     r.look(1, d_offering(&r));
-    r.hold(1, r.t.deliver_hold + 0.2);
+    r.work(1, r.t.deliver_hold + 0.2);
     assert_eq!(r.s.encounter.progress.delivered(), 1);
 
     // The remaining bundles, each at its landmark, walked along the graph.
@@ -974,7 +1488,7 @@ fn the_whole_map_is_playable_end_to_end() {
         );
         r.walk(1, &e.back, walk);
         r.look(1, d_offering(&r));
-        r.hold(1, r.t.deliver_hold + 0.2);
+        r.work(1, r.t.deliver_hold + 0.2);
         assert_eq!(r.s.encounter.progress.delivered(), e.index + 1, "delivered {}", e.index);
     }
     assert!(r.s.encounter.progress.bones_home());
@@ -986,16 +1500,25 @@ fn the_whole_map_is_playable_end_to_end() {
     to_pump.extend([Vec2::new(-42.0, -18.0), ground(d.pump) + Vec2::new(0.0, 1.45)]);
     r.walk(1, &to_pump, walk);
     r.look(1, d.pump);
-    r.hold(1, r.t.pump_hold + 0.5);
+    r.work(1, r.t.pump_hold + 0.5);
     assert!(r.s.encounter.progress.power_on());
     assert!(r.s.players[&1].pose.pos.distance(ground(d.pump)) < 2.0);
 
     // Both players to the truck: player 2 comes down the road from the spawn.
+    // The key box on the windmill's crates, with the numbers from the pages.
+    r.walk(1, &[Vec2::new(-37.0, -23.3)], walk);
+    r.look(1, d.lockbox);
+    let code = el_silbon::sim::lock_code(r.t.seed);
+    r.act(1, Action::TryCode { code })
+        .expect("the box opens with the pages' numbers");
+    assert!(r.s.encounter.progress.key);
+    // Back round the trough the way we came.
+    r.walk(1, &[Vec2::new(-42.0, -18.0)], walk);
     let mut to_truck = r.route(tower_approach, Vec2::new(55.0, 30.0));
     to_truck.push(Vec2::new(55.7, 29.2));
     r.walk(1, &to_truck, walk);
     r.look(1, d.ignition);
-    r.hold(1, r.t.truck_hold + 0.5);
+    r.work(1, r.t.truck_hold + 0.5);
     assert!(r.s.encounter.progress.truck_running(), "engine must start");
     r.idle(0.05);
     assert_eq!(r.s.encounter.pressure, 1.0);
@@ -1149,6 +1672,18 @@ impl Pilot {
             target: self.hud,
             dt,
         });
+        if std::env::var_os("ROUTE_LOG").is_some()
+            && let Some(msg) = &step.log
+        {
+            eprintln!(
+                "[{:.1}s p{}] {msg} (battery {:.2}, danger {}, pressure-ish night {:.0}s)",
+                self.script.elapsed(),
+                self.id,
+                self.view.me.battery,
+                self.view.danger,
+                self.view.elapsed
+            );
+        }
         if let Some(done) = step.finished {
             done.unwrap_or_else(|e| panic!("player {} route failed: {e}", self.id));
             self.finished = true;
@@ -1166,7 +1701,7 @@ impl Pilot {
         }
         self.hud = crosshair(l, t, &self.view, self.id, &self.pose);
         let live = controls_live(Some(&self.view), me, true);
-        let wire = Wire::new(&step.intent, live, &self.pose, true, self.hud, l, t);
+        let wire = Wire::new(&step.intent, live, &self.pose, !step.dark, self.hud, l, t);
         self.input_seq += 1;
         self.latest = Input {
             run: self.view.run,
@@ -1263,7 +1798,7 @@ fn play(s: &mut Session, l: &Layout, t: &Tuning, pilots: &mut [&mut Pilot], minu
 /// of warning, recovery and a caught failure; a restart. `t` picks the storm;
 /// `stalls` the frames the client misses (0: none).
 fn solo_route(t: Tuning, stalls: u64, route: fn(&Layout, &Tuning) -> RouteScript, outcomes: &[Outcome]) {
-    let l = Layout::new();
+    let l = Layout::with_seed(t.seed);
     let t = &t;
     let mut s = Session::new(&l, t);
     let mut pilot = Pilot::new(HOST, route(&l, t), false, &s, &l, t);
@@ -1334,7 +1869,7 @@ fn the_network_smoke_routes_share_outcomes_restarts_and_a_dropped_load() {
 /// The two-process story against one session; `t` picks the storm, `stalls`
 /// the frames the clients miss (0: none).
 fn network_route(t: Tuning, stalls: u64) {
-    let (l, t) = (Layout::new(), &t);
+    let (l, t) = (Layout::with_seed(t.seed), &t);
     let mut s = Session::new(&l, t);
     s.add_player(2, &l, t).unwrap();
     let mut host = Pilot::new(HOST, RouteScript::net_host(&l, t), false, &s, &l, t);
@@ -1461,17 +1996,49 @@ fn controls_carry_nothing_while_frozen_dead_or_the_run_is_over() {
 /// routes over many storms, each with its own pattern of missed frames. The
 /// driver plays a chaotic game, so one seed passing proves little; this
 /// counts. `cargo test --locked --test session -- --ignored --nocapture`
+/// One seed of the solo route with its log: `ROUTE_LOG=1 ROUTE_SEED=n`.
+#[test]
+#[ignore = "diagnostic"]
+fn one_solo_seed() {
+    let seed: u64 = std::env::var("ROUTE_SEED")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    solo_route(
+        Tuning::with_seed(seed),
+        seed,
+        RouteScript::full,
+        &[Outcome::Won, Outcome::Failed],
+    );
+}
+
+/// One seed of the shared route with its log: `ROUTE_LOG=1 ROUTE_SEED=n`.
+#[test]
+#[ignore = "diagnostic"]
+fn one_shared_seed() {
+    let seed: u64 = std::env::var("ROUTE_SEED")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    network_route(Tuning::with_seed(seed), seed);
+}
+
 #[test]
 #[ignore = "slow: 300 full routes"]
 fn the_routes_hold_over_many_storms() {
     let n = 150;
+    // `ROUTE_NIGHT=gentle|hard` measures another night (the gate is normal).
+    let night = std::env::var("ROUTE_NIGHT")
+        .ok()
+        .and_then(|v| el_silbon::tuning::Night::parse(&v))
+        .unwrap_or_default();
     std::panic::set_hook(Box::new(|_| {}));
     let why = |e: Box<dyn std::any::Any + Send>| e.downcast_ref::<String>().cloned().unwrap_or_default();
     let (mut solo, mut shared) = (0, 0);
     for seed in 1..=n {
         match std::panic::catch_unwind(|| {
             solo_route(
-                Tuning::with_seed(seed),
+                Tuning::with_seed(seed).with_night(night),
                 seed,
                 RouteScript::full,
                 &[Outcome::Won, Outcome::Failed],
@@ -1480,7 +2047,7 @@ fn the_routes_hold_over_many_storms() {
             Ok(()) => solo += 1,
             Err(e) => eprintln!("solo seed {seed}: {}", why(e)),
         }
-        match std::panic::catch_unwind(|| network_route(Tuning::with_seed(seed), seed)) {
+        match std::panic::catch_unwind(|| network_route(Tuning::with_seed(seed).with_night(night), seed)) {
             Ok(()) => shared += 1,
             Err(e) => eprintln!("shared seed {seed}: {}", why(e)),
         }

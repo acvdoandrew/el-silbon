@@ -24,6 +24,10 @@ use crate::ui::player_color;
 
 /// Lights in the pool: only the lamps nearest the camera really shine.
 const LAMP_POOL: usize = 14;
+/// How many of the nearest pooled lamps cast shadows, and within what
+/// distance of the eye (m). The fixtures themselves never cast.
+const LAMP_SHADOWS: usize = 3;
+const LAMP_SHADOW_REACH: f32 = 28.0;
 const MAX_WARDS: usize = 8;
 const MAX_PINGS: usize = 4;
 
@@ -31,6 +35,13 @@ const MAX_PINGS: usize = 4;
 pub struct BundleView(usize);
 #[derive(Component)]
 pub struct AjiView(usize);
+#[derive(Component)]
+pub struct BatteryView(usize);
+/// The key box's lid and its padlock (open and gone once the code is found).
+#[derive(Component)]
+pub struct LockLid;
+#[derive(Component)]
+pub struct Padlock;
 #[derive(Component)]
 pub struct WardView(usize);
 #[derive(Component)]
@@ -59,14 +70,20 @@ pub struct LampSlot {
 /// Every practical light of the district, as the layout authored it.
 #[derive(Resource)]
 pub struct LampRig {
-    lamps: Vec<(Vec3, bool)>,
+    /// Position, powered, and the line feeding it.
+    lamps: Vec<(Vec3, bool, u8)>,
 }
 
 /// Materials the systems retune at run time.
 #[derive(Resource)]
 pub struct DynAssets {
-    powered_glass: Handle<StandardMaterial>,
+    /// One bulb glass per lamp line, so each lights on its own.
+    powered_glass: [Handle<StandardMaterial>; 3],
 }
+
+/// The line panel's three levers (up while their line is live).
+#[derive(Component)]
+pub struct PanelLever(u8);
 
 fn radial_glow(images: &mut Assets<Image>) -> Handle<Image> {
     let n = 64;
@@ -91,6 +108,38 @@ fn radial_glow(images: &mut Assets<Image>) -> Handle<Image> {
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::RENDER_WORLD,
     ))
+}
+
+/// Two D-cell batteries standing side by side: a dark body, an amber label
+/// band and a bright top cap.
+fn battery_pair(m: &mut MeshBuilder) {
+    let body = srgb(0.12, 0.12, 0.13);
+    let label = srgb(0.78, 0.55, 0.12);
+    let cap = srgb(0.8, 0.8, 0.82);
+    for dx in [-0.018_f32, 0.018] {
+        let at = Vec3::new(dx, 0.0, 0.0);
+        m.lathe(
+            at,
+            &[(0.0, 0.0), (0.016, 0.0), (0.017, 0.004), (0.017, 0.02)],
+            12,
+            1.0,
+            body,
+        );
+        m.lathe(at, &[(0.017, 0.02), (0.0172, 0.045)], 12, 1.0, label);
+        m.lathe(
+            at,
+            &[
+                (0.017, 0.045),
+                (0.017, 0.058),
+                (0.012, 0.061),
+                (0.005, 0.063),
+                (0.0, 0.063),
+            ],
+            12,
+            1.0,
+            cap,
+        );
+    }
 }
 
 fn pepper_bunch(m: &mut MeshBuilder) {
@@ -430,7 +479,83 @@ pub fn spawn(
             0.13 + 0.01 * (i % 3) as f32,
         );
     }
+    for p in &d.batteries {
+        perch(&mut perches, *p - Vec3::Y * 0.02, floor(*p), 0.12);
+    }
+    // The radio and the photograph stand on the house shelf; a dark box with
+    // a glowing dial, and a small frame.
+    let mut sets = MeshBuilder::new();
+    let mut dials = MeshBuilder::new();
+    let mut photos = MeshBuilder::new();
+    for n in &d.notes {
+        let facing = Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2);
+        match crate::lore::note(n.id).medium {
+            crate::lore::Medium::Radio => {
+                let base = n.pos - Vec3::Y * 0.02;
+                sets.cuboid(
+                    base + Vec3::Y * 0.12,
+                    facing,
+                    Vec3::new(0.2, 0.12, 0.09),
+                    1.0,
+                    Vec2::ZERO,
+                    srgb(0.45, 0.3, 0.2),
+                );
+                sets.cuboid(
+                    base + Vec3::new(0.0, 0.25, 0.0),
+                    facing,
+                    Vec3::new(0.16, 0.012, 0.07),
+                    1.0,
+                    Vec2::ZERO,
+                    srgb(0.3, 0.2, 0.14),
+                );
+                // Dial window and speaker cloth on the face toward the room (+X).
+                dials.cuboid(
+                    base + Vec3::new(0.091, 0.16, -0.06),
+                    facing,
+                    Vec3::new(0.07, 0.03, 0.004),
+                    1.0,
+                    Vec2::ZERO,
+                    WHITE,
+                );
+                sets.cuboid(
+                    base + Vec3::new(0.092, 0.1, 0.07),
+                    facing,
+                    Vec3::new(0.06, 0.07, 0.004),
+                    1.0,
+                    Vec2::ZERO,
+                    srgb(0.55, 0.48, 0.36),
+                );
+            }
+            crate::lore::Medium::Photograph => {
+                let base = n.pos - Vec3::Y * 0.02;
+                let tilt = facing * Quat::from_rotation_x(-0.25);
+                sets.cuboid(
+                    base + Vec3::Y * 0.1,
+                    tilt,
+                    Vec3::new(0.09, 0.11, 0.008),
+                    1.0,
+                    Vec2::ZERO,
+                    srgb(0.25, 0.17, 0.11),
+                );
+                photos.cuboid(
+                    base + Vec3::Y * 0.1 + tilt * Vec3::new(0.0, 0.0, 0.009),
+                    tilt,
+                    Vec3::new(0.07, 0.09, 0.002),
+                    1.0,
+                    Vec2::ZERO,
+                    srgb(0.75, 0.66, 0.52),
+                );
+            }
+            _ => {}
+        }
+    }
     for n in d.notes.iter().filter(|n| n.id != 0) {
+        if matches!(
+            crate::lore::note(n.id).medium,
+            crate::lore::Medium::Radio | crate::lore::Medium::Photograph
+        ) {
+            continue;
+        }
         perch(&mut perches, n.pos, floor(n.pos), 0.16);
         let rot = Quat::from_rotation_y(0.9 + n.id as f32 * 1.37);
         let (hx, hz) = (0.1, 0.13);
@@ -450,6 +575,9 @@ pub fn spawn(
     for (name, mb, material) in [
         ("perches", perches, palette.wood.clone()),
         ("field notes", papers, palette.paper_note.clone()),
+        ("radio and frame", sets, palette.wood_dark.clone()),
+        ("radio dial", dials, palette.lamp_glass.clone()),
+        ("photograph", photos, palette.paper_note.clone()),
     ] {
         if !mb.is_empty() {
             commands.spawn((
@@ -482,6 +610,104 @@ pub fn spawn(
             Transform::from_translation(*p - Vec3::Y * 0.02).with_rotation(Quat::from_rotation_y(i as f32 * 1.7)),
             NotShadowCaster,
             Visibility::Hidden,
+        ));
+    }
+
+    // ---- Spare batteries.
+    let mut mb = MeshBuilder::new();
+    battery_pair(&mut mb);
+    let battery_mesh = meshes.add(mb.build());
+    let battery_mat = materials.add(StandardMaterial {
+        base_color: Color::WHITE,
+        perceptual_roughness: 0.35,
+        metallic: 0.2,
+        ..default()
+    });
+    for (i, p) in d.batteries.iter().enumerate() {
+        commands.spawn((
+            Name::new("spare batteries"),
+            BatteryView(i),
+            Mesh3d(battery_mesh.clone()),
+            MeshMaterial3d(battery_mat.clone()),
+            Transform::from_translation(*p - Vec3::Y * 0.02).with_rotation(Quat::from_rotation_y(i as f32 * 2.3)),
+            NotShadowCaster,
+            Visibility::Hidden,
+        ));
+    }
+
+    // ---- The key box on the barrel by the truck: a small steel box whose lid
+    // hinges at the back, a padlock hanging from its hasp.
+    {
+        let steel = materials.add(StandardMaterial {
+            base_color: Color::srgb(0.32, 0.34, 0.33),
+            metallic: 0.6,
+            perceptual_roughness: 0.55,
+            ..default()
+        });
+        let brass = materials.add(StandardMaterial {
+            base_color: Color::srgb(0.72, 0.56, 0.26),
+            metallic: 0.8,
+            perceptual_roughness: 0.35,
+            ..default()
+        });
+        let at = d.lockbox - Vec3::Y * 0.06;
+        let mut body = MeshBuilder::new();
+        body.cuboid(
+            Vec3::Y * 0.05,
+            Quat::IDENTITY,
+            Vec3::new(0.14, 0.05, 0.09),
+            1.0,
+            Vec2::ZERO,
+            WHITE,
+        );
+        let mut lid = MeshBuilder::new();
+        lid.cuboid(
+            Vec3::new(0.0, 0.01, 0.09),
+            Quat::IDENTITY,
+            Vec3::new(0.145, 0.01, 0.095),
+            1.0,
+            Vec2::ZERO,
+            WHITE,
+        );
+        let mut lock = MeshBuilder::new();
+        lock.cuboid(
+            Vec3::new(0.0, -0.035, 0.0),
+            Quat::IDENTITY,
+            Vec3::new(0.025, 0.022, 0.01),
+            1.0,
+            Vec2::ZERO,
+            WHITE,
+        );
+        lock.lathe(
+            Vec3::ZERO,
+            &[(0.017, -0.012), (0.017, 0.012), (0.012, 0.016), (0.0, 0.017)],
+            10,
+            1.0,
+            WHITE,
+        );
+        let root = commands
+            .spawn((
+                Name::new("key box"),
+                Mesh3d(meshes.add(body.build())),
+                MeshMaterial3d(steel.clone()),
+                Transform::from_translation(at).with_rotation(Quat::from_rotation_y(0.4)),
+                Visibility::Inherited,
+            ))
+            .id();
+        commands.spawn((
+            LockLid,
+            Mesh3d(meshes.add(lid.build())),
+            MeshMaterial3d(steel),
+            // Hinged at the back edge (the lid mesh extends forward from it).
+            Transform::from_xyz(0.0, 0.1, -0.09),
+            ChildOf(root),
+        ));
+        commands.spawn((
+            Padlock,
+            Mesh3d(meshes.add(lock.build())),
+            MeshMaterial3d(brass),
+            Transform::from_xyz(0.0, 0.08, -0.1),
+            ChildOf(root),
         ));
     }
 
@@ -583,25 +809,35 @@ pub fn spawn(
     // ---- Lamps: fixtures are static, the light comes from a small pool.
     let mut tin = MeshBuilder::new();
     let mut glass = MeshBuilder::new();
-    let mut pole_glass = MeshBuilder::new();
+    let mut pole_glass = [MeshBuilder::new(), MeshBuilder::new(), MeshBuilder::new()];
     let mut wood = MeshBuilder::new();
     for lamp in &d.lamps {
         if lamp.powered {
-            pole_lamp_parts(&mut tin, &mut pole_glass, &mut wood, lamp.pos);
+            pole_lamp_parts(
+                &mut tin,
+                &mut pole_glass[lamp.circuit.min(2) as usize],
+                &mut wood,
+                lamp.pos,
+            );
         } else {
             lantern_parts(&mut tin, &mut glass, lamp.pos);
         }
     }
-    let powered_glass = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.85, 0.85, 0.75),
-        emissive: LinearRgba::BLACK,
-        perceptual_roughness: 0.2,
-        ..default()
+    let powered_glass = [(); 3].map(|_| {
+        materials.add(StandardMaterial {
+            base_color: Color::srgb(0.85, 0.85, 0.75),
+            emissive: LinearRgba::BLACK,
+            perceptual_roughness: 0.2,
+            ..default()
+        })
     });
+    let [g0, g1, g2] = pole_glass;
     for (name, mb, material) in [
         ("lamp ironwork", tin, palette.tin.clone()),
         ("lantern glass", glass, palette.lamp_glass.clone()),
-        ("pole lamp glass", pole_glass, powered_glass.clone()),
+        ("pole lamp glass: hacienda line", g0, powered_glass[0].clone()),
+        ("pole lamp glass: corral line", g1, powered_glass[1].clone()),
+        ("pole lamp glass: bridge line", g2, powered_glass[2].clone()),
         ("power poles", wood, palette.wood.clone()),
     ] {
         if mb.is_empty() {
@@ -615,8 +851,45 @@ pub fn spawn(
         ));
     }
     let rig = LampRig {
-        lamps: d.lamps.iter().map(|l| (l.pos, l.powered)).collect(),
+        lamps: d.lamps.iter().map(|l| (l.pos, l.powered, l.circuit)).collect(),
     };
+    // The line panel beside the pump: a grey box on a post, three levers.
+    {
+        let at = d.panel;
+        let ground = layout.surface_height(Vec2::new(at.x, at.z));
+        let mut body = MeshBuilder::new();
+        body.cuboid(
+            Vec3::new(at.x, (ground + at.y - 0.2) * 0.5, at.z + 0.12),
+            Quat::IDENTITY,
+            Vec3::new(0.05, (at.y - 0.2 - ground) * 0.5, 0.05),
+            1.0,
+            Vec2::ZERO,
+            srgb(0.35, 0.27, 0.18),
+        );
+        body.cuboid(
+            at + Vec3::new(0.0, 0.0, 0.05),
+            Quat::IDENTITY,
+            Vec3::new(0.24, 0.2, 0.06),
+            1.0,
+            Vec2::ZERO,
+            srgb(0.4, 0.42, 0.4),
+        );
+        commands.spawn((
+            Name::new("line panel"),
+            Mesh3d(meshes.add(body.build())),
+            MeshMaterial3d(palette.tin.clone()),
+        ));
+        let lever = meshes.add(Cuboid::new(0.03, 0.14, 0.03));
+        for i in 0..3u8 {
+            commands.spawn((
+                Name::new("line lever"),
+                PanelLever(i),
+                Mesh3d(lever.clone()),
+                MeshMaterial3d(palette.rust_metal.clone()),
+                Transform::from_translation(at + Vec3::new(-0.14 + 0.14 * i as f32, 0.0, -0.03)),
+            ));
+        }
+    }
     for i in 0..LAMP_POOL {
         commands.spawn((
             Name::new("lamp light"),
@@ -734,6 +1007,52 @@ pub fn bundles(
     }
 }
 
+/// The key box opens once the code is found: the padlock gone, the lid up.
+pub fn key_box(
+    net: Res<Network>,
+    mut lid: Query<&mut Transform, With<LockLid>>,
+    mut lock: Query<&mut Visibility, With<Padlock>>,
+) {
+    let open = net.snapshot().is_some_and(|s| s.world.key);
+    let want = if open {
+        Quat::from_rotation_x(-1.9)
+    } else {
+        Quat::IDENTITY
+    };
+    for mut tf in &mut lid {
+        if tf.rotation != want {
+            tf.rotation = want;
+        }
+    }
+    let shown = if open {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
+    for mut v in &mut lock {
+        if *v != shown {
+            *v = shown;
+        }
+    }
+}
+
+pub fn batteries(net: Res<Network>, mut views: Query<(&BatteryView, &mut Visibility)>) {
+    for (view, mut vis) in &mut views {
+        let taken = net
+            .snapshot()
+            .and_then(|s| s.batteries.get(view.0).copied())
+            .unwrap_or(true);
+        let want = if taken {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        };
+        if *vis != want {
+            *vis = want;
+        }
+    }
+}
+
 pub fn peppers(net: Res<Network>, mut views: Query<(&AjiView, &mut Visibility)>) {
     for (view, mut vis) in &mut views {
         let taken = net.snapshot().and_then(|s| s.aji.get(view.0).copied()).unwrap_or(true);
@@ -811,15 +1130,16 @@ pub fn lamp_lights(
     camera: Single<&Transform, (With<Player>, Without<LampSlot>)>,
     mut slots: Query<(&mut LampSlot, &mut PointLight, &mut Transform)>,
     mut scratch: Local<LampScratch>,
+    fright: Res<super::omen::Fright>,
 ) {
-    let power = net.snapshot().is_some_and(|s| s.world.power >= 1.0);
+    let live = net.snapshot().map_or(0, |s| s.world.circuits);
     let eye = camera.translation;
     let LampScratch { desired, held, pending } = &mut *scratch;
     // The immutable target: the nearest lit lamps within reach.
     desired.clear();
     desired.extend((0..rig.lamps.len()).filter(|&i| {
-        let (pos, powered) = rig.lamps[i];
-        (!powered || power) && pos.distance_squared(eye) < 70.0 * 70.0
+        let (pos, powered, circuit) = rig.lamps[i];
+        (!powered || live & (1 << circuit) != 0) && pos.distance_squared(eye) < 70.0 * 70.0
     }));
     desired.sort_by(|&a, &b| {
         rig.lamps[a]
@@ -854,7 +1174,7 @@ pub fn lamp_lights(
             light.intensity = 0.0;
             continue;
         };
-        let (pos, powered) = rig.lamps[lamp];
+        let (pos, powered, _) = rig.lamps[lamp];
         // A lamp that has left the desired set fades out.
         let target = if desired.contains(&lamp) { 1.0 } else { 0.0 };
         slot.level += (target - slot.level) * (dt * 5.0).min(1.0);
@@ -867,31 +1187,49 @@ pub fn lamp_lights(
         } else {
             (11_000.0, Color::srgb(1.0, 0.64, 0.3), 12.0)
         };
+        let shadowed = desired.iter().take(LAMP_SHADOWS).any(|&l| l == lamp)
+            && pos.distance_squared(eye) < LAMP_SHADOW_REACH * LAMP_SHADOW_REACH;
+        if light.shadow_maps_enabled != shadowed {
+            light.shadow_maps_enabled = shadowed;
+        }
         light.color = color;
         light.range = range;
-        light.intensity = base * slot.level * if powered { 1.0 } else { flick };
+        let omen = if pos.distance(eye) < 35.0 {
+            fright.lamp_level(t)
+        } else {
+            1.0
+        };
+        light.intensity = base * slot.level * omen * if powered { 1.0 } else { flick };
         tf.translation = pos - Vec3::Y * if powered { 0.1 } else { 0.0 };
     }
 }
 
-/// The pole lamps' bulbs glow only while the windmill's power holds.
+/// The pole lamps' bulbs glow only while their line is live; the panel's
+/// levers stand up for the live lines.
 pub fn power_look(
     net: Res<Network>,
     assets: Res<DynAssets>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut last: Local<Option<bool>>,
+    mut levers: Query<(&PanelLever, &mut Transform)>,
+    mut last: Local<Option<u8>>,
 ) {
-    let on = net.snapshot().is_some_and(|s| s.world.power >= 1.0);
-    if *last == Some(on) {
+    let live = net.snapshot().map_or(0, |s| s.world.circuits);
+    if *last == Some(live) {
         return;
     }
-    *last = Some(on);
-    if let Some(mut m) = materials.get_mut(&assets.powered_glass) {
-        m.emissive = if on {
-            LinearRgba::rgb(14.0, 12.0, 8.0)
-        } else {
-            LinearRgba::BLACK
-        };
+    *last = Some(live);
+    for (i, glass) in assets.powered_glass.iter().enumerate() {
+        if let Some(mut m) = materials.get_mut(glass) {
+            m.emissive = if live & (1 << i) != 0 {
+                LinearRgba::rgb(14.0, 12.0, 8.0)
+            } else {
+                LinearRgba::BLACK
+            };
+        }
+    }
+    for (lever, mut tf) in &mut levers {
+        let up = live & (1 << lever.0) != 0;
+        tf.rotation = Quat::from_rotation_x(if up { -0.5 } else { 0.5 });
     }
 }
 

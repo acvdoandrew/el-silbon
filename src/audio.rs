@@ -53,6 +53,26 @@ struct Sounds {
     beacon: Handle<AudioSource>,
     counting: Handle<AudioSource>,
     ping: Handle<AudioSource>,
+    check_warn: Handle<AudioSource>,
+    check_great: Handle<AudioSource>,
+    check_miss: Handle<AudioSource>,
+    radio: Handle<AudioSource>,
+    sting_caught: Handle<AudioSource>,
+    sting_reveal: Handle<AudioSource>,
+    sting_phantom: Handle<AudioSource>,
+    sting_hunt: Handle<AudioSource>,
+    omen_bones: Handle<AudioSource>,
+    omen_lamps: Handle<AudioSource>,
+    omen_swell: Handle<AudioSource>,
+    dread: Handle<AudioSource>,
+    lock_rattle: Handle<AudioSource>,
+    lock_open: Handle<AudioSource>,
+    tell_weeping: Handle<AudioSource>,
+    tell_whip: Handle<AudioSource>,
+    tell_bottles: Handle<AudioSource>,
+    banished: Handle<AudioSource>,
+    dog_growl: Handle<AudioSource>,
+    dog_bark: Handle<AudioSource>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +83,8 @@ enum VoiceKind {
     Heartbeat,
     Engine,
     Crank,
+    Radio,
+    Dread,
     Whistle,
     Effect,
 }
@@ -98,7 +120,15 @@ impl Plugin for SoundPlugin {
                 Update,
                 (
                     stop_voices_on_restart.in_set(GameSet::Control),
-                    (play_whistles, play_effects, play_pings, footsteps, thunder, mix)
+                    (
+                        play_whistles,
+                        play_effects,
+                        play_stings,
+                        play_pings,
+                        footsteps,
+                        thunder,
+                        mix,
+                    )
                         .chain()
                         .in_set(GameSet::Present),
                 ),
@@ -138,6 +168,26 @@ fn load_sounds(mut commands: Commands, assets: Res<AssetServer>, tuning: Res<Tun
         revive: a("revive"),
         pray: a("pray"),
         aji: a("aji_scatter"),
+        check_warn: a("check_warn"),
+        check_great: a("check_great"),
+        check_miss: a("check_miss"),
+        radio: a("radio_broadcast"),
+        sting_caught: a("sting_caught"),
+        sting_reveal: a("sting_reveal"),
+        sting_phantom: a("sting_phantom"),
+        sting_hunt: a("sting_hunt"),
+        omen_bones: a("omen_bones"),
+        omen_lamps: a("omen_lamps"),
+        omen_swell: a("omen_swell"),
+        dread: a("dread_drone"),
+        lock_rattle: a("lock_rattle"),
+        lock_open: a("lock_open"),
+        tell_weeping: a("tell_weeping"),
+        tell_whip: a("tell_whip"),
+        tell_bottles: a("tell_bottles"),
+        banished: a("banished"),
+        dog_growl: a("dog_growl"),
+        dog_bark: a("dog_bark"),
         beacon: a("beacon_flare"),
         counting: a("counting"),
         ping: a("ping"),
@@ -193,6 +243,22 @@ fn load_sounds(mut commands: Commands, assets: Res<AssetServer>, tuning: Res<Tun
     );
     spawn_loop(
         &mut commands,
+        "dread loop",
+        &sounds.dread,
+        t.ambience_gain * 1.1,
+        VoiceKind::Dread,
+        false,
+    );
+    spawn_loop(
+        &mut commands,
+        "radio loop",
+        &sounds.radio,
+        t.sfx_gain * 0.8,
+        VoiceKind::Radio,
+        false,
+    );
+    spawn_loop(
+        &mut commands,
         "pump crank loop",
         &sounds.crank,
         t.sfx_gain * 0.85,
@@ -242,6 +308,30 @@ fn play_whistles(
     }
 }
 
+/// What the frights ask to be heard: stingers and omens.
+fn play_stings(
+    mut commands: Commands,
+    mut stings: MessageReader<crate::world::omen::Sting>,
+    sounds: Res<Sounds>,
+    settings: Res<Settings>,
+    tuning: Res<TuningRes>,
+) {
+    use crate::world::omen::Sting;
+    let g = tuning.0.sfx_gain;
+    for sting in stings.read() {
+        let (clip, gain, speed) = match sting {
+            Sting::Caught => (&sounds.sting_caught, g * 1.5, 1.0),
+            Sting::Reveal => (&sounds.sting_reveal, g * 1.1, 1.0),
+            Sting::Phantom => (&sounds.sting_phantom, g * 0.8, 1.0),
+            Sting::Bones => (&sounds.omen_bones, g * 0.7, 1.0),
+            Sting::Lamps => (&sounds.omen_lamps, g * 0.6, 1.0),
+            Sting::Swell => (&sounds.omen_swell, g * 0.8, 1.0),
+            Sting::Clack => (&sounds.omen_bones, g * 0.45, 1.25),
+        };
+        one_shot(&mut commands, clip, gain, speed, VoiceKind::Effect, settings.volume);
+    }
+}
+
 fn play_effects(
     mut commands: Commands,
     mut events: MessageReader<EncounterMsg>,
@@ -260,6 +350,24 @@ fn play_effects(
             Event::TruckStarted => (&sounds.engine_start, g, 1.0),
             Event::AjiTaken => (&sounds.aji, g * 0.45, 1.35),
             Event::AjiUsed => (&sounds.aji, g, 1.0),
+            Event::BatteriesTaken => (&sounds.aji, g * 0.35, 1.8),
+            Event::SkillCheck => (&sounds.check_warn, g * 0.8, 1.0),
+            Event::SkillGreat => (&sounds.check_great, g * 0.7, 1.0),
+            Event::SkillMissed => (&sounds.check_miss, g, 1.0),
+            Event::HuntBegan => (&sounds.sting_hunt, g * 0.9, 1.0),
+            Event::LockRattle => (&sounds.lock_rattle, g * 0.9, 1.0),
+            Event::KeyFound => (&sounds.lock_open, g, 1.0),
+            Event::Weeping => (&sounds.tell_weeping, g * 0.8, 1.0),
+            Event::Hauled => (&sounds.bones, g * 1.2, 0.7),
+            Event::DogFreed => (&sounds.dog_bark, g * 0.35, 1.2),
+            Event::DogGrowl => (&sounds.dog_growl, g * 0.9, 1.0),
+            Event::DogBark => (&sounds.dog_bark, g * 1.1, 1.0),
+            Event::SackDropped => (&sounds.bones_set, g, 0.8),
+            Event::Taken => (&sounds.caught, g, 0.7),
+            Event::WhipCrack => (&sounds.tell_whip, g * 0.8, 1.0),
+            Event::BottleClink => (&sounds.tell_bottles, g * 0.8, 1.0),
+            Event::Banished => (&sounds.banished, g, 1.0),
+            Event::NameWrong => (&sounds.sting_reveal, g * 1.1, 0.8),
             Event::CountingBegan => (&sounds.counting, g * 0.8, 1.0),
             Event::Susto => (&sounds.susto, g, 1.0),
             Event::Revived => (&sounds.revive, g, 1.0),
@@ -398,6 +506,8 @@ fn mix(
     mut sinks: Query<(&Voice, &mut AudioSink)>,
     state: Res<State<Flow>>,
     net: Res<Network>,
+    note: Res<crate::encounter::NoteOpen>,
+    fright: Res<crate::world::omen::Fright>,
 ) {
     let tense = matches!(
         truth.encounter.threat.state,
@@ -427,6 +537,32 @@ fn mix(
     };
     let engine_on = world.truck >= 1.0 && !over;
     let crank_on = me.hold_kind == 3;
+    // Dread swells with the night, with every bundle taken from him, and
+    // when he is on you.
+    let dread = snap.map_or(0.0, |s| {
+        let rite = if s.world.total > 0 {
+            s.world.delivered as f32 / s.world.total as f32
+        } else {
+            0.0
+        };
+        let chased = if matches!(s.danger, 1..=3) { 0.35 } else { 0.0 };
+        let awake = if s.stats[0] > 0 || s.relics.iter().any(|r| r.state != 0) {
+            1.0
+        } else {
+            0.3
+        };
+        ((0.25 * s.world.night + 0.45 * rite + chased) * awake).clamp(0.0, 1.0)
+    });
+    let hush_omen = fright.hush();
+    let radio_on = note
+        .0
+        .is_some_and(|id| crate::lore::note(id).medium == crate::lore::Medium::Radio)
+        && *state.get() == Flow::Playing;
+    // The night draws back while he whistles.
+    let whistling = sinks
+        .iter()
+        .any(|(voice, sink)| voice.kind == VoiceKind::Whistle && !sink.is_paused() && !sink.empty());
+    let duck = if whistling { tuning.0.whistle_duck } else { 1.0 };
 
     for (voice, mut sink) in &mut sinks {
         if *state.get() == Flow::Paused {
@@ -435,9 +571,10 @@ fn mix(
         let mut v = voice.gain * settings.volume;
         match voice.kind {
             VoiceKind::Ambience => {
-                v *= hush.0 * if dazed { 0.5 } else { 1.0 } * (1.0 - 0.25 * (rain - 0.6) / 0.4);
+                v *= hush_omen * duck * hush.0 * if dazed { 0.5 } else { 1.0 } * (1.0 - 0.25 * (rain - 0.6) / 0.4);
             }
-            VoiceKind::Rain => v *= rain * if dazed { 0.65 } else { 1.0 },
+            VoiceKind::Rain => v *= hush_omen * duck * rain * if dazed { 0.65 } else { 1.0 },
+            VoiceKind::Dread => v *= if over { 0.0 } else { dread },
             VoiceKind::Heartbeat => {
                 v *= heart_level * heart_level;
                 sink.set_speed(heart_speed);
@@ -447,6 +584,7 @@ fn mix(
                 sink.set_speed(0.92 + 0.16 * world.warm);
             }
             VoiceKind::Crank => v *= if crank_on { 1.0 } else { 0.0 },
+            VoiceKind::Radio => v *= if radio_on { 1.0 } else { 0.0 },
             VoiceKind::Whistle if net.status() == 2 => v = 0.0,
             VoiceKind::Whistle | VoiceKind::Effect => {}
         }

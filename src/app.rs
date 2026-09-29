@@ -58,6 +58,8 @@ pub struct Launch {
     /// DEBUG: run the scripted smoke route and exit.
     pub smoke: bool,
     pub seed: u64,
+    /// How hard the night is.
+    pub night: crate::tuning::Night,
     pub shots_dir: PathBuf,
     pub size: (u32, u32),
     /// Solo (default), host or join.
@@ -75,6 +77,7 @@ impl Default for Launch {
         Self {
             smoke: false,
             seed: DEFAULT_SEED,
+            night: crate::tuning::Night::Normal,
             shots_dir: PathBuf::from("screenshots"),
             size: (1600, 900),
             network: Mode::Solo,
@@ -91,7 +94,10 @@ El Silbón — The Return
 
 USAGE: el_silbon [--seed N] [--size WxH] [--shots DIR] [--smoke]
 
-  --seed N      world scatter / whistle jitter seed (default 1997)
+  --seed N      the night: bundle hiding places, the padlock code, which of him
+                walks, scatter and jitter (solo play without it: a new night
+                every launch; the debug routes and shared sessions: 1997)
+  --night N     gentle, normal (default) or hard (every peer must agree)
   --size WxH    window size (default 1600x900)
   --shots DIR   screenshot folder for F12 and the debug routes (default ./screenshots)
   --tour        DEBUG: walk to every place, then play the scripted full run
@@ -107,6 +113,7 @@ USAGE: el_silbon [--seed N] [--size WxH] [--shots DIR] [--smoke]
 impl Launch {
     pub fn from_args(args: impl IntoIterator<Item = String>) -> Result<Self, String> {
         let mut launch = Self::default();
+        let mut seeded = false;
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             match arg.as_str() {
@@ -134,6 +141,11 @@ impl Launch {
                 "--seed" => {
                     let v = it.next().ok_or("--seed needs a value")?;
                     launch.seed = v.parse().map_err(|_| format!("bad --seed value: {v}"))?;
+                    seeded = true;
+                }
+                "--night" => {
+                    let v = it.next().ok_or("--night needs gentle, normal or hard")?;
+                    launch.night = crate::tuning::Night::parse(&v).ok_or_else(|| format!("bad --night value: {v}"))?;
                 }
                 "--shots" => {
                     launch.shots_dir = PathBuf::from(it.next().ok_or("--shots needs a folder")?);
@@ -160,6 +172,15 @@ impl Launch {
         }
         if launch.headless && !launch.net_smoke {
             return Err("--headless is only available with --net-smoke.".into());
+        }
+        // A player alone gets a new night each time; the debug routes stay
+        // on the fixed night, and a shared session needs every peer to agree
+        // (pass the same --seed on every machine for another night).
+        if !seeded && launch.network == Mode::Solo && !launch.smoke && !launch.photos {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos() as u64);
+            launch.seed = 1 + now % 1_000_000;
         }
         Ok(launch)
     }
@@ -254,8 +275,8 @@ fn asset_root() -> String {
 }
 
 pub fn build_app(launch: Launch) -> App {
-    let tuning = Tuning::with_seed(launch.seed);
-    let layout = Layout::new();
+    let tuning = Tuning::with_seed(launch.seed).with_night(launch.night);
+    let layout = Layout::with_seed(launch.seed);
     let encounter = Encounter::new(&layout);
     let automated = launch.smoke || launch.photos;
 
@@ -290,8 +311,12 @@ pub fn build_app(launch: Launch) -> App {
     let fog = crate::world::land::HORIZON;
     app.insert_resource(ClearColor(Color::linear_rgb(fog[0], fog[1], fog[2])))
         .insert_resource(GlobalAmbientLight {
-            color: Color::srgb(0.55, 0.64, 0.9),
-            brightness: 90.0,
+            color: Color::srgb(
+                crate::world::land::NIGHT_AMBIENT_COLOR[0],
+                crate::world::land::NIGHT_AMBIENT_COLOR[1],
+                crate::world::land::NIGHT_AMBIENT_COLOR[2],
+            ),
+            brightness: crate::world::land::NIGHT_AMBIENT,
             affects_lightmapped_meshes: true,
         })
         .insert_resource(LayoutRes(layout))
@@ -442,6 +467,19 @@ mod tests {
         assert!(args("--tour").unwrap().smoke);
         assert!(args("--photos").unwrap().photos);
         assert!(args("--photos --smoke").is_err());
+        assert_eq!(
+            args("--smoke").unwrap().seed,
+            DEFAULT_SEED,
+            "the debug route's night is fixed"
+        );
+        assert_eq!(args("--seed 7").unwrap().seed, 7);
+        assert_eq!(args("--night hard").unwrap().night, crate::tuning::Night::Hard);
+        assert!(args("--night brutal").is_err());
+        assert_eq!(
+            args("--host 127.0.0.1:5000").unwrap().seed,
+            DEFAULT_SEED,
+            "peers agree on the night"
+        );
         assert!(args("--host 0.0.0.0:5000").is_err());
         assert!(args("--host 8.8.8.8:5000").is_err());
         assert!(args("--host 127.0.0.1:5000 --join 127.0.0.1:5000").is_err());

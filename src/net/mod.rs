@@ -53,7 +53,7 @@ pub fn controls_live(snapshot: Option<&Snapshot>, me: Option<PlayerId>, playing:
 /// scripted mark) follow them. Run and sequence are stamped by the sender.
 pub struct Wire {
     pub input: Input,
-    commands: [Option<Action>; 4],
+    commands: [Option<Action>; 7],
 }
 
 impl Wire {
@@ -79,13 +79,16 @@ impl Wire {
         if !live {
             return Self {
                 input,
-                commands: [None; 4],
+                commands: [None; 7],
             };
         }
         let pickup = intent.interact_pressed
-            && target
-                .filter(|t| t.usable())
-                .is_some_and(|t| matches!(t.kind, TargetKind::Relic(_) | TargetKind::Aji(_)));
+            && target.filter(|t| t.usable()).is_some_and(|t| {
+                matches!(
+                    t.kind,
+                    TargetKind::Relic(_) | TargetKind::Aji(_) | TargetKind::Batteries(_) | TargetKind::Panel
+                )
+            });
         let mark = intent.ping.then(|| {
             let at = target
                 .map(|t| t.center)
@@ -99,6 +102,9 @@ impl Wire {
                 intent.drop.then_some(Action::Drop),
                 intent.use_aji.then_some(Action::UseAji),
                 mark,
+                intent.skill.map(|(id, needle)| Action::Skill { id, needle }),
+                intent.code.map(|code| Action::TryCode { code }),
+                intent.name.map(|variant| Action::Name { variant }),
             ],
         }
     }
@@ -138,6 +144,13 @@ pub fn follow_body(pose: &mut Pose, local: &PlayerView, fresh: bool, dt: f32, tu
     if fresh {
         pose.lower = want_lower;
     }
+}
+
+/// The skill check this player is being asked for, and where its needle is
+/// now: the host's needle in the newest snapshot, carried on by the seconds
+/// since it arrived.
+pub fn needle(snap: &Snapshot, age: f32, tuning: &Tuning) -> Option<(u32, f32)> {
+    snap.me.check.map(|c| (c.id, c.needle + age / tuning.check_sweep))
 }
 
 /// The presentation's mirror of the encounter, from a snapshot alone: the
@@ -208,6 +221,11 @@ impl Network {
     }
     pub fn stunned(&self) -> bool {
         self.snapshot().is_some_and(|s| s.me.stun > 0.0)
+    }
+    /// The skill check in flight for this player and its needle now.
+    pub fn needle(&self, tuning: &Tuning) -> Option<(u32, f32)> {
+        let e = self.endpoint.as_ref()?;
+        needle(e.snapshot.as_ref()?, e.snapshot_age(), tuning)
     }
 }
 
@@ -291,8 +309,8 @@ fn net_keys(keys: Res<ButtonInput<KeyCode>>, launch: Res<Launch>, mut controls: 
 }
 
 fn update(
-    time: Res<Time>,
-    real: Res<Time<Real>>,
+    (time, real): (Res<Time>, Res<Time<Real>>),
+    mut outcome_wait: Local<f32>,
     layout: Res<LayoutRes>,
     tuning: Res<TuningRes>,
     state: Res<State<Flow>>,
@@ -400,8 +418,21 @@ fn update(
         follow_body(&mut player.0.pose, local, changed, dt, &tuning.0);
         *player.1 = crate::player::eye_transform(&player.0.pose, &tuning.0, &layout.0);
     }
+    // The run is over: the outcome screen, once a player who was just
+    // caught has had the moment he lunges at them.
     if enc.outcome.is_over() {
-        next.set(Flow::Outcome);
+        *outcome_wait += real.delta_secs();
+        let caught = status_of(Some(s), endpoint.id) != 0;
+        let hold = if caught && enc.outcome == crate::sim::Outcome::Failed {
+            crate::world::omen::LUNGE + 0.2
+        } else {
+            0.0
+        };
+        if *outcome_wait >= hold {
+            next.set(Flow::Outcome);
+        }
+    } else {
+        *outcome_wait = 0.0;
     }
     let run = s.run;
     endpoint.notices.retain(|message| {
@@ -414,6 +445,7 @@ fn update(
                 serial,
                 variant,
                 speed,
+                phantom,
             } if *r == run && *serial > *last_serial => {
                 *last_serial = *serial;
                 let variant = match *variant {
@@ -424,9 +456,10 @@ fn update(
                 // Deliberately categorical: do not transmit invertible continuous distance.
                 whistles.write(WhistleMsg(WhistlePhrase {
                     variant,
-                    gain: variant.gain(&tuning.0),
+                    gain: variant.gain(&tuning.0) * if *phantom { 0.7 } else { 1.0 },
                     speed: *speed,
                     seeming_closeness: 0.0,
+                    phantom: *phantom,
                 }));
             }
             ServerMessage::Events {
@@ -513,7 +546,8 @@ fn avatars(
         let want = Quat::from_rotation_y(p.yaw) * Quat::from_rotation_x(-roll);
         transform.rotation = transform.rotation.slerp(want, k);
         transform.scale = transform.scale.lerp(Vec3::new(1.0, squash, 1.0), k);
-        *vis = if p.status == 2 {
+        // The dead are gone, and the one in his sack is inside it.
+        *vis = if p.status == 2 || p.hauled {
             Visibility::Hidden
         } else {
             Visibility::Inherited

@@ -76,6 +76,8 @@ pub struct Frame {
     /// intent, as for a human; see `super::Wire`.
     pub action: Option<Action>,
     pub leave: bool,
+    /// The route wants the torch off (it is hiding).
+    pub dark: bool,
 }
 
 impl Driver {
@@ -112,6 +114,7 @@ impl Driver {
             intent: Intent::default(),
             action: None,
             leave: false,
+            dark: false,
         };
         self.elapsed += dt;
         if self.error.is_some() || self.done {
@@ -181,6 +184,7 @@ impl Driver {
         frame.action = step.command();
         frame.leave = step.leave;
         frame.intent = step.intent;
+        frame.dark = step.dark;
         frame
     }
 }
@@ -194,8 +198,8 @@ impl Driver {
 /// read, the input goes out with its presses and the route's own command
 /// follows.
 pub fn run_headless(launch: Launch) -> Result<(), String> {
-    let layout = Layout::new();
-    let tuning = Tuning::with_seed(launch.seed);
+    let layout = Layout::with_seed(launch.seed);
+    let tuning = Tuning::with_seed(launch.seed).with_night(launch.night);
     if launch.network == Mode::Solo {
         return Err("headless requires --host/--join".into());
     }
@@ -233,7 +237,7 @@ pub fn run_headless(launch: Launch) -> Result<(), String> {
             .and_then(|(s, id)| crosshair(&layout, &tuning, s, id, &pose));
         // The torch is on, as the game starts and the route never switches it.
         let live = controls_live(endpoint.snapshot.as_ref(), endpoint.id, true);
-        let wire = Wire::new(&frame.intent, live, &pose, true, hud, &layout, &tuning);
+        let wire = Wire::new(&frame.intent, live, &pose, !frame.dark, hud, &layout, &tuning);
         wire.send(&mut endpoint, &layout, &tuning);
         if let Some(action) = frame.action {
             endpoint.command(action, &layout, &tuning);

@@ -37,7 +37,8 @@ cargo test --locked                          # headless rules and route tests
 
 | Option | Meaning |
 |---|---|
-| `--seed N` | world-scatter, storm and whistle-jitter seed (default `1997`) |
+| `--seed N` | the night: bundle hiding places, padlock code, which of him walks, storm (solo without it: a new night every launch; debug routes and shared sessions: `1997`) |
+| `--night N` | `gentle`, `normal` (default) or `hard`; every peer in a shared session must agree |
 | `--size WxH` | window size (default `1600x900`) |
 | `--shots DIR` | folder for F12 screenshots and the debug drivers (default `./screenshots`) |
 | `--host ADDR` | host a shared session, e.g. `127.0.0.1:5000` (loopback or private LAN only) |
@@ -54,36 +55,61 @@ Assets load from this crate's `assets/` even when the binary is started from
 ## The run
 
 1. **Five bone bundles** lie at the ranch house table, the corral, the tall
-   grass fields, the caño's stilt hut and the old watchtower's deck. Taking
-   the first one wakes him; he rises far from everyone.
+   grass fields, the caño's stilt hut and the old watchtower (all but the
+   table one change hiding place from night to night). Taking the first
+   one wakes him; he rises far from everyone.
 2. Carry bundles to the **altar in the ceiba's roots** and hold interact to
-   lay each down. Carrying slows you, makes you louder and raises the night's
-   pressure; every bundle home eases it.
+   lay each down, keeping the rhythm (below). Carrying slows you and makes
+   you louder, and **every bundle laid to rest angers him more**.
 3. With all five home, **crank the windmill pump** (the hold adds up across
-   players) to restore power: the lamps come on.
-4. **Start the truck** at the extraction road. The engine's roar draws him
+   players) to restore power. The old dynamo carries only two of three lamp
+   lines; the **panel beside the pump** switches which (the bridge starts
+   dark).
+4. The truck key is padlocked in a **key box** at the windmill. Its three
+   numbers change every night and are written in three pages: the
+   Madrina's at the ceiba, the foreman's ledger in the stilt hut, the
+   guard's in the lookout cabin.
+5. **Start the truck** at the extraction road. The engine's roar draws him
    while it warms up; once it is warm, every standing player must be in its
-   boarding zone to escape. If everyone is down or dead, the run fails.
+   boarding zone to escape.
+6. **Or name him.** He comes back in one of three ways each night (the
+   drunkard's return, the son himself, the drover), each with its own signs
+   and temper. With every bone at the ceiba, press **N** at the altar and
+   name the right one: he is laid to rest. Name the wrong one and he comes,
+   furious.
+
+If everyone is down or dead, the run fails.
 
 Surviving him:
 
-- He warns when he sees you within range (the screen edge darkens, the
-  whistle thins). Break line of sight — walls, trunks, the truck — or crouch
-  in tall grass beyond a few metres to avert it. Otherwise he **hunts**:
-  exposure builds while he sees you. Stay out of his sight long enough and
-  he loses track, sinks and rises again far away.
+- He warns when he sees you within range. Break line of sight (walls,
+  trunks, the truck) or crouch in tall grass beyond a few metres to avert
+  it. Otherwise he **hunts**: exposure builds while he sees you. Lose him
+  and he sinks and rises far away; avert him three times running and he
+  tires of waiting over you.
 - Everything makes a sound: crouching sneaks, running is heard far away,
-  wading and planks are loud; rain and thunder mask footsteps. He
-  investigates what he hears.
-- **Fear** grows in the dark and alone and with every warning; lamplight,
-  company and prayer at the altar calm it. At its peak a **susto** freezes
-  you for a moment and you cry out.
-- **Ají** peppers (seven sites, up to three carried) scatter into a ward he
-  will not cross; the first touch makes him stop and count bones.
-- Caught players go **down**: they crawl and bleed out unless a teammate
-  holds interact beside them to revive them. Solo, going down ends the run.
-- Spooked cattle bellow; the lit watchtower beacon draws him away for a
-  while. Seven notes around the district explain the rules in fiction.
+  wading and planks are loud; rain and thunder mask footsteps.
+- Your **torch** runs down (spare batteries lie around the landmarks) and
+  a lit beam he can see draws him from far off. The dark is safer, and
+  worse.
+- **Skill checks**: while laying bones, cranking or turning the engine
+  over, a chime warns and a needle sweeps; press **Space** in the marked
+  zone. A miss screeches across the llano, costs work and frightens you.
+- **Fear** grows in the dark and alone; lamplight, company and prayer calm
+  it. At its peak a **susto** freezes you. Badly frightened, you may hear
+  whistles that are not there and glimpse him where he is not.
+- **Ají** peppers scatter into a ward he will not cross; the first touch
+  makes him stop and count bones.
+- **Tureco**, the ranch dog, is tied behind the house. Untie him and he
+  follows you; he growls when the Silbón is truly near and, when he has the
+  courage, barks him off.
+- Caught with friends still standing, you go **into his sack**: he carries
+  you off, and only ají in his path (or Tureco's bark) makes him drop you
+  before you are gone. Once out, a teammate can help you up. Solo, being
+  caught ends the run.
+- Twenty pages lie around the district (letters, ledgers, a copla, the
+  parish register, a telegram, the radio on the shelf…): read them all
+  over your nights to piece the tale together.
 
 ## Controls
 
@@ -93,7 +119,10 @@ Surviving him:
 | W A S D / arrows | move |
 | Shift | run (stamina) |
 | Ctrl / C | crouch |
-| E or left click | use; **hold** at the altar, pump, ignition, beacon or a downed teammate |
+| E or left click | use; **hold** at the altar, pump, ignition, beacon, a downed teammate or Tureco |
+| Space | skill check (press as the needle crosses the zone) |
+| 1 / 2 / 3, Enter | at the key box: turn the dials (Shift turns back), try; at the ceiba: choose a name, name him |
+| N | at the ceiba with every bone home: name which of him walks tonight |
 | F | flashlight on/off |
 | G | put a bundle down |
 | Q | scatter ají |

@@ -13,7 +13,7 @@ use bevy::render::render_resource::{AsBindGroup, RenderPipelineDescriptor, Speci
 use bevy::shader::ShaderRef;
 
 use super::Palette;
-use super::land::HORIZON;
+use super::land::{HORIZON, MOON_COLOR, MOON_LUX, NIGHT_AMBIENT, NIGHT_AMBIENT_COLOR};
 use super::mesh::{MeshBuilder, WHITE};
 use crate::app::{LayoutRes, StormClock, TuningRes};
 use crate::geometry::Layout;
@@ -316,11 +316,13 @@ pub fn lightning(
     let seed = tuning.0.seed;
     let f = storm::flash(seed, clock.t);
     let (mut bloom, mut fog) = camera.into_inner();
-    moon.illuminance = 1150.0 + 21_000.0 * f;
-    moon.color = Color::srgb(0.66 + 0.3 * f, 0.75 + 0.2 * f, 1.0);
-    ambient.brightness = 90.0 + 1300.0 * f;
-    ambient.color = Color::srgb(0.55 + 0.3 * f, 0.64 + 0.25 * f, 0.9);
-    bloom.intensity = 0.1 + 0.16 * f;
+    let [mr, mg, mb] = MOON_COLOR;
+    moon.illuminance = MOON_LUX + 21_000.0 * f;
+    moon.color = Color::srgb(mr + 0.3 * f, mg + 0.2 * f, mb);
+    let [ar, ag, ab] = NIGHT_AMBIENT_COLOR;
+    ambient.brightness = NIGHT_AMBIENT + 1300.0 * f;
+    ambient.color = Color::srgb(ar + 0.3 * f, ag + 0.25 * f, ab);
+    bloom.intensity = crate::player::BLOOM + 0.16 * f;
     let k = 1.0 + 55.0 * f;
     fog.color = Color::linear_rgba(HORIZON[0] * k, HORIZON[1] * k, HORIZON[2] * k * 1.1, 1.0);
     let (mesh, material, mut visibility) = bolt.into_inner();

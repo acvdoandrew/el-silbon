@@ -173,16 +173,37 @@ fn every_bundle_pepper_note_and_site_can_actually_be_reached_and_seen() {
     let l = Layout::new();
     let t = Tuning::default();
     let d = &l.district;
-    for (i, p) in d.relics.iter().enumerate() {
-        assert!(
-            interactable(&l, &t, *p, el_silbon::geometry::district::RELIC_RADIUS, t.relic_reach).is_some(),
-            "bundle {i} at {p:?} cannot be picked up"
-        );
+    for (i, sites) in d.relic_sites.iter().enumerate() {
+        assert_eq!(sites[0], d.relics[i], "the authored spot is the first");
+        for p in sites {
+            assert!(
+                interactable(&l, &t, *p, el_silbon::geometry::district::RELIC_RADIUS, t.relic_reach).is_some(),
+                "bundle {i} at {p:?} cannot be picked up"
+            );
+        }
     }
+    // Nights differ: the seeds spread the bundles over their hiding places.
+    let nights: std::collections::HashSet<Vec<[i32; 3]>> = (0..40)
+        .map(|seed| {
+            Layout::with_seed(seed)
+                .district
+                .relics
+                .iter()
+                .map(|p| [(p.x * 10.0) as i32, (p.y * 10.0) as i32, (p.z * 10.0) as i32])
+                .collect()
+        })
+        .collect();
+    assert!(nights.len() >= 12, "only {} different nights", nights.len());
     for (i, p) in d.aji.iter().enumerate() {
         assert!(
             interactable(&l, &t, *p, 0.22, t.relic_reach).is_some(),
             "pepper {i} at {p:?} cannot be picked up"
+        );
+    }
+    for (i, p) in d.batteries.iter().enumerate() {
+        assert!(
+            interactable(&l, &t, *p, 0.2, t.relic_reach).is_some(),
+            "batteries {i} at {p:?} cannot be picked up"
         );
     }
     for n in &d.notes {
@@ -197,6 +218,8 @@ fn every_bundle_pepper_note_and_site_can_actually_be_reached_and_seen() {
         ("pump", d.pump, 0.65),
         ("ignition", d.ignition, 0.6),
         ("beacon", d.beacon, 0.6),
+        ("key box", d.lockbox, 0.2),
+        ("line panel", d.panel, 0.25),
     ] {
         assert!(
             interactable(&l, &t, p, r, t.site_reach).is_some(),
@@ -204,11 +227,20 @@ fn every_bundle_pepper_note_and_site_can_actually_be_reached_and_seen() {
         );
     }
     assert!(interactable(&l, &t, l.ceiba.offering, l.ceiba.offering_radius, t.altar_reach).is_some());
-    // Note ids are unique and the lore has text for every one.
+    // Note ids are unique, every page of the lore lies somewhere, and every
+    // placed page has words.
     let mut ids: Vec<u8> = d.notes.iter().map(|n| n.id).collect();
     ids.sort_unstable();
     ids.dedup();
     assert_eq!(ids.len(), d.notes.len());
+    assert_eq!(ids, (0..el_silbon::lore::PAGES).collect::<Vec<u8>>());
+    for id in ids {
+        let page = el_silbon::lore::note(id);
+        assert!(
+            !page.es.is_empty() && !page.en.is_empty() && !page.title.is_empty(),
+            "page {id}"
+        );
+    }
 }
 
 #[test]

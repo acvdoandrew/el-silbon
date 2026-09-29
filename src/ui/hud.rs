@@ -54,7 +54,16 @@ pub(crate) fn objectives(
         )
     };
     let power = if power_on {
-        format!("{} Power restored", tick(true))
+        let names = ["hacienda", "corral", "bridge"];
+        let lines: Vec<&str> = (0..3)
+            .filter(|i| w.circuits & (1 << i) != 0)
+            .map(|i| names[i])
+            .collect();
+        format!(
+            "{} Power restored — lamps on the {} (switch lines at the windmill panel)",
+            tick(true),
+            lines.join(" and ")
+        )
     } else if w.power > 0.0 {
         format!("{} Restore power at the windmill: {:.0}%", tick(false), w.power * 100.0)
     } else {
@@ -64,6 +73,11 @@ pub(crate) fn objectives(
         format!("{} The truck is warm — everyone aboard!", tick(false))
     } else if running {
         format!("{} Engine warming: {:.0}%", tick(false), w.warm * 100.0)
+    } else if bones_home && power_on && !w.key {
+        format!(
+            "{} Open the key box at the windmill (three numbers, written in the pages)",
+            tick(false)
+        )
     } else {
         format!("{} Start the truck at the bridge", tick(false))
     };
@@ -83,7 +97,10 @@ pub(crate) fn objectives(
     } else if !bones_home {
         "Bundles of bones lie in the landmarks — the ranch, the corral, the fields, the caño, the tower — and the ceiba is where they belong."
     } else if !power_on {
-        "The bones are home. Now the windmill: hold E at the pump to bring the lights back. It is loud."
+        "The bones are home. Now the windmill: hold E at the pump to bring the lights back. It is loud. \
+         Or, if you know which of him walks tonight, name him at the ceiba (N)."
+    } else if !w.key {
+        "The truck key is padlocked in a box on the crates by the windmill. The Madrina, the foreman and the tower guard each wrote down one number."
     } else if !running {
         "Hold E at the truck's ignition. The engine will roar, and he will come."
     } else if !ready {
@@ -167,9 +184,9 @@ pub(crate) fn vitals(
     mut text: Query<&mut Text, With<VitalsText>>,
 ) {
     let playing = *state.get() == Flow::Playing && net.snapshot().is_some();
-    let (f, stamina, aji) = net
-        .snapshot()
-        .map_or((0.0, 1.0, 0), |s| (s.me.fear, s.me.stamina, s.me.aji));
+    let (f, stamina, aji, battery) = net.snapshot().map_or((0.0, 1.0, 0, 1.0), |s| {
+        (s.me.fear, s.me.stamina, s.me.aji, s.me.battery)
+    });
     for mut v in &mut bars.p0() {
         set_vis(&mut v, playing && f > 0.02);
     }
@@ -201,6 +218,11 @@ pub(crate) fn vitals(
     if net.carrying() > 0 {
         parts.push(format!("Bones x{}  [G] drop", net.carrying()));
     }
+    if battery <= 0.0 {
+        parts.push("Torch: dead".to_string());
+    } else if battery < 0.5 {
+        parts.push(format!("Torch {:.0}%", battery * 100.0));
+    }
     let line = parts.join("   ·   ");
     for mut t in &mut text {
         set_text(&mut t, if playing { &line } else { "" });
@@ -215,26 +237,33 @@ fn hold_label(kind: u8) -> &'static str {
         4 => "Turning the key…",
         5 => "Lighting the beacon…",
         6 => "Helping them up…",
+        7 => "Untying Tureco…",
         _ => "",
     }
 }
 
-fn prompt_for(t: &Target, note_open: bool, carrying: usize) -> String {
+fn prompt_for(t: &Target, note_open: bool, carrying: usize, bones_home: bool) -> String {
     let close = !t.ready();
     let text = match t.kind {
         TargetKind::Relic(_) => "[E] Take the bones — heavy, and they rattle",
         TargetKind::Aji(_) => "[E] Take the peppers",
+        TargetKind::Batteries(_) => "[E] Take the spare batteries",
         TargetKind::Note(_) if note_open => "[E] Put the note down",
         TargetKind::Note(_) => "[E] Read the note",
         TargetKind::Altar if carrying > 0 => "[Hold E] Lay the bones down",
+        TargetKind::Altar if bones_home => "[Hold E] Pray   ·   [N] Name which of him walks tonight",
         TargetKind::Altar => "[Hold E] Pray at the roots — it steadies you, but the ceiba hears",
         TargetKind::Pump => "[Hold E] Crank the pump — loud!",
         TargetKind::Ignition => match t.blocked {
             Some(Blocked::NeedBones) => "The engine will not turn while the bones are unrested",
             Some(Blocked::NeedPower) => "Nothing turns over — the power is out",
+            Some(Blocked::NeedKey) => "No key in the ignition — it is padlocked in the box at the windmill",
             None => "[Hold E] Start the truck — the roar will carry",
         },
         TargetKind::Beacon => "[Hold E] Light the beacon — he will come to the light",
+        TargetKind::Lockbox => "[E] The key box — a three-number padlock",
+        TargetKind::Dog => "[Hold E] Untie Tureco — he fears nothing, and HE fears dogs",
+        TargetKind::Panel => "[E] Switch the lamp lines — the old dynamo carries only two",
         TargetKind::Body(_) => "[Hold E] Help them up",
     };
     if close && !matches!(t.kind, TargetKind::Ignition if t.blocked.is_some()) {
@@ -242,6 +271,7 @@ fn prompt_for(t: &Target, note_open: bool, carrying: usize) -> String {
         match t.kind {
             TargetKind::Relic(_) => "Bones — move closer".into(),
             TargetKind::Aji(_) => "Peppers — move closer".into(),
+            TargetKind::Batteries(_) => "Batteries — move closer".into(),
             _ => format!("{name} — move closer"),
         }
     } else {
@@ -269,7 +299,13 @@ pub(crate) fn prompt(
         String::new()
     } else {
         match target.0 {
-            Some(t) => prompt_for(&t, note.0.is_some(), net.carrying()),
+            Some(t) => prompt_for(
+                &t,
+                note.0.is_some(),
+                net.carrying(),
+                net.snapshot()
+                    .is_some_and(|s| s.world.total > 0 && s.world.delivered >= s.world.total),
+            ),
             None => String::new(),
         }
     };
@@ -286,6 +322,73 @@ pub(crate) fn prompt(
     for mut n in &mut q.p3() {
         if n.width != w {
             n.width = w;
+        }
+    }
+}
+
+/// The skill check in flight: the zone where the host put it, the needle
+/// where it has swept to by now (the snapshot's, carried on by its age).
+pub(crate) fn skill_bar(
+    time: Res<Time<Real>>,
+    net: Res<Network>,
+    tuning: Res<TuningRes>,
+    state: Res<State<Flow>>,
+    mut vis: ParamSet<(
+        Query<&mut Visibility, With<SkillBar>>,
+        Query<&mut Visibility, With<SkillKey>>,
+        Query<&mut Visibility, With<SkillNeedle>>,
+    )>,
+    mut nodes: ParamSet<(
+        Query<&mut Node, With<SkillZone>>,
+        Query<&mut Node, With<SkillGreat>>,
+        Query<&mut Node, With<SkillNeedle>>,
+    )>,
+    mut border: Query<&mut BorderColor, With<SkillBar>>,
+) {
+    let t = &tuning.0;
+    let check = (*state.get() == Flow::Playing)
+        .then(|| net.snapshot().and_then(|s| s.me.check))
+        .flatten();
+    let needle = net.needle(t).map_or(0.0, |(_, n)| n);
+    let shown = check.is_some();
+    for mut v in &mut vis.p0() {
+        set_vis(&mut v, shown);
+    }
+    for mut v in &mut vis.p1() {
+        set_vis(&mut v, shown);
+    }
+    for mut v in &mut vis.p2() {
+        set_vis(&mut v, shown && needle >= 0.0);
+    }
+    let Some(c) = check else {
+        return;
+    };
+    let span = |n: &mut Node, from: f32, width: f32| {
+        let (l, w) = (percent(from * 100.0), percent(width * 100.0));
+        if n.left != l || n.width != w {
+            n.left = l;
+            n.width = w;
+        }
+    };
+    for mut n in &mut nodes.p0() {
+        span(&mut n, c.zone, t.check_zone.min(1.0 - c.zone));
+    }
+    for mut n in &mut nodes.p1() {
+        span(&mut n, c.zone, t.check_great);
+    }
+    for mut n in &mut nodes.p2() {
+        span(&mut n, needle.clamp(0.0, 0.99), 0.008);
+    }
+    // The warning: the frame pulses before the needle moves.
+    let glow = if needle < 0.0 {
+        0.5 + 0.5 * (time.elapsed_secs() * 18.0).sin()
+    } else {
+        0.6
+    };
+    for mut b in &mut border {
+        let want = BorderColor::all(Color::srgba(1.0, 0.85, 0.6, glow));
+        if *b != want {
+            *b = want;
         }
     }
 }
@@ -350,6 +453,11 @@ pub(crate) fn downed_panel(
     let status = if playing { me.map_or(0, |p| p.status) } else { 0 };
     let shared = net.is_shared();
     let (label, want, rgb) = match (status, me) {
+        (1, Some(p)) if p.hauled => (
+            "IN HIS SACK\nThe bones press on you in the dark. Only ají in his path will make him drop you.".to_string(),
+            0.72,
+            [0.08, 0.04, 0.02],
+        ),
         (1, Some(p)) => (
             if shared {
                 format!("YOU ARE DOWN\nA friend can help you up — {:.0}s left", p.bleed.max(0.0))
@@ -423,6 +531,83 @@ pub(crate) fn hints_and_captions(
                 1,
             ),
             Event::RelicDropped => show(&mut hint, "You set the bones down. Gently.", 4.0, 1),
+            Event::SkillCheck => {
+                if !hint.taught_skill {
+                    hint.taught_skill = true;
+                    show(
+                        &mut hint,
+                        "Keep the rhythm: press Space as the needle crosses the marked zone. Miss, and it screeches.",
+                        7.0,
+                        3,
+                    );
+                }
+            }
+            Event::OmenSilence => show(&mut hint, "Even the frogs have stopped.", 5.0, 1),
+            Event::Weeping => show(&mut hint, "Across the llano, a grown man is weeping.", 6.0, 2),
+            Event::DogFreed => show(&mut hint, "Tureco shakes himself and falls in at your heels.", 6.0, 2),
+            Event::DogGrowl => show(
+                &mut hint,
+                "Tureco growls low at the dark. He is near — whatever the whistle says.",
+                6.0,
+                2,
+            ),
+            Event::DogBark => show(
+                &mut hint,
+                "Tureco barks — and out in the dark, something flinches away.",
+                6.0,
+                3,
+            ),
+            Event::Hauled => {
+                if net.status() == 0 {
+                    show(
+                        &mut hint,
+                        "He stuffed them into his sack and walks off! Get ají in his path before he is gone.",
+                        8.0,
+                        3,
+                    );
+                }
+            }
+            Event::SackDropped => show(
+                &mut hint,
+                "He drops the sack to count his bones — get them up, now!",
+                6.0,
+                3,
+            ),
+            Event::Taken => show(&mut hint, "He is gone into the grass. And so are they.", 7.0, 3),
+            Event::WhipCrack => show(&mut hint, "A whip cracks somewhere out in the dark.", 5.0, 1),
+            Event::BottleClink => show(&mut hint, "Glass knocks against glass, out in the grass.", 5.0, 1),
+            Event::NameWrong => show(
+                &mut hint,
+                "Wrong name. The ceiba shudders — and he comes, furious.",
+                6.0,
+                3,
+            ),
+            Event::KeyFound => show(&mut hint, "The padlock gives. The truck key is ours.", 6.0, 3),
+            Event::LinesSwitched => show(
+                &mut hint,
+                "The dynamo groans as the lines change. Somewhere, lamps die; somewhere else, they wake.",
+                5.0,
+                2,
+            ),
+            Event::LockRattle => show(
+                &mut hint,
+                "Wrong numbers. The padlock rattles, loud in the quiet.",
+                4.0,
+                2,
+            ),
+            Event::OmenDrag => show(
+                &mut hint,
+                "Something heavy was dragged through the mud here. Recently.",
+                5.0,
+                1,
+            ),
+            Event::SkillMissed => show(&mut hint, "It screeches across the llano. He heard that.", 5.0, 2),
+            Event::BatteriesTaken => show(
+                &mut hint,
+                "Spare batteries. The beam steadies — and it is the brightest thing on the llano.",
+                5.0,
+                1,
+            ),
             Event::RelicDelivered => show(&mut hint, "One more bundle at rest. The roots are listening.", 5.0, 2),
             Event::AllBonesHome => show(
                 &mut hint,
@@ -468,7 +653,9 @@ pub(crate) fn hints_and_captions(
                 2,
             ),
             Event::Downed => {
-                if net.status() == 1 {
+                if net.status() == 1 && net.is_solo() {
+                    show(&mut hint, "He has you.", 6.0, 3);
+                } else if net.status() == 1 {
                     show(&mut hint, "You are down. Hold on — someone may reach you.", 6.0, 3);
                 } else {
                     show(
@@ -502,6 +689,12 @@ pub(crate) fn hints_and_captions(
         }
     }
     for WhistleMsg(p) in phrases.read() {
+        if p.phantom {
+            // Fear put it there: the caption cannot be sure either.
+            caption.text = "A whistle…? Or only the blood in your ears.";
+            caption.timer = 4.0;
+            continue;
+        }
         caption.text = p.variant.caption();
         caption.timer = 4.5;
         match p.variant {
@@ -542,14 +735,73 @@ pub(crate) fn hints_and_captions(
     }
 }
 
+pub(crate) fn name_panel(
+    state: Res<State<Flow>>,
+    naming: Res<crate::encounter::NamePanel>,
+    mut panel: Query<&mut Visibility, With<NamePanelUi>>,
+    mut choices: Query<&mut Text, With<NameChoices>>,
+) {
+    let open = *state.get() == Flow::Playing && naming.open;
+    for mut v in &mut panel {
+        set_vis(&mut v, open);
+    }
+    if !open {
+        return;
+    }
+    let names = [
+        "1  El Borracho — the drunkard's return",
+        "2  El Hijo — the son himself",
+        "3  El Arriero — the drover",
+    ];
+    let text = names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            if i as u8 == naming.choice {
+                format!("▸ {n} ◂")
+            } else {
+                n.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    for mut t in &mut choices {
+        set_text(&mut t, &text);
+    }
+}
+
+pub(crate) fn lock_panel(
+    state: Res<State<Flow>>,
+    lock: Res<crate::encounter::LockPanel>,
+    mut panel: Query<&mut Visibility, With<LockPanelUi>>,
+    mut digits: Query<&mut Text, With<LockDigits>>,
+) {
+    let open = *state.get() == Flow::Playing && lock.open;
+    for mut v in &mut panel {
+        set_vis(&mut v, open);
+    }
+    if open {
+        let [a, b, c] = lock.dials;
+        let text = format!("{a}  {b}  {c}");
+        for mut t in &mut digits {
+            set_text(&mut t, &text);
+        }
+    }
+}
+
 pub(crate) fn note_panel(
+    tuning: Res<TuningRes>,
     state: Res<State<Flow>>,
     note: Res<NoteOpen>,
+    read: Res<crate::encounter::PagesRead>,
     mut panel: Query<&mut Visibility, With<NotePanel>>,
+    mut paper: Query<&mut BackgroundColor, With<NotePaper>>,
     mut texts: ParamSet<(
-        Query<&mut Text, With<NoteEs>>,
-        Query<&mut Text, With<NoteEn>>,
-        Query<&mut Text, With<NoteBy>>,
+        Query<(&mut Text, &mut TextColor), With<NoteEs>>,
+        Query<(&mut Text, &mut TextColor), With<NoteEn>>,
+        Query<(&mut Text, &mut TextColor), With<NoteBy>>,
+        Query<(&mut Text, &mut TextColor), With<NoteTitle>>,
+        Query<(&mut Text, &mut TextColor), With<NoteCount>>,
     )>,
 ) {
     let open = if *state.get() == Flow::Playing { note.0 } else { None };
@@ -560,13 +812,53 @@ pub(crate) fn note_panel(
         return;
     };
     let page = crate::lore::note(id);
-    for mut t in &mut texts.p0() {
-        set_text(&mut t, page.es);
+    let code = crate::sim::lock_code(tuning.0.seed);
+    let (es, en) = (crate::lore::fill(page.es, code), crate::lore::fill(page.en, code));
+    let [r, g, b] = page.medium.paper();
+    for mut bg in &mut paper {
+        let want = Color::srgba(r, g, b, 0.97);
+        if bg.0 != want {
+            bg.0 = want;
+        }
     }
-    for mut t in &mut texts.p1() {
-        set_text(&mut t, page.en);
+    // Light ink on the dark radio card, dark ink on paper.
+    let dark = page.medium == crate::lore::Medium::Radio;
+    let ink = if dark {
+        Color::srgb(0.9, 0.84, 0.7)
+    } else {
+        Color::srgb(0.16, 0.12, 0.1)
+    };
+    let soft = if dark {
+        Color::srgb(0.75, 0.7, 0.6)
+    } else {
+        Color::srgb(0.25, 0.2, 0.16)
+    };
+    let title = format!("{}\n{}", page.medium.label(), page.title);
+    let count = format!(
+        "[E] put the page down   ·   pages found {}/{}",
+        read.0.len(),
+        crate::lore::PAGES
+    );
+    let lines: [(&str, Color); 5] = [(&es, ink), (&en, soft), (page.by, ink), (&title, soft), (&count, soft)];
+    let apply = |i: usize, t: &mut Text, c: &mut TextColor| {
+        set_text(t, lines[i].0);
+        if c.0 != lines[i].1 {
+            c.0 = lines[i].1;
+        }
+    };
+    for (mut t, mut c) in &mut texts.p0() {
+        apply(0, &mut t, &mut c);
     }
-    for mut t in &mut texts.p2() {
-        set_text(&mut t, page.by);
+    for (mut t, mut c) in &mut texts.p1() {
+        apply(1, &mut t, &mut c);
+    }
+    for (mut t, mut c) in &mut texts.p2() {
+        apply(2, &mut t, &mut c);
+    }
+    for (mut t, mut c) in &mut texts.p3() {
+        apply(3, &mut t, &mut c);
+    }
+    for (mut t, mut c) in &mut texts.p4() {
+        apply(4, &mut t, &mut c);
     }
 }

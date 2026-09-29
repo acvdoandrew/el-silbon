@@ -38,11 +38,13 @@ pub enum Surface {
     Note(u8),
     /// The downed panel over the real HUD. Mirror only: no outcome is set.
     Downed,
+    /// The caught jump scare held at full reach (world only, HUD hidden).
+    Lunge,
 }
 
 impl Surface {
     pub fn is_ui(self) -> bool {
-        !matches!(self, Surface::World)
+        !matches!(self, Surface::World | Surface::Lunge)
     }
 }
 
@@ -352,6 +354,7 @@ fn label(shot: &Shot, moved_camera: bool) -> String {
         Surface::Downed => {
             parts.push("DOWNED panel mirrored, camera lowered as when down (no outcome set; not a real down)")
         }
+        Surface::Lunge => parts.push("caught jump scare held by the debug driver (not a real catch); HUD hidden"),
     }
     if !shot.clear {
         parts.push("NO CLEAR VIEW FOUND: fallback camera, may be obstructed");
@@ -644,17 +647,21 @@ pub fn shots(layout: &Layout, tuning: &Tuning) -> Vec<Shot> {
         },
         false,
     );
-    let note = d.notes.iter().find(|n| n.id == 0).or(d.notes.first());
-    if let Some(note) = note {
+    // The table note, and two of the older papers' styles: the shelf radio's
+    // dark card and a copla.
+    for (id, name) in [(0u8, "51_ui_note"), (10, "56_ui_page_radio"), (13, "57_ui_page_copla")] {
+        let Some(note) = d.notes.iter().find(|n| n.id == id) else {
+            continue;
+        };
         let view = site.note_view(note);
         let (cam, target) = view.unwrap_or((standing, standing + forward * 10.0));
         push(
             Shot {
                 surface: Surface::Note(note.id),
                 clear: view.is_some(),
-                ..base("51_ui_note".into(), cam, target, 68.0)
+                ..base(name.into(), cam, target, 68.0)
             },
-            true,
+            id == 0,
         );
     }
     let lowered = spawn_eye(tuning.downed_lower);
@@ -665,6 +672,30 @@ pub fn shots(layout: &Layout, tuning: &Tuning) -> Vec<Shot> {
         },
         false,
     );
+    // Tureco, tied at his post behind the house, seen from the back door.
+    let post = d.dog_post;
+    let dog_ground = layout.surface_height(post);
+    push(
+        base(
+            "55_tureco".into(),
+            Vec3::new(post.x + 1.6, dog_ground + 1.3, post.y + 1.9),
+            Vec3::new(post.x - 0.2, dog_ground + 0.45, post.y),
+            55.0,
+        ),
+        false,
+    );
+    for (name, eye) in [
+        ("53_caught_lunge_down", lowered),
+        ("54_caught_lunge_standing", standing),
+    ] {
+        push(
+            Shot {
+                surface: Surface::Lunge,
+                ..base(name.into(), eye, eye + forward * 10.0, 68.0)
+            },
+            false,
+        );
+    }
     out
 }
 

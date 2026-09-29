@@ -749,6 +749,7 @@ impl Layout {
                 pos,
                 radius: 6.0,
                 powered: false,
+                circuit: 0,
             })
             .chain(layout.district.lamps.iter().copied())
             .collect();
@@ -947,12 +948,13 @@ impl Layout {
         Vec3::new(p.x, self.surface_height(p), p.y)
     }
 
-    /// Is `p` inside the glow of a burning lamp? Powered lamps burn only
-    /// once the windmill pump runs.
-    pub fn is_lit(&self, p: Vec2, power: bool) -> bool {
+    /// Is `p` inside the glow of a burning lamp? Kerosene lanterns always
+    /// burn; a powered lamp only while its line is live (`circuits`, a bit per
+    /// `Lamp::circuit`; 0 while the pump has not brought the power up).
+    pub fn is_lit(&self, p: Vec2, circuits: u8) -> bool {
         self.light_sources
             .iter()
-            .any(|l| (!l.powered || power) && ground(l.pos).distance(p) <= l.radius)
+            .any(|l| (!l.powered || circuits & (1 << l.circuit) != 0) && ground(l.pos).distance(p) <= l.radius)
     }
 
     /// Walkable water: slow, splashing footsteps.
