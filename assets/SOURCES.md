@@ -101,7 +101,7 @@ maps cover ground, road, wood, zinc, bark, burlap, straw, cloth and water.
 ## Meshes and characters — original, generated at runtime
 
 Everything is built procedurally from `Layout` data, so what is seen is what
-collides (`src/world/`). No imported models.
+collides (`src/world/`). The game does not yet load the glTF models below.
 
 | Kit | Source |
 |---|---|
@@ -128,6 +128,27 @@ legend; nothing depicts real ritual practice. The eleven user-supplied
 concept images were inspected only as authoring references (see
 `docs/PROGRESS.md`); their licensing was not established and they are not
 copied or shipped.
+
+## glTF models — original, built by script in Blender (not yet loaded)
+
+Every model is built from code (lofted tubes, ribbons and primitives; no
+scans, downloads or AI meshes), with procedural Cycles materials baked to
+plain textures from small tileable patterns made in numpy. Deterministic
+(fixed seeds). Rebuild headless with Blender 5.2, e.g.
+`PATH=/usr/bin:$PATH blender -b --factory-startup --python tools/models/truck.py`,
+or run the same file through the Blender MCP. Binaries are kept in Git LFS.
+
+| File | Built by | Content |
+|---|---|---|
+| `models/silbon.glb` | `tools/silbon_model.py` | El Silbón after the concept sheet: skin, cloth and gear textures, eyes, skinned to the game's `JointKind` joints; about 3 m tall |
+| `models/cow.glb`, `bull.glb`, `calf.glb` | `tools/models/cattle.py` | Zebu-type cattle of the herd |
+| `models/tureco.glb` | `tools/models/dog.py` | Tureco, flat per-facet colours, skinned to the dog's joints |
+| `models/bone_bundle.glb`, `radio.glb` | `tools/models/props.py` | The burlap bone bundle and the shelf radio, baked textures |
+| `models/truck.glb` | `tools/models/truck.py` | The 1970s–80s llanos utility truck, faded olive over cream, separate lamp-lens materials |
+| `models/src/silbon.blend`, `models/src/llano_models.blend` | the scripts above | The Blender scenes the models are exported from |
+| `models/src/renders/sheet.png`, `herd_sheet.png`, `props_sheet.png`, `truck/sheet.png`, `tureco/sheet.png` | the scripts above | One review sheet per asset (single views are re-rendered, not kept) |
+
+Shared helpers: `tools/models/modelkit.py`.
 
 ## Text
 

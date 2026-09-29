@@ -7,3 +7,15 @@
 !.env.example
 __pycache__/
 *.py[cod]
+
+# Model renders: only one summary sheet per asset is kept (in Git LFS); the
+# single views and scratch images are re-rendered by tools/models and
+# tools/silbon_model.py. Blender's backup scenes are never kept.
+/assets/models/src/renders/**
+!/assets/models/src/renders/**/
+!/assets/models/src/renders/sheet.png
+!/assets/models/src/renders/herd_sheet.png
+!/assets/models/src/renders/props_sheet.png
+!/assets/models/src/renders/truck/sheet.png
+!/assets/models/src/renders/tureco/sheet.png
+*.blend1
