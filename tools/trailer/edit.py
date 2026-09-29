@@ -122,7 +122,7 @@ def sounds(stems):
         (s("m4.mp3"), at("title") - 0.3, -2, {"until": TOTAL, "fade_out": 3.0}),
         # The whistle: faint in the dark before anything, loud on the lie.
         (g("whistle_faint_0.wav"), 2.4, -12, {}),
-        (g("whistle_mid_2.wav"), at("truck", 1.2), -18, {}),
+        (g("whistle_mid_2.wav"), at("truck", 1.2), -8, {}),
         (g("whistle_loud_3.wav"), at("card_lies", 0.35), -6, {}),
         # Hits on the cards and the title.
         (s("sfx_braam.mp3"), at("card_bones"), -6, {}),
