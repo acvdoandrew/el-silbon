@@ -40,6 +40,7 @@ pub mod script;
 pub mod sim;
 pub mod skill;
 pub mod storm;
+pub mod trailer;
 pub mod tuning;
 pub mod ui;
 pub mod world;

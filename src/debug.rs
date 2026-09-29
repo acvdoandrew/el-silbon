@@ -55,6 +55,7 @@ impl Plugin for DebugPlugin {
         let smoke = launch.as_ref().is_some_and(|l| l.smoke);
         let photos = launch.as_ref().is_some_and(|l| l.photos);
         let menu_shots = launch.as_ref().is_some_and(|l| l.menu_shots);
+        let trailer = launch.as_ref().is_some_and(|l| l.trailer);
         if smoke || photos || menu_shots {
             // The render world reports how many pipelines are still compiling.
             let probe = PipelineProbe(Arc::new(AtomicUsize::new(usize::MAX)));
@@ -113,7 +114,15 @@ impl Plugin for DebugPlugin {
             })
             .add_systems(Update, menu_shots_drive.in_set(GameSet::Control));
         }
-        if photos {
+        if trailer {
+            app.add_systems(PostStartup, crate::trailer::setup).add_systems(
+                Update,
+                crate::trailer::drive
+                    .in_set(GameSet::Weather)
+                    .after(crate::app::advance_storm),
+            );
+        }
+        if photos && !trailer {
             let (mut shots, calm, requested) = {
                 let world = app.world();
                 let seed = world.resource::<TuningRes>().0.seed;
@@ -172,7 +181,7 @@ struct ShotCounter(u32);
 /// Pipelines still waiting to compile in the latest rendered frame
 /// (`usize::MAX` until the renderer has reported once).
 #[derive(Resource, Clone)]
-struct PipelineProbe(Arc<AtomicUsize>);
+pub(crate) struct PipelineProbe(pub(crate) Arc<AtomicUsize>);
 
 fn probe_pipelines(cache: Res<PipelineCache>, probe: Res<PipelineProbe>) {
     probe.0.store(cache.waiting_pipelines().count(), Ordering::Relaxed);
@@ -603,7 +612,7 @@ struct PhotoCaption;
 
 /// A moment in the storm with heavy rain and no lightning, through the gap
 /// between a pair's frames (photos are calm unless a frame asks otherwise).
-fn calm_time(seed: u64) -> f32 {
+pub(crate) fn calm_time(seed: u64) -> f32 {
     let span = crate::photos::PAIR_GAP_SECS + 1.5;
     (60..2000)
         .map(|s| s as f32 * 0.5)

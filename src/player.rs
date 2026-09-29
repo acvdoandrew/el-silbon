@@ -86,6 +86,7 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CurrentIntent>()
+            .init_resource::<TorchHand>()
             .init_resource::<Gait>()
             .insert_resource(LightOn(true))
             .add_systems(Startup, spawn_player.after(crate::world::spawn_world))
@@ -495,7 +496,11 @@ fn view_settings(
     // The catch: the world dims in its silence; each time the torch bursts
     // back on him the view flares and punches in (never in a photo, which
     // holds its own view).
-    let lunge = if launch.photos { None } else { fright.lunge };
+    let lunge = if launch.photos && !launch.trailer {
+        None
+    } else {
+        fright.lunge
+    };
     if *applied && !settings.is_changed() && lunge.is_none() && !*punching {
         return;
     }
@@ -526,10 +531,21 @@ fn view_settings(
 
 /// The torch's lights and lens follow its switch and its charge: a dead
 /// battery gives nothing, a weak one gutters and catches.
+/// Whether the torch is seen in hand (the trailer's cinematic shots hide it).
+#[derive(Resource)]
+pub struct TorchHand(pub bool);
+
+impl Default for TorchHand {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn torch_light(
     time: Res<Time>,
     state: Res<State<Flow>>,
+    hand: Res<TorchHand>,
     fright: Res<crate::world::omen::Fright>,
     layout: Res<LayoutRes>,
     torch: Single<(&Flashlight, &mut Visibility)>,
@@ -541,9 +557,10 @@ fn torch_light(
     mut shown: Local<Option<u16>>,
 ) {
     let (torch, mut vis) = torch.into_inner();
-    // On the title screen the camera drifts over the llano: no torch in hand.
+    // On the title screen the camera drifts over the llano: no torch in hand
+    // (nor in a trailer's cinematic shots).
     let title = *state.get() == Flow::Title;
-    let want = if title {
+    let want = if title || !hand.0 {
         Visibility::Hidden
     } else {
         Visibility::Inherited

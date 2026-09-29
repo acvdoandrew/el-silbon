@@ -185,7 +185,7 @@ pub struct DragMarks(f32);
 #[derive(Component)]
 pub struct LungeLight;
 #[derive(Component)]
-pub struct OmenHat(f32);
+pub struct OmenHat(pub f32);
 #[derive(Component)]
 pub struct PhantomFigure(f32);
 #[derive(Component)]

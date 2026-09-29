@@ -92,6 +92,9 @@ pub struct Launch {
     /// DEBUG `--menu-shots`: walk the title screen and every menu page,
     /// save a screenshot of each, exit.
     pub menu_shots: bool,
+    /// DEBUG `--trailer`: render the teaser's shots frame by frame, exit.
+    /// Implies `photos` (a staged presentation, never gameplay).
+    pub trailer: bool,
 }
 
 impl Default for Launch {
@@ -109,6 +112,7 @@ impl Default for Launch {
             photos: false,
             menu: false,
             menu_shots: false,
+            trailer: false,
         }
     }
 }
@@ -130,6 +134,7 @@ USAGE: el_silbon [--seed N] [--size WxH] [--shots DIR] [--smoke]
                 downed, restart), save screenshots, print a summary, exit
   --photos      DEBUG: fly a camera to authored viewpoints, save screenshots, exit
   --menu-shots  DEBUG: show the title screen and every menu page, save screenshots, exit
+  --trailer     DEBUG: render the teaser's shots frame by frame (1920x1080, 30 fps), exit
   --host ADDR   host and play, e.g. 127.0.0.1:5000 (loopback/private LAN only)
   --join ADDR   join a host before the run starts
   --net-smoke   DEBUG: real two-process shared-run route
@@ -151,6 +156,10 @@ impl Launch {
                 }
                 "--photos" => launch.photos = true,
                 "--menu-shots" => launch.menu_shots = true,
+                "--trailer" => {
+                    launch.trailer = true;
+                    launch.photos = true;
+                }
                 "--play" => play = true,
                 "--host" | "--join" => {
                     if launch.network != Mode::Solo {
@@ -333,6 +342,7 @@ pub fn build_app(launch: Launch) -> App {
     let layout = Layout::with_seed(launch.seed);
     let encounter = Encounter::new(&layout);
     let automated = launch.smoke || launch.photos;
+    let launch_trailer = launch.trailer;
     // A player's settings and journal come back each launch; the automated
     // routes run on the defaults and never write the profile.
     let persist = !automated && !launch.net_smoke && !launch.menu_shots;
@@ -369,7 +379,12 @@ pub fn build_app(launch: Launch) -> App {
     if automated {
         // Fixed 60 Hz simulated time regardless of render speed: every smoke
         // run steps the same truth in the same order.
-        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(1.0 / 60.0)));
+        let step = if launch_trailer {
+            1.0 / f64::from(crate::trailer::FPS)
+        } else {
+            1.0 / 60.0
+        };
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(step)));
     }
     let fog = crate::world::land::HORIZON;
     app.insert_resource(ClearColor(Color::linear_rgb(fog[0], fog[1], fog[2])))

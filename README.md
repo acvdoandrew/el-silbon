@@ -49,6 +49,7 @@ cargo test --locked                          # headless rules and route tests
 | `--tour` | **debug**: walk to every landmark and up the lookout, then the full `--smoke` route |
 | `--photos` | **debug**: presentation review captures from searched viewpoints, then exit |
 | `--menu-shots` | **debug**: the title screen and every menu page, one capture each, then exit |
+| `--trailer` | **debug**: render the teaser's staged shots frame by frame at 1920x1080, then exit |
 | `--net-smoke` | **debug**: scripted two-process shared-run route (with `--host`/`--join`) |
 | `--headless` | with `--net-smoke`: real networking without graphics |
 
@@ -271,6 +272,15 @@ debug features.
   pause, pause settings) and leaves it for the title again, saving one
   capture per step to `<shots>/menu/`. It prints `MENU SHOTS OK` and exits
   0. Presentation review only.
+- **`--trailer`** renders the teaser's fifteen staged shots (`src/trailer.rs`)
+  at 30 fps on a fixed 1/30 s clock into `<shots>/trailer/<NN_shot>/%05d.png`
+  (about 1,800 frames, 3.3 GB). `TRAILER_ONLY=catch` renders only matching
+  shots; `TRAILER_STILLS=1` writes one still per shot to
+  `<shots>/trailer_stills/` for framing. Everything staged (camera, his
+  pose, lightning, teammates) is presentation only. The cut, with
+  narration, score, sound, cards and subtitles, is assembled by
+  `python3 tools/trailer/edit.py --frames <shots>/trailer --stems DIR --out FILE`
+  (ffmpeg); the stems (ElevenLabs narration, score and hits) are not in git.
 - **`--net-smoke`** runs the shared route in two real processes over UDP:
   a delivery and exchanged marks, a shared win with all bones, power and
   the truck, a restart, a shared failure, a second restart, then a carrier

@@ -1,6 +1,43 @@
 # Progress
 
-## Current handoff — 2026-09-29 (the catch, rebuilt)
+## Current handoff — 2026-09-29 (models in the game, and the teaser)
+
+### The Blender models (`130ebf7`, local, not pushed)
+
+`world::models` puts each glTF from `assets/models/` (see
+`assets/SOURCES.md`) under the entity it replaces: the Silbón, Tureco, the
+herd (a bull, a calf and cows), the bone bundles (placed and carried), the
+shelf radio and the truck. When a scene is ready the procedural stand-in
+goes and the game's markers move onto the model's named nodes (his joints
+and body, the dog's head, jaw, tail and legs, the truck's lamp materials),
+so the existing animation drives the real rigs. A model that fails to load
+(for example a clone without Git LFS) leaves the procedural one in place.
+The drivers wait for `ModelsPending::settled()`. Verified: gate green;
+photos of every model (`60_model_bundle`, `61_model_radio`,
+`62_model_herd`, the catch frames); rendered `--smoke` PASS with a steady
+census.
+
+### The teaser (committed locally, not pushed)
+
+- `--trailer` (`src/trailer.rs`) stages fifteen shots in the real game
+  (camera paths, his poses, lightning on a pinned storm clock, staged
+  teammates, the hat, the real catch) and captures 1920x1080 frames on a
+  fixed 1/30 s clock. Everything staged is presentation only.
+- `tools/trailer/edit.py` cuts the frames with cards, subtitles, grain,
+  narration, score and sound (ffmpeg); the mix is normalised to about
+  -14 LUFS, true peak -1.5 dB.
+- Narration: ElevenLabs `eleven_v3`, premade voice "Callum" in English (the
+  Spanish library voices need a paid tier); the Spanish refrain is on the
+  title card. Score: four `eleven_music` cues; hits: `eleven_text_to_sound`.
+  All on the ElevenLabs flow `t3VPUz9ndVLhNvptnZKb`. The narration was
+  transcribed back and matches the script. Stems and frames stay out of git.
+- Output: `~/Videos/el_silbon_trailer.mp4` (85.9 s, 1080p30, -13.3 LUFS) and a
+  720p preview next to it.
+- Verified: gate green (fmt, clippy `-D warnings`, 62 + 7 + 40 tests); every
+  shot reviewed on contact sheets; the catch's silence measured silent.
+  Unverified: the user has not yet watched it.
+
+## Earlier handoff — 2026-09-29 (the catch, rebuilt)
 
 Uncommitted, with the quick wins below (all on `c154ec4`). The user found
 being caught underwhelming and buggy ("as if el silbon is inside the
