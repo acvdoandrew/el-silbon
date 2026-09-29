@@ -5,12 +5,14 @@
 pub mod avatar;
 pub mod ceiba;
 pub mod district;
+pub mod dog;
 pub mod dynamic;
 pub mod flora;
 pub mod herd;
 pub mod house;
 pub mod land;
 pub mod mesh;
+pub mod omen;
 pub mod props;
 pub mod silbon;
 pub mod texture;
@@ -91,9 +93,19 @@ impl Plugin for WorldPlugin {
             flora::FloraPlugin,
             wet::WetPlugin,
         ))
+        .init_resource::<omen::Fright>()
+        .add_message::<omen::Sting>()
         .add_systems(
             Startup,
-            (spawn_world, dynamic::spawn, weather::spawn_rain, avatar::setup).chain(),
+            (
+                spawn_world,
+                dynamic::spawn,
+                weather::spawn_rain,
+                avatar::setup,
+                omen::spawn_frights,
+                dog::spawn_dog,
+            )
+                .chain(),
         )
         .add_systems(
             Update,
@@ -103,6 +115,9 @@ impl Plugin for WorldPlugin {
                 herd::animate,
                 dynamic::bundles,
                 dynamic::peppers,
+                dynamic::batteries,
+                dynamic::key_box,
+                dog::animate_dog,
                 dynamic::wards,
                 dynamic::pings,
                 dynamic::lamp_lights,
@@ -112,6 +127,7 @@ impl Plugin for WorldPlugin {
                 dynamic::carried_view,
                 weather::rain_swell,
                 weather::lightning,
+                omen::frights.before(dynamic::lamp_lights).before(flicker_lights),
             )
                 .in_set(crate::app::GameSet::Present),
         );
@@ -402,13 +418,21 @@ fn make_palette(materials: &mut Assets<StandardMaterial>, tex: &texture::Texture
     }
 }
 
-fn flicker_lights(time: Res<Time>, mut lights: Query<(&Flicker, &mut PointLight)>) {
+fn flicker_lights(
+    time: Res<Time>,
+    fright: Res<omen::Fright>,
+    camera: Single<&Transform, (With<crate::player::Player>, Without<Flicker>)>,
+    mut lights: Query<(&Flicker, &mut PointLight, &GlobalTransform)>,
+) {
     let t = time.elapsed_secs();
-    for (f, mut light) in &mut lights {
+    let omen = fright.lamp_level(t);
+    for (f, mut light, at) in &mut lights {
         let w = (t * 7.3 + f.phase).sin() * 0.04
             + (t * 13.1 + f.phase * 2.0).sin() * 0.025
             + (t * 1.7 + f.phase).sin() * 0.03;
-        let target = f.base * (1.0 + w);
+        // An omen puts out the lanterns near you.
+        let near = at.translation().distance(camera.translation) < 35.0;
+        let target = f.base * (1.0 + w) * if near { omen } else { 1.0 };
         if (light.intensity - target).abs() > f.base * 0.002 {
             light.intensity = target;
         }

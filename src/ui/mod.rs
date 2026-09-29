@@ -38,6 +38,7 @@ pub(crate) struct Hint {
     pub taught_loud: bool,
     pub taught_faint: bool,
     pub taught_crouch: bool,
+    pub taught_skill: bool,
 }
 
 #[derive(Resource, Default)]
@@ -79,6 +80,17 @@ pub(crate) struct ProgressOuter;
 pub(crate) struct ProgressFill;
 #[derive(Component)]
 pub(crate) struct ProgressLabel;
+/// The skill check's track, its zone and great sliver, the needle and the key.
+#[derive(Component)]
+pub(crate) struct SkillBar;
+#[derive(Component)]
+pub(crate) struct SkillZone;
+#[derive(Component)]
+pub(crate) struct SkillGreat;
+#[derive(Component)]
+pub(crate) struct SkillNeedle;
+#[derive(Component)]
+pub(crate) struct SkillKey;
 #[derive(Component)]
 pub(crate) struct CaptionText;
 #[derive(Component)]
@@ -110,6 +122,23 @@ pub(crate) struct NoteEs;
 pub(crate) struct NoteEn;
 #[derive(Component)]
 pub(crate) struct NoteBy;
+/// Naming him at the ceiba: the panel and its three names.
+#[derive(Component)]
+pub(crate) struct NamePanelUi;
+#[derive(Component)]
+pub(crate) struct NameChoices;
+/// The key box's padlock: its panel and the three dials.
+#[derive(Component)]
+pub(crate) struct LockPanelUi;
+#[derive(Component)]
+pub(crate) struct LockDigits;
+/// The page's medium and title, its paper and the pages-found count.
+#[derive(Component)]
+pub(crate) struct NoteTitle;
+#[derive(Component)]
+pub(crate) struct NotePaper;
+#[derive(Component)]
+pub(crate) struct NoteCount;
 
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SettingLabel {
@@ -152,10 +181,13 @@ impl Plugin for HudPlugin {
                         hud::roster,
                         hud::vitals,
                         hud::prompt,
+                        hud::skill_bar,
                         hud::vignette,
                         hud::downed_panel,
                         hud::hints_and_captions,
                         hud::note_panel,
+                        hud::lock_panel,
+                        hud::name_panel,
                         settings_text,
                         map::toggle_map,
                         map::update_map,
@@ -481,6 +513,45 @@ fn spawn_ui(
                 p.spawn((ProgressOuter, bar(260.0, 8.0, AMBER))).with_children(|b| {
                     b.spawn((ProgressFill, fill_node(Color::srgb(0.95, 0.72, 0.42))));
                 });
+                // Skill check: press Space as the needle crosses the zone.
+                p.spawn((
+                    SkillKey,
+                    Text::new("SPACE"),
+                    font(&f.serif, 13.0),
+                    TextColor(AMBER),
+                    Visibility::Hidden,
+                ));
+                p.spawn((
+                    SkillBar,
+                    Node {
+                        width: px(340),
+                        height: px(16),
+                        border: UiRect::all(px(1)),
+                        border_radius: BorderRadius::all(px(3)),
+                        ..default()
+                    },
+                    BorderColor::all(Color::srgba(1.0, 0.85, 0.6, 0.6)),
+                    BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+                    Visibility::Hidden,
+                ))
+                .with_children(|b| {
+                    let mark = |color: Color| {
+                        (
+                            Node {
+                                position_type: PositionType::Absolute,
+                                top: px(0),
+                                height: percent(100),
+                                left: percent(0),
+                                width: percent(0),
+                                ..default()
+                            },
+                            BackgroundColor(color),
+                        )
+                    };
+                    b.spawn((SkillZone, mark(Color::srgba(0.95, 0.66, 0.3, 0.75))));
+                    b.spawn((SkillGreat, mark(Color::srgba(1.0, 0.97, 0.88, 0.95))));
+                    b.spawn((SkillNeedle, mark(Color::srgb(0.92, 0.2, 0.14))));
+                });
             });
 
             // Perceived whistle caption (bottom centre).
@@ -584,8 +655,11 @@ fn spawn_ui(
                         ));
                         c.spawn((
                             Text::new(
-                                "Find the five bundles and lay them at the ceiba · restore power at the windmill · start \
-                                 the truck and survive its roar. Peppers (ají) stop him for a while. Revive the fallen.",
+                                "Find the five bundles and lay them at the ceiba · restore power at the windmill · open \
+                                 the padlocked key box (its numbers are in the pages) · start the truck and survive its \
+                                 roar. Or learn which of him walks tonight and name him at the ceiba. Keep the rhythm \
+                                 of the work (Space). Your torch runs down and its beam draws him. Ají stops him for a \
+                                 while; Tureco, if you untie him, knows where he is. Get the fallen out of his sack.",
                             ),
                             font(&f.sans, 15.0),
                             TextColor(AMBER),
@@ -594,11 +668,21 @@ fn spawn_ui(
                         c.spawn((
                             Text::new(
                                 "WASD move · Mouse look · Shift run · Ctrl/C crouch · E or click use (hold at sites) · F flashlight\n\
-                                 G put a bundle down · Q scatter ají · V mark a spot · M map · Esc pause · F12 screenshot",
+                                 Space skill check · G put a bundle down · Q scatter ají · V mark a spot · N name him (at the ceiba)\n\
+                                 M map · Esc pause · F12 screenshot",
                             ),
                             font(&f.sans, 14.0),
                             TextColor(DIM),
                             TextLayout::justify(Justify::Center),
+                        ));
+                        c.spawn((
+                            Text::new(format!(
+                                "Night #{} ({}) — the bundles, the padlock and which of him walks change with every night.",
+                                launch.seed,
+                                launch.night.label()
+                            )),
+                            font(&f.italic, 14.0),
+                            TextColor(DIM),
                         ));
                         c.spawn(button(f, "Begin — click to capture the mouse", MenuAction::Begin, 420.0));
                         c.spawn(button(f, "Quit", MenuAction::Quit, 160.0));
@@ -678,24 +762,125 @@ fn spawn_ui(
                     });
                 });
 
-            root.spawn((NotePanel, overlay(), Visibility::Hidden, GlobalZIndex(9))).with_children(|o| {
+            // The key box's padlock: three dials, low on the screen so the
+            // night stays in view while you fiddle with it.
+            root.spawn((
+                LockPanelUi,
+                Node {
+                    position_type: PositionType::Absolute,
+                    bottom: percent(14),
+                    width: percent(100),
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+                Visibility::Hidden,
+                GlobalZIndex(8),
+            ))
+            .with_children(|o| {
                 o.spawn((
                     Node {
-                        width: px(580),
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        padding: UiRect::axes(px(26), px(14)),
+                        row_gap: px(6),
+                        border: UiRect::all(px(1)),
+                        border_radius: BorderRadius::all(px(4)),
+                        ..default()
+                    },
+                    BorderColor::all(Color::srgba(0.8, 0.8, 0.82, 0.5)),
+                    BackgroundColor(Color::srgba(0.05, 0.05, 0.055, 0.9)),
+                ))
+                .with_children(|c| {
+                    c.spawn((
+                        Text::new("CANDADO · PADLOCK"),
+                        font(&f.serif, 13.0),
+                        TextColor(Color::srgb(0.75, 0.75, 0.78)),
+                    ));
+                    c.spawn((
+                        LockDigits,
+                        Text::new("0  0  0"),
+                        font(&f.serif, 40.0),
+                        TextColor(Color::srgb(0.92, 0.9, 0.84)),
+                    ));
+                    c.spawn((
+                        Text::new("1 · 2 · 3 turn the dials (Shift back)   ·   Enter tries   ·   E closes\nA wrong try rattles — and the llano hears."),
+                        font(&f.sans, 13.0),
+                        TextColor(Color::srgb(0.7, 0.68, 0.64)),
+                        TextLayout::justify(Justify::Center),
+                    ));
+                });
+            });
+            // Naming him at the ceiba.
+            root.spawn((
+                NamePanelUi,
+                Node {
+                    position_type: PositionType::Absolute,
+                    bottom: percent(14),
+                    width: percent(100),
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+                Visibility::Hidden,
+                GlobalZIndex(8),
+            ))
+            .with_children(|o| {
+                o.spawn((
+                    Node {
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        padding: UiRect::axes(px(26), px(14)),
+                        row_gap: px(8),
+                        border: UiRect::all(px(1)),
+                        border_radius: BorderRadius::all(px(4)),
+                        ..default()
+                    },
+                    BorderColor::all(Color::srgba(0.85, 0.7, 0.45, 0.5)),
+                    BackgroundColor(Color::srgba(0.05, 0.035, 0.02, 0.92)),
+                ))
+                .with_children(|c| {
+                    c.spawn((
+                        Text::new("¿CUÁL DE ÉL CAMINA ESTA NOCHE? · WHICH OF HIM WALKS TONIGHT?"),
+                        font(&f.serif, 13.0),
+                        TextColor(Color::srgb(0.85, 0.72, 0.5)),
+                    ));
+                    c.spawn((
+                        NameChoices,
+                        Text::new(""),
+                        font(&f.italic, 20.0),
+                        TextColor(Color::srgb(0.95, 0.9, 0.8)),
+                        TextLayout::justify(Justify::Center),
+                    ));
+                    c.spawn((
+                        Text::new("1 · 2 · 3 choose   ·   Enter names him   ·   N closes\nA wrong name enrages him, and the ceiba will not listen for a while."),
+                        font(&f.sans, 13.0),
+                        TextColor(Color::srgb(0.7, 0.66, 0.6)),
+                        TextLayout::justify(Justify::Center),
+                    ));
+                });
+            });
+            root.spawn((NotePanel, overlay(), Visibility::Hidden, GlobalZIndex(9))).with_children(|o| {
+                o.spawn((
+                    NotePaper,
+                    Node {
+                        width: px(640),
+                        max_height: percent(92),
                         flex_direction: FlexDirection::Column,
                         padding: UiRect::all(px(30)),
                         row_gap: px(12),
                         border_radius: BorderRadius::all(px(3)),
+                        overflow: Overflow::clip_y(),
                         ..default()
                     },
                     BackgroundColor(Color::srgba(0.78, 0.72, 0.58, 0.96)),
                 ))
                 .with_children(|c| {
                     let ink = Color::srgb(0.16, 0.12, 0.1);
-                    c.spawn((NoteEs, Text::new(""), font(&f.italic, 22.0), TextColor(ink)));
-                    c.spawn((NoteBy, Text::new(""), font(&f.italic, 18.0), TextColor(ink)));
+                    c.spawn((NoteTitle, Text::new(""), font(&f.serif, 14.0), TextColor(ink)));
+                    c.spawn((NoteEs, Text::new(""), font(&f.italic, 21.0), TextColor(ink)));
+                    c.spawn((NoteBy, Text::new(""), font(&f.italic, 17.0), TextColor(ink)));
                     c.spawn((NoteEn, Text::new(""), font(&f.sans, 15.0), TextColor(Color::srgb(0.25, 0.2, 0.16))));
                     c.spawn((
+                        NoteCount,
                         Text::new("[E] put the page down"),
                         font(&f.sans, 14.0),
                         TextColor(Color::srgb(0.3, 0.24, 0.18)),
@@ -786,6 +971,8 @@ fn settings_text(settings: Res<Settings>, mut q: Query<(&SettingLabel, &mut Text
 fn fill_outcome(
     truth: Res<Truth>,
     net: Res<Network>,
+    tuning: Res<TuningRes>,
+    read: Res<crate::encounter::PagesRead>,
     mut q: ParamSet<(
         Query<&mut Text, With<OutcomeTitle>>,
         Query<&mut Text, With<OutcomeBody>>,
@@ -796,15 +983,68 @@ fn fill_outcome(
     let (home, total) = net.snapshot().map_or((0, 5), |s| (s.world.delivered, s.world.total));
     let stats = format!(
         "Time: {}:{:02}  ·  Bones at rest: {home}/{total}  ·  Times he warned: {}  ·  Slipped his sight: {}\n\
-         Times downed: {}  ·  Revived: {}",
+         Times downed: {}  ·  Revived: {}  ·  Pages of the tale found: {}/{}",
         secs / 60,
         secs % 60,
         enc.stats.warnings,
         enc.stats.recoveries,
         enc.stats.downs,
         enc.stats.revives,
+        read.0.len(),
+        crate::lore::PAGES,
     );
-    let (title, body) = if enc.outcome == crate::sim::Outcome::Won {
+    // Every page read: the tale is whole, and it says so.
+    let stats = if read.0.len() >= crate::lore::PAGES as usize {
+        format!(
+            "{stats}\n\nThe whole tale is told: the son, the deer, the father, the grandfather's curse, \
+             the torn sack and the ranch that tried to lay the father down. \
+             Somewhere the radio still says: if you hear the whistle, remember…"
+        )
+    } else {
+        stats
+    };
+    let banished = net.snapshot().is_some_and(|s| s.world.banished);
+    // Who walked tonight, told afterwards: the signs are there to learn.
+    let who = match crate::sim::Variant::of(tuning.0.seed) {
+        crate::sim::Variant::Borracho => "the drunkard's return (El Borracho)",
+        crate::sim::Variant::Hijo => "the son himself (El Hijo)",
+        crate::sim::Variant::Arriero => "the drover (El Arriero)",
+    };
+    let won = enc.outcome == crate::sim::Outcome::Won;
+    let mut marks: Vec<&str> = Vec::new();
+    if won && enc.stats.warnings == 0 {
+        marks.push("Silent as the grass (he never saw you)");
+    }
+    if won && enc.stats.downs == 0 {
+        marks.push("Unbroken (nobody fell)");
+    }
+    if won && enc.stats.revives > 0 {
+        marks.push("Nobody left behind (the fallen got up)");
+    }
+    if banished {
+        marks.push("The one who named him");
+    }
+    if won && secs < 8 * 60 {
+        marks.push("Quick hands (out before eight minutes)");
+    }
+    if read.0.len() >= crate::lore::PAGES as usize {
+        marks.push("Keeper of the tale (every page read)");
+    }
+    let marks = if marks.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n{}", marks.join("  ·  "))
+    };
+    let stats = format!("{stats}\n\nTonight it was {who}. Night #{}.{marks}", tuning.0.seed);
+    let (title, body) = if enc.outcome == crate::sim::Outcome::Won && banished {
+        (
+            "He is laid to rest.",
+            format!(
+                "You named him at the roots of the ceiba, with his father's bones all home. The whistle unwinds, \
+                 lower and lower, into the rain, and the llano is only the llano again.\n\n{stats}"
+            ),
+        )
+    } else if enc.outcome == crate::sim::Outcome::Won {
         (
             "The truck pulls away.",
             format!(
@@ -836,10 +1076,20 @@ fn reset_ui(
     mut map: ResMut<MapOpen>,
 ) {
     if requests.read().count() > 0 {
-        let taught = (hint.taught_loud, hint.taught_faint, hint.taught_crouch);
+        let taught = (
+            hint.taught_loud,
+            hint.taught_faint,
+            hint.taught_crouch,
+            hint.taught_skill,
+        );
         *hint = Hint::default();
         // Lessons already learned stay learned across restarts.
-        (hint.taught_loud, hint.taught_faint, hint.taught_crouch) = taught;
+        (
+            hint.taught_loud,
+            hint.taught_faint,
+            hint.taught_crouch,
+            hint.taught_skill,
+        ) = taught;
         *caption = CaptionLine::default();
         map.0 = false;
     }

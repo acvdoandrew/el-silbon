@@ -8,6 +8,8 @@
 //! - [`control`]: intent, first-person kinematics, crosshair targeting.
 //! - [`body`]: gait, stamina, fear, downed state.
 //! - [`storm`]: rain, lightning and thunder as functions of the run clock.
+//! - [`skill`]: skill checks while working a long task.
+//! - [`director`]: when the night sends one player an omen.
 //! - [`script`], [`photos`]: DEBUG smoke route and photo viewpoints.
 //!
 //! Bevy adapters and presentation: [`app`], [`player`], [`encounter`],
@@ -22,6 +24,7 @@ pub mod audio;
 pub mod body;
 pub mod control;
 pub mod debug;
+pub mod director;
 pub mod encounter;
 pub mod geometry;
 pub mod lore;
@@ -33,6 +36,7 @@ pub mod player;
 pub mod rng;
 pub mod script;
 pub mod sim;
+pub mod skill;
 pub mod storm;
 pub mod tuning;
 pub mod ui;

@@ -243,7 +243,12 @@ fn smoke_drive(
     target: Res<CurrentTarget>,
     player: Single<&Player>,
     launch: Res<Launch>,
-    (layout, tuning, net): (Res<LayoutRes>, Res<TuningRes>, Res<Network>),
+    (layout, tuning, net, light): (
+        Res<LayoutRes>,
+        Res<TuningRes>,
+        Res<Network>,
+        Res<crate::player::LightOn>,
+    ),
     probe: Res<PipelineProbe>,
     (fonts, text_fonts): (Res<Assets<Font>>, Query<&TextFont>),
     screenshots: Query<(), With<Screenshot>>,
@@ -345,6 +350,8 @@ fn smoke_drive(
     };
     let frame = smoke.script.tick(&obs);
     intent.0 = frame.intent;
+    // The route wants the torch off while it hides: the same key a player presses.
+    intent.0.toggle_flashlight = frame.dark == light.0;
     if let Some(msg) = &frame.log {
         info!("smoke: {msg} (t={:.1}s)", smoke.script.elapsed());
     }
@@ -773,7 +780,11 @@ fn photo_drive(
     mut camera: Single<(&mut Transform, &mut Projection, &mut DistanceFog), With<Player>>,
     window: Single<&Window, With<PrimaryWindow>>,
     (mut clock, mut net, mut truth): (ResMut<crate::app::StormClock>, ResMut<Network>, ResMut<Truth>),
-    (mut map, mut note): (ResMut<crate::ui::MapOpen>, ResMut<crate::encounter::NoteOpen>),
+    (mut map, mut note, mut fright): (
+        ResMut<crate::ui::MapOpen>,
+        ResMut<crate::encounter::NoteOpen>,
+        ResMut<crate::world::omen::Fright>,
+    ),
     virtual_time: Res<Time<Virtual>>,
     layout: Res<LayoutRes>,
     mut exit: MessageWriter<AppExit>,
@@ -838,6 +849,8 @@ fn photo_drive(
             *v = want_hud;
         }
     }
+    // The caught lunge, held where he has closed in.
+    fright.lunge = (shot.surface == Surface::Lunge).then_some(0.6);
     let want_map = shot.surface == Surface::Map;
     if map.0 != want_map {
         map.0 = want_map;
@@ -893,6 +906,7 @@ fn photo_drive(
                     carrying: c.carrying as u8,
                     revive: 0.0,
                     bleed: 0.0,
+                    hauled: false,
                 });
             }
             if shot.surface == Surface::Downed

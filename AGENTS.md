@@ -39,15 +39,19 @@ an API — do not mix older Bevy idioms.
 ## Architecture conventions
 
 - **Pure truth, no ECS**: `tuning`, `geometry`, `sim`, `perception`, `control`,
-  `script`, `rng`, `noise`, `body` and `storm` stay headless and unit-tested.
+  `script`, `rng`, `noise`, `body`, `storm`, `skill` (skill checks) and
+  `director` (omens) stay headless and unit-tested.
   ECS modules (`app`, `player`, `encounter`, `audio`, `ui`,
   `world`, `debug`) adapt them.
 - **One layout**: every coordinate (walls, openings, fences, ceiba, props,
   route anchors, trails) comes from `geometry::Layout`. Collision, line of
   sight, aiming and visuals all read it. Never duplicate a number in a builder.
 - **Perception boundary**: only `perception` turns the Silbón's true distance
-  into a cue, inverted. Audio and captions consume `WhistlePhrase` only; never
-  read threat position/distance there, never spatialize the whistle.
+  into a cue: the whistle, inverted; Tureco's growl and bark, truthful but
+  only up close (`dog_senses`). Audio and captions consume `WhistlePhrase`
+  and events only; never read threat position/distance there, never
+  spatialize the whistle. Omens and phantoms are placed near the listener's
+  own eye and never say where he is.
 - **Truth validates claims**: `net::session` is authoritative in both solo and
   multiplayer for movement, aim/occlusion, ownership, one threat and outcomes.
   `net::protocol` carries stable player IDs, run epochs and sequence numbers,

@@ -14,8 +14,19 @@ use crate::geometry::Layout;
 pub const MOON_DIR: Vec3 = Vec3::new(-0.38, 0.62, 0.68);
 
 /// Linear colour of the sky at the horizon; the fog uses the same value.
-pub const HORIZON: [f32; 3] = [0.0068, 0.0092, 0.0152];
-const ZENITH: [f32; 3] = [0.0011, 0.0017, 0.0042];
+/// Kept below the moonlit ground, so the night closes in rather than glows.
+pub const HORIZON: [f32; 3] = [0.0032, 0.0043, 0.0074];
+const ZENITH: [f32; 3] = [0.0006, 0.0009, 0.0024];
+
+/// Moonlight between strikes (lux). Low on purpose: the moon only rims
+/// shapes; lanterns, the lit window, the beacon and torches carry the frame.
+pub const MOON_LUX: f32 = 200.0;
+/// Moonlight colour between strikes (sRGB).
+pub const MOON_COLOR: [f32; 3] = [0.66, 0.75, 1.0];
+/// Sky-wide fill between strikes (`GlobalAmbientLight::brightness`) and its
+/// colour (sRGB): just enough to read a silhouette against the dark.
+pub const NIGHT_AMBIENT: f32 = 10.0;
+pub const NIGHT_AMBIENT_COLOR: [f32; 3] = [0.55, 0.64, 0.9];
 
 pub fn fog_visibility(_layout: &Layout) -> f32 {
     105.0
@@ -270,8 +281,8 @@ fn moonlight(ctx: &mut SpawnCtx) {
         Name::new("moonlight"),
         super::weather::Moonlight,
         DirectionalLight {
-            color: Color::srgb(0.66, 0.75, 1.0),
-            illuminance: 1150.0,
+            color: Color::srgb(MOON_COLOR[0], MOON_COLOR[1], MOON_COLOR[2]),
+            illuminance: MOON_LUX,
             shadow_maps_enabled: true,
             ..default()
         },

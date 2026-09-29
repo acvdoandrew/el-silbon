@@ -368,6 +368,7 @@ impl Endpoint {
                             } else if let ClientMessage::Hello {
                                 fingerprint: version,
                                 seed,
+                                night,
                             } = message
                             {
                                 let result = if version != fingerprint() {
@@ -377,6 +378,8 @@ impl Endpoint {
                                     )
                                 } else if seed != tuning.seed {
                                     Err(format!("Seed mismatch: restart with --seed {}", tuning.seed))
+                                } else if night != tuning.night.code() {
+                                    Err(format!("Night mismatch: restart with --night {}", tuning.night.label()))
                                 } else {
                                     session.add_player(*next_id, layout, tuning)
                                 };
@@ -454,6 +457,7 @@ impl Endpoint {
                             encode(&ClientMessage::Hello {
                                 fingerprint: fingerprint(),
                                 seed: tuning.seed,
+                                night: tuning.night.code(),
                             }),
                         );
                         *hello = true;

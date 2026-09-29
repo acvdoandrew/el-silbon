@@ -9,6 +9,7 @@
 use bevy::math::{Vec2, Vec3};
 
 use crate::geometry::Layout;
+use crate::rng::Rng;
 use crate::tuning::Tuning;
 
 pub type PlayerId = u64;
@@ -42,6 +43,10 @@ pub enum ThreatState {
     Hunting,
     /// Stopped by pepper: he squats to count his bones.
     Counting,
+    /// Carrying a fallen player off in his sack, toward the far end of the
+    /// llano. Pepper in his path makes him drop them; if he gets away with
+    /// them, they are gone.
+    Hauling,
 }
 
 /// Whether he is physically present in the world.
@@ -110,10 +115,55 @@ pub enum Event {
     CattleSpooked,
     BeaconLit,
     Prayed,
+    /// Spare torch batteries taken (only the finder hears it).
+    BatteriesTaken,
+    /// A skill check begins (its warning; only the worker hears it).
+    SkillCheck,
+    /// A great press (only the worker hears it).
+    SkillGreat,
+    /// A missed check: everyone hears the screech.
+    SkillMissed,
+    /// Tells of which of him walks tonight (see `Variant`): a man weeping
+    /// when a bundle is laid (the Son), a whip cracking (the Drover), glass
+    /// clinking in the grass (the Drunkard).
+    Weeping,
+    WhipCrack,
+    BottleClink,
+    /// Tureco is untied and follows whoever freed him.
+    DogFreed,
+    /// Tureco growls low at the dark: he is near (to the dog's friend).
+    DogGrowl,
+    /// Tureco barks him off: he flinches away into the grass.
+    DogBark,
+    /// He put the fallen player in his sack and is carrying them off.
+    Hauled,
+    /// Pepper stopped him: he dropped the one he was carrying.
+    SackDropped,
+    /// He got away with the one in his sack. They are gone.
+    Taken,
+    /// Named rightly at the ceiba: he is laid to rest (a way to win).
+    Banished,
+    /// Named wrongly: the ceiba shudders and he comes, furious.
+    NameWrong,
+    /// The panel at the windmill switched which lines the dynamo feeds.
+    LinesSwitched,
+    /// The padlock opened: the truck key is ours.
+    KeyFound,
+    /// A wrong combination: the padlock rattles (heard by the one trying,
+    /// and by him if he is near).
+    LockRattle,
+    /// Omens (see `director`), each to one player only.
+    OmenLampsDie,
+    OmenSilence,
+    OmenBones,
+    OmenDrag,
+    OmenHat,
+    OmenPhantom,
+    OmenStolenLight,
 }
 
 impl Event {
-    pub const ALL: [Event; 24] = [
+    pub const ALL: [Event; 49] = [
         Event::RelicTaken,
         Event::ThreatManifested,
         Event::WarningBegan,
@@ -138,6 +188,31 @@ impl Event {
         Event::CattleSpooked,
         Event::BeaconLit,
         Event::Prayed,
+        Event::BatteriesTaken,
+        Event::SkillCheck,
+        Event::SkillGreat,
+        Event::SkillMissed,
+        Event::Weeping,
+        Event::WhipCrack,
+        Event::BottleClink,
+        Event::DogFreed,
+        Event::DogGrowl,
+        Event::DogBark,
+        Event::Hauled,
+        Event::SackDropped,
+        Event::Taken,
+        Event::Banished,
+        Event::NameWrong,
+        Event::LinesSwitched,
+        Event::KeyFound,
+        Event::LockRattle,
+        Event::OmenLampsDie,
+        Event::OmenSilence,
+        Event::OmenBones,
+        Event::OmenDrag,
+        Event::OmenHat,
+        Event::OmenPhantom,
+        Event::OmenStolenLight,
     ];
 
     pub fn from_code(code: u8) -> Option<Event> {
@@ -198,6 +273,11 @@ pub struct Threat {
     pub turns: u32,
     /// Seconds spent walking without progress.
     pub stall: f32,
+    /// Warnings averted since he last hunted or rose anew.
+    pub averts: u32,
+    /// Hauling: the node he is making for, and seconds since he took them.
+    pub haul_to: usize,
+    pub hauled: f32,
 }
 
 impl Threat {
@@ -222,6 +302,9 @@ impl Threat {
             prev: 0,
             turns: 0,
             stall: 0.0,
+            averts: 0,
+            haul_to: 0,
+            hauled: 0.0,
         }
     }
 
@@ -266,8 +349,18 @@ pub struct AjiZone {
 pub struct Progress {
     pub relics: Vec<Relic>,
     pub aji_taken: Vec<bool>,
+    pub batteries_taken: Vec<bool>,
     /// 0..1: 1 = the windmill runs and the lamps are lit.
     pub power: f32,
+    /// Which lines the dynamo feeds once it runs (bit per lamp circuit):
+    /// two of the three at most.
+    pub circuits: u8,
+    /// The truck key is out of its padlocked box.
+    pub key: bool,
+    /// Seconds before he may be named again after a wrong name.
+    pub naming_cooldown: f32,
+    /// He was named rightly and laid to rest.
+    pub banished: bool,
     /// 0..1: 1 = the engine is running.
     pub truck: f32,
     /// Seconds the engine has been running.
@@ -286,7 +379,12 @@ impl Progress {
         Self {
             relics: layout.district.relics.iter().map(|&p| Relic::Ground(p)).collect(),
             aji_taken: vec![false; layout.district.aji.len()],
+            batteries_taken: vec![false; layout.district.batteries.len()],
             power: 0.0,
+            circuits: crate::geometry::district::FIRST_CIRCUITS,
+            key: false,
+            naming_cooldown: 0.0,
+            banished: false,
             truck: 0.0,
             warm: 0.0,
             beacon: 0.0,
@@ -312,6 +410,10 @@ impl Progress {
     pub fn power_on(&self) -> bool {
         self.power >= 1.0
     }
+    /// The lines actually lit right now (none until the pump runs).
+    pub fn live_circuits(&self) -> u8 {
+        if self.power_on() { self.circuits } else { 0 }
+    }
     pub fn truck_running(&self) -> bool {
         self.truck >= 1.0
     }
@@ -322,6 +424,70 @@ impl Progress {
     pub fn beacon_ready(&self) -> bool {
         self.beacon <= 0.0 && self.beacon_cooldown <= 0.0
     }
+}
+
+/// Which of him walks tonight. The legend tells of three returns, each with
+/// its signs and its temper (see the page "Las tres vueltas").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Variant {
+    /// The Drunkard's: he hears everything and whistles slurred, but
+    /// stumbles slower; glass clinks in the grass where he has been.
+    Borracho,
+    /// The Son himself: he weeps when his father's bones are laid down, each
+    /// one laid angers him more, and he lingers longer counting them.
+    Hijo,
+    /// The Drover: a little faster across the llano, but the cattle bellow
+    /// as he passes and a whip cracks in the dark.
+    Arriero,
+}
+
+impl Variant {
+    pub const ALL: [Variant; 3] = [Variant::Borracho, Variant::Hijo, Variant::Arriero];
+
+    /// Tonight's, from the seed.
+    pub fn of(seed: u64) -> Self {
+        Self::ALL[Rng::fork(seed, 0x7A12).below(3)]
+    }
+
+    pub fn code(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_code(code: u8) -> Option<Self> {
+        Self::ALL.get(code as usize).copied()
+    }
+
+    /// How much farther he hears.
+    pub fn hearing(self) -> f32 {
+        if self == Variant::Borracho { 1.4 } else { 1.0 }
+    }
+
+    /// How much each bundle laid to rest angers him.
+    pub fn rite(self) -> f32 {
+        if self == Variant::Hijo { 1.25 } else { 1.0 }
+    }
+
+    /// How much faster he walks and creeps (never his hunt).
+    pub fn pace(self) -> f32 {
+        match self {
+            Variant::Arriero => 1.06,
+            Variant::Borracho => 0.92,
+            Variant::Hijo => 1.0,
+        }
+    }
+
+    /// How much longer pepper keeps him counting bones.
+    pub fn counting(self) -> f32 {
+        if self == Variant::Hijo { 1.3 } else { 1.0 }
+    }
+}
+
+/// The combination of the padlock on the truck key's box: three digits, a
+/// fresh one every seed, written into three of the hacienda's pages (see
+/// `lore::fill`).
+pub fn lock_code(seed: u64) -> [u8; 3] {
+    let mut rng = Rng::fork(seed, 0x10CC);
+    [1 + rng.below(9) as u8, rng.below(10) as u8, rng.below(10) as u8]
 }
 
 /// The player he is currently interested in, as he perceives them.
@@ -385,6 +551,7 @@ impl Encounter {
             p.beacon_cooldown = (p.beacon_cooldown - dt).max(0.0);
         }
         p.cattle_alarm = (p.cattle_alarm - dt).max(0.0);
+        p.naming_cooldown = (p.naming_cooldown - dt).max(0.0);
         p.cattle_cooldown = (p.cattle_cooldown - dt).max(0.0);
         p.cattle_spook = (p.cattle_spook - 0.3 * dt).max(0.0);
         for z in &mut self.zones {
@@ -398,8 +565,10 @@ impl Encounter {
             1.0
         } else {
             let night = (self.elapsed / tuning.night_length).clamp(0.0, 1.0);
-            (tuning.pressure_base + tuning.pressure_night * night + tuning.pressure_carry * p.carried_total() as f32
-                - tuning.pressure_relief * p.delivered() as f32)
+            (tuning.pressure_base
+                + tuning.pressure_night * night
+                + tuning.pressure_carry * p.carried_total() as f32
+                + tuning.pressure_rite * Variant::of(tuning.seed).rite() * p.delivered() as f32)
                 .clamp(0.05, tuning.pressure_max)
         };
     }
@@ -464,6 +633,18 @@ impl Encounter {
         }
     }
 
+    /// Take spare batteries `index` from where they lie.
+    pub fn take_batteries(&mut self, index: usize, events: &mut Vec<Event>) -> bool {
+        match self.progress.batteries_taken.get_mut(index) {
+            Some(taken) if !*taken => {
+                *taken = true;
+                events.push(Event::BatteriesTaken);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Scatter pepper at `pos`.
     pub fn place_aji(&mut self, tuning: &Tuning, pos: Vec2, events: &mut Vec<Event>) {
         self.zones.push(AjiZone {
@@ -486,10 +667,80 @@ impl Encounter {
         }
     }
 
-    /// Turn the ignition for `dt` seconds. Refused until the bones are home
-    /// and the power is on.
+    /// Name him at the ceiba with every bundle laid there. The right name
+    /// lays him to rest and ends the night; a wrong one rouses him, furious,
+    /// and the ceiba will not hear another name for a while.
+    pub fn name_him(
+        &mut self,
+        layout: &Layout,
+        tuning: &Tuning,
+        guess: Variant,
+        watchers: &[Vec2],
+        events: &mut Vec<Event>,
+    ) -> Result<bool, &'static str> {
+        if !self.progress.bones_home() {
+            return Err("The father's bones are not all at rest yet.");
+        }
+        if self.progress.naming_cooldown > 0.0 {
+            return Err("The ceiba is not listening yet.");
+        }
+        if guess == Variant::of(tuning.seed) {
+            self.progress.banished = true;
+            self.outcome = Outcome::Won;
+            self.threat.presence = Presence::Sinking {
+                t: 0.0,
+                relocate: false,
+            };
+            events.push(Event::Banished);
+            Ok(true)
+        } else {
+            self.progress.naming_cooldown = tuning.naming_cooldown;
+            events.push(Event::NameWrong);
+            self.rouse(layout, tuning, watchers, events);
+            self.threat.cooldown = 0.0;
+            Ok(false)
+        }
+    }
+
+    /// Throw the panel's switch: the dynamo feeds the next pair of lines.
+    /// Nothing to switch before the pump runs.
+    pub fn switch_lines(&mut self, events: &mut Vec<Event>) -> bool {
+        use crate::geometry::district::CIRCUIT_SETTINGS;
+        if !self.progress.power_on() {
+            return false;
+        }
+        let at = CIRCUIT_SETTINGS
+            .iter()
+            .position(|&c| c == self.progress.circuits)
+            .unwrap_or(0);
+        self.progress.circuits = CIRCUIT_SETTINGS[(at + 1) % CIRCUIT_SETTINGS.len()];
+        events.push(Event::LinesSwitched);
+        true
+    }
+
+    /// Try a combination on the key box's padlock.
+    pub fn try_code(&mut self, tuning: &Tuning, code: [u8; 3], events: &mut Vec<Event>) -> bool {
+        if self.progress.key {
+            return false;
+        }
+        if code == lock_code(tuning.seed) {
+            self.progress.key = true;
+            events.push(Event::KeyFound);
+            true
+        } else {
+            events.push(Event::LockRattle);
+            false
+        }
+    }
+
+    /// Turn the ignition for `dt` seconds. Refused until the bones are home,
+    /// the power is on and the key is out of its box.
     pub fn work_truck(&mut self, tuning: &Tuning, dt: f32, events: &mut Vec<Event>) -> bool {
-        if !self.progress.bones_home() || !self.progress.power_on() || self.progress.truck_running() {
+        if !self.progress.bones_home()
+            || !self.progress.power_on()
+            || !self.progress.key
+            || self.progress.truck_running()
+        {
             return false;
         }
         self.progress.truck = (self.progress.truck + dt / tuning.truck_hold).min(1.0);
@@ -546,6 +797,47 @@ impl Encounter {
         self.threat.circling = true;
     }
 
+    /// Instead of backing off after a catch, he stuffs the fallen into his
+    /// sack and walks off toward the node farthest from everyone standing.
+    pub fn haul(&mut self, layout: &Layout, watchers: &[Vec2], events: &mut Vec<Event>) {
+        let (node, _) = layout.patrol.farthest_from(watchers);
+        let th = &mut self.threat;
+        th.set_state(ThreatState::Hauling);
+        th.presence = Presence::Present;
+        th.exposure = 0.0;
+        th.has_sight = false;
+        th.focus = None;
+        th.circling = false;
+        th.haul_to = node;
+        th.hauled = 0.0;
+        th.movement = Movement::Return {
+            home: layout.patrol.nearest(th.pos),
+        };
+        events.push(Event::Hauled);
+    }
+
+    /// A dog barks at him up close: whatever he was doing, he flinches and
+    /// sinks away into the grass, to rise far off. Whoever was in his sack
+    /// falls out. True when he was there to be barked off.
+    pub fn flinch(&mut self, events: &mut Vec<Event>) -> bool {
+        let th = &self.threat;
+        if th.state == ThreatState::Dormant || !matches!(th.presence, Presence::Present) {
+            return false;
+        }
+        if th.state == ThreatState::Hauling {
+            events.push(Event::SackDropped);
+        }
+        if matches!(
+            th.state,
+            ThreatState::Warning | ThreatState::Hunting | ThreatState::Hauling
+        ) {
+            self.stats.recoveries += 1;
+        }
+        events.push(Event::DogBark);
+        self.withdraw();
+        true
+    }
+
     /// He backs off after a capture, or when his prey vanishes.
     pub fn withdraw(&mut self) {
         let th = &mut self.threat;
@@ -569,7 +861,7 @@ impl Encounter {
         if th.state != ThreatState::Stalking || !matches!(th.presence, Presence::Present) {
             return;
         }
-        let reach = radius * tuning.hearing_gain(self.pressure);
+        let reach = radius * tuning.hearing_gain(self.pressure) * Variant::of(tuning.seed).hearing();
         if th.pos.distance(pos) > reach {
             return;
         }
@@ -595,7 +887,11 @@ impl Encounter {
         dt: f32,
         events: &mut Vec<Event>,
     ) {
-        let scaled = base.at_pressure(self.pressure);
+        let mut scaled = base.at_pressure(self.pressure);
+        let pace = Variant::of(base.seed).pace();
+        scaled.stalk_speed *= pace;
+        scaled.creep_speed *= pace;
+        scaled.counting_time *= Variant::of(base.seed).counting();
         let tuning = &scaled;
         let toward = prey.map_or(Vec2::Y, |p| p.pos);
         {
@@ -646,6 +942,57 @@ impl Encounter {
                     th.focus = None;
                 }
             }
+        }
+
+        // Hauling: he walks the patrol toward the far node with the fallen in
+        // his sack, blind to everything else. A ward in his way makes him
+        // count (and drop them); reaching the node, or taking too long to be
+        // stopped, and they are gone.
+        if self.threat.state == ThreatState::Hauling {
+            self.threat.hauled += dt;
+            self.threat.has_sight = false;
+            let step = tuning.haul_speed * dt;
+            let patrol = &layout.patrol;
+            let before = self.threat.pos;
+            let movement = match self.threat.movement {
+                Movement::AtAnchor(i) if i == self.threat.haul_to => Movement::AtAnchor(i),
+                Movement::AtAnchor(i) => Movement::Walk {
+                    from: i,
+                    to: patrol.next_hop(i, self.threat.haul_to),
+                },
+                Movement::Walk { from, to } => {
+                    if self.step_toward(layout, patrol.nodes[to], step, tuning.counting_time) {
+                        Movement::AtAnchor(to)
+                    } else {
+                        Movement::Walk { from, to }
+                    }
+                }
+                Movement::Return { home } => {
+                    if self.step_toward(layout, patrol.nodes[home], step, tuning.counting_time) {
+                        Movement::AtAnchor(home)
+                    } else {
+                        Movement::Return { home }
+                    }
+                }
+                other => other,
+            };
+            if self.threat.state == ThreatState::Counting {
+                // A ward stopped him mid-stride: the sack drops.
+                self.threat.movement = Movement::Still;
+                self.threat.speed = 0.0;
+                events.push(Event::CountingBegan);
+                events.push(Event::SackDropped);
+                return;
+            }
+            let th = &mut self.threat;
+            th.movement = movement;
+            th.speed = before.distance(th.pos) / dt.max(1e-6);
+            let arrived = matches!(movement, Movement::AtAnchor(i) if i == th.haul_to);
+            if arrived || th.hauled >= tuning.haul_time {
+                events.push(Event::Taken);
+                self.withdraw();
+            }
+            return;
         }
 
         // Counting bones: he sees and hears nothing until he is done.
@@ -712,9 +1059,22 @@ impl Encounter {
                     };
                     self.stats.recoveries += 1;
                     events.push(Event::WarningAverted);
+                    th.averts += 1;
+                    if th.averts >= tuning.averts_to_withdraw {
+                        // Tired of waiting over his prey: he goes elsewhere.
+                        th.averts = 0;
+                        th.cooldown = tuning.recover_cooldown;
+                        th.movement = Movement::Still;
+                        th.circling = false;
+                        th.lurk_time = 0.0;
+                        th.focus = None;
+                        th.presence = Presence::Sinking { t: 0.0, relocate: true };
+                        events.push(Event::LostTrack);
+                    }
                 } else if th.state_time >= tuning.warn_time && th.has_sight {
                     th.set_state(ThreatState::Hunting);
                     th.exposure = 0.0;
+                    th.averts = 0;
                     self.stats.hunts += 1;
                     events.push(Event::HuntBegan);
                 }
@@ -762,7 +1122,7 @@ impl Encounter {
                     }
                 }
             }
-            ThreatState::Dormant | ThreatState::Counting => {}
+            ThreatState::Dormant | ThreatState::Counting | ThreatState::Hauling => {}
         }
         if self.threat.state == ThreatState::Counting {
             events.push(Event::CountingBegan);
@@ -1110,6 +1470,26 @@ mod tests {
     }
 
     #[test]
+    fn averted_again_and_again_he_tires_of_waiting_and_rises_elsewhere() {
+        let (l, t, mut enc, mut ev) = setup();
+        place_threat(&mut enc, &l, YARD_NODE);
+        for round in 0..t.averts_to_withdraw {
+            enc.threat.cooldown = 0.0;
+            enc.threat.presence = Presence::Present;
+            tick(&mut enc, &l, &t, YARD, &mut ev);
+            assert_eq!(enc.threat.state, ThreatState::Warning, "round {round}");
+            run_for(&mut enc, &l, &t, HIDDEN, t.warn_break_time + 0.1, &mut ev);
+            assert_eq!(enc.threat.state, ThreatState::Stalking);
+        }
+        assert_eq!(ev.iter().filter(|e| **e == Event::WarningAverted).count(), 3);
+        assert!(ev.contains(&Event::LostTrack), "he gives up his watch");
+        assert!(matches!(enc.threat.presence, Presence::Sinking { relocate: true, .. }));
+        run_for(&mut enc, &l, &t, HIDDEN, t.sink_time + t.rise_time + 0.3, &mut ev);
+        assert!(enc.threat.pos.distance(HIDDEN) >= t.manifest_min_distance);
+        assert_eq!(enc.threat.averts, 0);
+    }
+
+    #[test]
     fn he_never_approaches_through_walls() {
         let (l, t, mut enc, mut ev) = setup();
         place_threat(&mut enc, &l, YARD_NODE);
@@ -1338,6 +1718,14 @@ mod tests {
         assert_eq!(ev.iter().filter(|e| **e == Event::PowerRestored).count(), 1);
         assert!(!enc.work_truck(&t, 1.0, &mut ev), "bones still missing");
         enc.progress.relics.fill(Relic::Delivered);
+        assert!(!enc.work_truck(&t, 1.0, &mut ev), "the key is still locked away");
+        let right = lock_code(t.seed);
+        let wrong = [(right[0] % 9) + 1, right[1], right[2]];
+        assert!(!enc.try_code(&t, wrong, &mut ev));
+        assert!(ev.contains(&Event::LockRattle) && !enc.progress.key);
+        assert!(enc.try_code(&t, right, &mut ev));
+        assert!(ev.contains(&Event::KeyFound) && enc.progress.key);
+        assert!(!enc.try_code(&t, right, &mut ev), "it opens once");
         for _ in 0..(t.truck_hold as usize + 2) {
             enc.work_truck(&t, 1.0, &mut ev);
         }
@@ -1348,7 +1736,7 @@ mod tests {
     }
 
     #[test]
-    fn pressure_rises_with_the_night_and_load_and_eases_as_bones_go_home() {
+    fn pressure_rises_with_the_night_the_load_and_every_bundle_laid_to_rest() {
         let (_, t, mut enc, mut ev) = setup();
         enc.tick_world(&t, 0.016);
         let early = enc.pressure;
@@ -1364,8 +1752,42 @@ mod tests {
         enc.deliver_relic(1, &mut ev);
         enc.deliver_relic(1, &mut ev);
         enc.tick_world(&t, 0.016);
-        assert!(enc.pressure < burdened, "laying bones to rest calms the night");
+        assert!(
+            enc.pressure > burdened,
+            "every bundle laid to rest is one less in his sack: he feels it"
+        );
         assert!(enc.pressure <= t.pressure_max);
+    }
+
+    #[test]
+    fn every_seed_locks_the_key_with_its_own_three_digits() {
+        let codes: std::collections::HashSet<[u8; 3]> = (0..50).map(lock_code).collect();
+        assert!(codes.len() > 40, "the combination changes from night to night");
+        assert!(codes.iter().all(|c| c[0] >= 1 && c.iter().all(|&d| d <= 9)));
+        assert_eq!(lock_code(7), lock_code(7));
+    }
+
+    #[test]
+    fn every_variant_walks_some_nights_and_only_the_right_name_lays_him_to_rest() {
+        let seen: std::collections::HashSet<u8> = (0..60).map(|s| Variant::of(s).code()).collect();
+        assert_eq!(seen.len(), 3, "all three returns happen");
+        for v in Variant::ALL {
+            assert_eq!(Variant::from_code(v.code()), Some(v));
+        }
+        let (l, t, mut enc, mut ev) = setup();
+        let right = Variant::of(t.seed);
+        let wrong = Variant::ALL.into_iter().find(|v| *v != right).unwrap();
+        let watchers = [Vec2::new(-19.0, -44.0)];
+        assert!(enc.name_him(&l, &t, right, &watchers, &mut ev).is_err(), "bones first");
+        enc.progress.relics.fill(Relic::Delivered);
+        assert_eq!(enc.name_him(&l, &t, wrong, &watchers, &mut ev), Ok(false));
+        assert!(ev.contains(&Event::NameWrong));
+        assert_ne!(enc.threat.state, ThreatState::Dormant, "a wrong name rouses him");
+        assert!(enc.name_him(&l, &t, right, &watchers, &mut ev).is_err(), "not so soon");
+        enc.tick_world(&t, t.naming_cooldown + 0.1);
+        assert_eq!(enc.name_him(&l, &t, right, &watchers, &mut ev), Ok(true));
+        assert!(ev.contains(&Event::Banished) && enc.progress.banished);
+        assert_eq!(enc.outcome, Outcome::Won);
     }
 
     #[test]

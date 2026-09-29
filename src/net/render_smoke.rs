@@ -61,6 +61,7 @@ fn drive(
     mut state: ResMut<RenderSmoke>,
     mut input: ResMut<CurrentIntent>,
     mut control: MessageWriter<NetControl>,
+    light: Res<crate::player::LightOn>,
 ) {
     input.0 = Default::default();
     if state.exit_frames.is_some() {
@@ -81,6 +82,7 @@ fn drive(
         &tuning.0,
     );
     input.0 = frame.intent;
+    input.0.toggle_flashlight = frame.dark == light.0;
     if let Some(action) = frame.action {
         // The regular update system transmits this frame's orientation first.
         control.write(NetControl::Action(action));

@@ -30,6 +30,13 @@ pub struct Intent {
     pub use_aji: bool,
     /// Mark where you look this frame.
     pub ping: bool,
+    /// Press for a skill check this frame: the check's id and where the
+    /// needle stood as far as this player could tell.
+    pub skill: Option<(u32, f32)>,
+    /// Try this combination on the key box's padlock this frame.
+    pub code: Option<[u8; 3]>,
+    /// Name which of him walks tonight (a `sim::Variant` code) this frame.
+    pub name: Option<u8>,
 }
 
 /// Where the player stands and looks.
@@ -129,6 +136,8 @@ pub enum TargetKind {
     Relic(u8),
     /// Pepper by index.
     Aji(u8),
+    /// Spare torch batteries by index.
+    Batteries(u8),
     /// Readable note by id.
     Note(u8),
     /// The altar in the ceiba's roots: lay bones down, or pray.
@@ -136,8 +145,14 @@ pub enum TargetKind {
     Pump,
     Ignition,
     Beacon,
+    /// The padlocked box with the truck key.
+    Lockbox,
     /// A downed teammate.
     Body(PlayerId),
+    /// Tureco, tied behind the house: hold to untie him.
+    Dog,
+    /// The dynamo's line panel at the windmill: press to switch lines.
+    Panel,
 }
 
 impl TargetKind {
@@ -145,7 +160,12 @@ impl TargetKind {
     pub fn is_hold(self) -> bool {
         matches!(
             self,
-            TargetKind::Altar | TargetKind::Pump | TargetKind::Ignition | TargetKind::Beacon | TargetKind::Body(_)
+            TargetKind::Altar
+                | TargetKind::Pump
+                | TargetKind::Ignition
+                | TargetKind::Beacon
+                | TargetKind::Body(_)
+                | TargetKind::Dog
         )
     }
 }
@@ -155,6 +175,7 @@ impl TargetKind {
 pub enum Blocked {
     NeedBones,
     NeedPower,
+    NeedKey,
 }
 
 /// What the crosshair is on this frame.
@@ -184,13 +205,20 @@ impl Target {
 pub struct Scene<'a> {
     pub relics: &'a [Relic],
     pub aji_taken: &'a [bool],
+    pub batteries_taken: &'a [bool],
     pub power_on: bool,
     pub truck_running: bool,
     pub bones_home: bool,
     pub beacon_ready: bool,
+    /// The truck key is out of its box.
+    pub key: bool,
+    /// Tureco, while still tied: where he is.
+    pub dog_tied: Option<Vec2>,
     /// Bundles this player carries, and peppers held.
     pub carrying: usize,
     pub aji_held: u8,
+    /// This player's torch charge, 0..1.
+    pub battery: f32,
     /// Downed teammates: id and position.
     pub bodies: &'a [(PlayerId, Vec2)],
     pub me: PlayerId,
@@ -204,12 +232,16 @@ pub struct Scene<'a> {
 pub struct SceneData {
     pub relics: Vec<Relic>,
     pub aji_taken: Vec<bool>,
+    pub batteries_taken: Vec<bool>,
     pub power_on: bool,
     pub truck_running: bool,
     pub bones_home: bool,
     pub beacon_ready: bool,
+    pub key: bool,
+    pub dog_tied: Option<Vec2>,
     pub carrying: usize,
     pub aji_held: u8,
+    pub battery: f32,
     pub bodies: Vec<(PlayerId, Vec2)>,
     pub me: PlayerId,
     pub acting: bool,
@@ -220,12 +252,16 @@ impl SceneData {
         Scene {
             relics: &self.relics,
             aji_taken: &self.aji_taken,
+            batteries_taken: &self.batteries_taken,
             power_on: self.power_on,
             truck_running: self.truck_running,
             bones_home: self.bones_home,
             beacon_ready: self.beacon_ready,
+            key: self.key,
+            dog_tied: self.dog_tied,
             carrying: self.carrying,
             aji_held: self.aji_held,
+            battery: self.battery,
             bodies: &self.bodies,
             me: self.me,
             acting: self.acting,
@@ -261,6 +297,13 @@ pub fn evaluate_target(layout: &Layout, tuning: &Tuning, pose: &Pose, scene: &Sc
             }
         }
     }
+    if scene.battery < tuning.battery_full {
+        for (i, p) in d.batteries.iter().enumerate() {
+            if !scene.batteries_taken.get(i).copied().unwrap_or(true) {
+                candidates.push((TargetKind::Batteries(i as u8), *p, 0.2, tuning.relic_reach, None));
+            }
+        }
+    }
     for n in &d.notes {
         candidates.push((TargetKind::Note(n.id), n.pos, 0.24, tuning.note_reach, None));
     }
@@ -279,10 +322,22 @@ pub fn evaluate_target(layout: &Layout, tuning: &Tuning, pose: &Pose, scene: &Sc
             Some(Blocked::NeedBones)
         } else if !scene.power_on {
             Some(Blocked::NeedPower)
+        } else if !scene.key {
+            Some(Blocked::NeedKey)
         } else {
             None
         };
         candidates.push((TargetKind::Ignition, d.ignition, 0.6, tuning.site_reach, blocked));
+    }
+    if !scene.key {
+        candidates.push((TargetKind::Lockbox, d.lockbox, 0.2, tuning.site_reach, None));
+    }
+    if scene.power_on {
+        candidates.push((TargetKind::Panel, d.panel, 0.25, tuning.site_reach, None));
+    }
+    if let Some(at) = scene.dog_tied {
+        let y = layout.surface_height(at) + 0.45;
+        candidates.push((TargetKind::Dog, Vec3::new(at.x, y, at.y), 0.45, tuning.body_reach, None));
     }
     if scene.beacon_ready {
         candidates.push((TargetKind::Beacon, d.beacon, 0.6, tuning.site_reach, None));
@@ -340,12 +395,16 @@ mod tests {
         Scene {
             relics,
             aji_taken: aji,
+            batteries_taken: &[],
             power_on: false,
             truck_running: false,
             bones_home: false,
             beacon_ready: true,
+            key: false,
+            dog_tied: None,
             carrying: 0,
             aji_held: 0,
+            battery: 1.0,
             bodies,
             me: 1,
             acting: true,
@@ -431,6 +490,11 @@ mod tests {
             Some(Blocked::NeedPower)
         );
         s.power_on = true;
+        assert_eq!(
+            evaluate_target(&l, &t, &pose, &s).unwrap().blocked,
+            Some(Blocked::NeedKey)
+        );
+        s.key = true;
         assert!(evaluate_target(&l, &t, &pose, &s).unwrap().usable());
         // A downed teammate lying in the road is a body target; you are not.
         let body_at = Vec2::new(40.0, 30.0);

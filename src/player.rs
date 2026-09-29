@@ -4,27 +4,74 @@
 
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::AccumulatedMouseMotion;
-use bevy::light::NotShadowCaster;
+use bevy::light::{FogVolume, NotShadowCaster, NotShadowReceiver, VolumetricFog, VolumetricLight};
 use bevy::post_process::bloom::Bloom;
+use bevy::post_process::effect_stack::{ChromaticAberration, Vignette};
 use bevy::prelude::*;
 use bevy::render::view::{ColorGrading, ColorGradingGlobal};
 
 use crate::app::{Flow, GameSet, Launch, LayoutRes, RunReset, Settings, TuningRes};
 use crate::control::{Intent, Pose};
+use crate::world::mesh::{MeshBuilder, srgb};
 use crate::world::{CarriedSatchel, Palette, SatchelAsset};
 
-/// Luminous power of the flashlight (lumens, as Bevy measures spot lights).
+/// Luminous power of the flashlight's hot core (lumens, as Bevy measures
+/// spot lights: the cone's width does not concentrate it).
 pub const FLASHLIGHT_LUMENS: f32 = 380_000.0;
+/// The wide, dim spill around the core: the soft ring of a real torch.
+const SPILL_LUMENS: f32 = 70_000.0;
+/// Bloom between lightning strikes (the flash adds to it).
+pub const BLOOM: f32 = 0.12;
+/// Where the torch's tail is held (camera space) and the point it aims at:
+/// nearly parallel to the view, so it sits low right and the beam meets the
+/// centre of view well out.
+const TORCH_GRIP: Vec3 = Vec3::new(0.16, -0.24, -0.2);
+const TORCH_AIM: Vec3 = Vec3::new(0.0, 0.0, -12.0);
+/// Torch body length (m) along its axis; the lens and the beams sit at its head.
+const TORCH_LENGTH: f32 = 0.235;
+/// Side of the fog volume that travels with the camera (m).
+const FOG_VOLUME: f32 = 60.0;
 
 #[derive(Component)]
 pub struct Player {
     pub pose: Pose,
 }
 
+/// The torch in hand: its on/off state, and how it sways and bobs.
 #[derive(Component)]
 pub struct Flashlight {
     pub on: bool,
+    /// Smoothed look-sway offset (yaw, pitch; radians).
+    sway: Vec2,
 }
+
+/// A light of the torch and the luminous power it has when on.
+#[derive(Component)]
+struct Beam(f32);
+
+/// The torch lens: glows while the torch is on.
+#[derive(Resource)]
+struct TorchLens(Handle<StandardMaterial>);
+
+/// The walking gait, shared by the head bob and the torch: the stride phase
+/// (radians, one step per half turn) and how strongly it shows (0–1).
+#[derive(Resource, Default)]
+struct Gait {
+    phase: f32,
+    amount: f32,
+}
+
+/// Radians of stride phase per metre walked: a step about every 0.7 m.
+const STRIDE_PER_M: f32 = 4.5;
+/// Head bob at full pace: rise and fall, side sway (m) and roll (radians).
+/// Kept small: a sense of footfall, not a camera shake.
+const BOB_RISE: f32 = 0.028;
+const BOB_SWAY: f32 = 0.012;
+const BOB_ROLL: f32 = 0.005;
+
+/// Fog for the torch beam to scatter in, kept centred on the eye.
+#[derive(Component)]
+struct TravellingFog;
 
 /// This frame's intent (from devices, or from the debug route).
 #[derive(Resource, Default)]
@@ -39,8 +86,16 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CurrentIntent>()
+            .init_resource::<Gait>()
             .insert_resource(LightOn(true))
             .add_systems(Startup, spawn_player.after(crate::world::spawn_world))
+            .add_systems(
+                Update,
+                (head_bob, torch_in_hand, torch_light, carry_fog)
+                    .chain()
+                    .in_set(GameSet::Present)
+                    .after(apply_motion),
+            )
             .add_systems(
                 Update,
                 (
@@ -75,9 +130,41 @@ fn spawn_player(
     tuning: Res<TuningRes>,
     satchel: Res<SatchelAsset>,
     palette: Res<Palette>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let pose = Pose::spawn(&layout.0);
     let fog = crate::world::land::HORIZON;
+    let (body, lens) = torch_meshes();
+    let body_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.75, 0.75, 0.77),
+        metallic: 0.25,
+        perceptual_roughness: 0.42,
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    });
+    let lens_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.9, 0.88, 0.8),
+        emissive: torch_glow(true),
+        perceptual_roughness: 0.1,
+        ..default()
+    });
+    commands.insert_resource(TorchLens(lens_mat.clone()));
+    commands.spawn((
+        Name::new("travelling fog"),
+        TravellingFog,
+        FogVolume {
+            fog_color: Color::srgb(0.62, 0.68, 0.8),
+            density_factor: 0.012,
+            absorption: 0.2,
+            scattering: 0.3,
+            scattering_asymmetry: 0.55,
+            light_intensity: 0.25,
+            ..default()
+        },
+        Transform::from_scale(Vec3::splat(FOG_VOLUME)),
+    ));
     commands
         .spawn((
             Name::new("player camera"),
@@ -91,19 +178,20 @@ fn spawn_player(
             }),
             bevy::camera::Hdr,
             Tonemapping::TonyMcMapface,
-            // A cool, rich night: the lanterns stay warm against it. Global
-            // grading only: sectional contrast crushes linear-HDR darks.
+            // A dark, cool night that lets the practicals stay warm against
+            // it: slightly under-saturated, so colour belongs to the light.
+            // Global grading only: sectional contrast crushes linear-HDR darks.
             ColorGrading {
                 global: ColorGradingGlobal {
                     exposure: 0.3,
-                    temperature: -0.04,
-                    post_saturation: 1.14,
+                    temperature: -0.03,
+                    post_saturation: 0.9,
                     ..default()
                 },
                 ..default()
             },
             Bloom {
-                intensity: 0.1,
+                intensity: BLOOM,
                 ..Bloom::NATURAL
             },
             DistanceFog {
@@ -112,24 +200,90 @@ fn spawn_player(
                 directional_light_exponent: 22.0,
                 falloff: FogFalloff::from_visibility_squared(crate::world::land::fog_visibility(&layout.0)),
             },
+            // The torch beam's haze; the fog volume is lit only by volumetric
+            // lights, never by the sky fill.
+            VolumetricFog {
+                ambient_intensity: 0.0,
+                // No jitter: without TAA to resolve it, it reads as grain
+                // crawling along the beam.
+                step_count: 64,
+                jitter: 0.0,
+                ..default()
+            },
+            Vignette {
+                intensity: 0.55,
+                radius: 0.9,
+                smoothness: 1.6,
+                ..default()
+            },
+            ChromaticAberration {
+                intensity: 0.006,
+                ..default()
+            },
             eye_transform(&pose, &tuning.0, &layout.0),
         ))
         .with_children(|cam| {
             cam.spawn((
-                Name::new("flashlight"),
-                Flashlight { on: true },
-                SpotLight {
-                    color: Color::srgb(1.0, 0.93, 0.82),
-                    intensity: FLASHLIGHT_LUMENS,
-                    range: 38.0,
-                    radius: 0.02,
-                    inner_angle: 0.2,
-                    outer_angle: 0.42,
-                    shadow_maps_enabled: true,
-                    ..default()
+                Name::new("torch in hand"),
+                Flashlight {
+                    on: true,
+                    sway: Vec2::ZERO,
                 },
-                Transform::from_xyz(0.18, -0.14, -0.05),
-            ));
+                torch_rest(),
+                Visibility::Inherited,
+            ))
+            .with_children(|torch| {
+                // The body lies along the torch's forward (-Z) axis.
+                let along = Transform::from_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2));
+                torch.spawn((
+                    Mesh3d(meshes.add(body)),
+                    MeshMaterial3d(body_mat),
+                    along,
+                    NotShadowCaster,
+                    NotShadowReceiver,
+                ));
+                torch.spawn((
+                    Mesh3d(meshes.add(lens)),
+                    MeshMaterial3d(lens_mat),
+                    along,
+                    NotShadowCaster,
+                    NotShadowReceiver,
+                ));
+                let head = Transform::from_xyz(0.0, 0.0, -TORCH_LENGTH - 0.01);
+                // A hot core that reaches, scatters in the rain haze...
+                torch.spawn((
+                    Name::new("flashlight"),
+                    Beam(FLASHLIGHT_LUMENS),
+                    SpotLight {
+                        color: Color::srgb(1.0, 0.93, 0.82),
+                        intensity: FLASHLIGHT_LUMENS,
+                        range: 38.0,
+                        radius: 0.02,
+                        inner_angle: 0.1,
+                        outer_angle: 0.27,
+                        shadow_maps_enabled: true,
+                        ..default()
+                    },
+                    VolumetricLight,
+                    head,
+                ));
+                // ...and a wide dim spill around it.
+                torch.spawn((
+                    Name::new("flashlight spill"),
+                    Beam(SPILL_LUMENS),
+                    SpotLight {
+                        color: Color::srgb(1.0, 0.9, 0.76),
+                        intensity: SPILL_LUMENS,
+                        range: 20.0,
+                        radius: 0.03,
+                        inner_angle: 0.22,
+                        outer_angle: 0.62,
+                        shadow_maps_enabled: true,
+                        ..default()
+                    },
+                    head,
+                ));
+            });
             cam.spawn((
                 Name::new("carried satchel"),
                 CarriedSatchel,
@@ -150,15 +304,120 @@ fn spawn_player(
         });
 }
 
+/// A plain metal torch along +Y from its tail at the origin: ribbed grip,
+/// flared head and bezel, plus the lens disc as its own mesh.
+fn torch_meshes() -> (Mesh, Mesh) {
+    let dark = srgb(0.55, 0.55, 0.57);
+    let grip = srgb(0.32, 0.32, 0.33);
+    let mut body = MeshBuilder::new();
+    let l = TORCH_LENGTH;
+    body.lathe(
+        Vec3::ZERO,
+        &[(0.0, 0.0), (0.013, 0.0), (0.016, 0.006), (0.016, 0.02)],
+        20,
+        4.0,
+        dark,
+    );
+    // Knurled grip: alternating narrow rings.
+    let mut rings = vec![(0.016, 0.02)];
+    for i in 0..9 {
+        let y = 0.024 + i as f32 * 0.011;
+        rings.push((0.0172, y));
+        rings.push((0.0172, y + 0.005));
+        rings.push((0.0162, y + 0.0062));
+        rings.push((0.0162, y + 0.0105));
+    }
+    body.lathe(Vec3::ZERO, &rings, 20, 4.0, grip);
+    body.lathe(
+        Vec3::ZERO,
+        &[
+            (0.0162, 0.123),
+            (0.017, 0.14),
+            (0.021, l - 0.07),
+            (0.026, l - 0.035),
+            (0.027, l - 0.008),
+            (0.029, l - 0.006),
+            (0.029, l),
+            (0.024, l),
+        ],
+        24,
+        4.0,
+        dark,
+    );
+    let mut lens = MeshBuilder::new();
+    lens.lathe(
+        Vec3::ZERO,
+        &[(0.024, l - 0.002), (0.0, l - 0.001)],
+        24,
+        1.0,
+        srgb(1.0, 1.0, 1.0),
+    );
+    (body.build(), lens.build())
+}
+
+/// Lens glow for a torch that is on or off.
+fn torch_glow(on: bool) -> LinearRgba {
+    if on {
+        LinearRgba::rgb(40.0, 36.0, 30.0)
+    } else {
+        LinearRgba::BLACK
+    }
+}
+
+/// The torch at rest: held low right, aimed across the centre of view.
+fn torch_rest() -> Transform {
+    Transform::from_translation(TORCH_GRIP).looking_at(TORCH_AIM, Vec3::Y)
+}
+
 fn read_devices(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     settings: Res<Settings>,
     tuning: Res<TuningRes>,
+    net: Res<crate::net::Network>,
     mut intent: ResMut<CurrentIntent>,
+    mut lock: ResMut<crate::encounter::LockPanel>,
+    mut naming: ResMut<crate::encounter::NamePanel>,
 ) {
     let mut axis = Vec2::ZERO;
+    // At the key box, 1, 2 and 3 turn the dials (Shift turns them back) and
+    // Enter tries the combination.
+    let mut code = None;
+    if lock.open {
+        let back = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+        for (i, key) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3]
+            .into_iter()
+            .enumerate()
+        {
+            if keys.just_pressed(key) {
+                lock.dials[i] = if back {
+                    (lock.dials[i] + 9) % 10
+                } else {
+                    (lock.dials[i] + 1) % 10
+                };
+            }
+        }
+        if keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) {
+            code = Some(lock.dials);
+        }
+    }
+    // At the ceiba: 1, 2 or 3 chooses which of him walks; Enter names him.
+    let mut name = None;
+    if naming.open {
+        for (i, key) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3]
+            .into_iter()
+            .enumerate()
+        {
+            if keys.just_pressed(key) {
+                naming.choice = i as u8;
+            }
+        }
+        if keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) {
+            name = Some(naming.choice);
+            naming.open = false;
+        }
+    }
     if keys.any_pressed([KeyCode::KeyW, KeyCode::ArrowUp]) {
         axis.y += 1.0;
     }
@@ -183,6 +442,13 @@ fn read_devices(
         drop: keys.just_pressed(KeyCode::KeyG),
         use_aji: keys.just_pressed(KeyCode::KeyQ),
         ping: keys.just_pressed(KeyCode::KeyV) || mouse.just_pressed(MouseButton::Middle),
+        skill: if keys.just_pressed(KeyCode::Space) {
+            net.needle(&tuning.0)
+        } else {
+            None
+        },
+        code,
+        name,
     };
 }
 
@@ -193,7 +459,7 @@ fn apply_motion(
     player: Single<(&mut Player, &mut Transform)>,
     net: Res<crate::net::Network>,
     mut light: ResMut<LightOn>,
-    flashlight: Single<(&mut Flashlight, &mut SpotLight)>,
+    mut torch: Single<&mut Flashlight>,
 ) {
     let (mut player, mut tf) = player.into_inner();
     // Even the frozen and the downed can turn their heads; the dead only watch.
@@ -203,11 +469,137 @@ fn apply_motion(
     *tf = eye_transform(&player.pose, &tuning.0, &layout.0);
 
     if intent.0.toggle_flashlight && net.status() != 2 {
-        let (mut torch, mut spot) = flashlight.into_inner();
         torch.on = !torch.on;
-        spot.intensity = if torch.on { FLASHLIGHT_LUMENS } else { 0.0 };
         light.0 = torch.on;
     }
+}
+
+/// The torch's lights and lens follow its switch and its charge: a dead
+/// battery gives nothing, a weak one gutters and catches.
+fn torch_light(
+    time: Res<Time>,
+    torch: Single<&Flashlight>,
+    net: Res<crate::net::Network>,
+    tuning: Res<TuningRes>,
+    lens: Res<TorchLens>,
+    mut beams: Query<(&Beam, &mut SpotLight)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut shown: Local<Option<u16>>,
+) {
+    let charge = net.snapshot().map_or(1.0, |s| s.me.battery);
+    let low = tuning.0.battery_low;
+    let level = if !torch.on || charge <= 0.0 {
+        0.0
+    } else if charge >= low {
+        1.0
+    } else {
+        // Weaker as it drains, with a stutter that gets worse: two beats
+        // that rarely line up, and now and then a drop to almost nothing.
+        let t = time.elapsed_secs();
+        let weak = charge / low;
+        let beat = (t * 13.7).sin() * (t * 5.3 + 1.1).sin();
+        let drop = if (t * 1.9).sin() > 0.55 + 0.4 * weak { 0.12 } else { 1.0 };
+        (0.35 + 0.55 * weak + 0.1 * beat).clamp(0.05, 1.0) * drop
+    };
+    // Quantized so a steady beam writes nothing.
+    let key = (level * 200.0).round() as u16;
+    if *shown == Some(key) {
+        return;
+    }
+    *shown = Some(key);
+    for (beam, mut spot) in &mut beams {
+        spot.intensity = beam.0 * level;
+    }
+    if let Some(mut m) = materials.get_mut(&lens.0) {
+        m.emissive = torch_glow(true) * level;
+    }
+}
+
+/// The head rises and falls with each footfall. Presentation only: aim,
+/// sight and targeting read the pose, never the camera. Whoever last placed
+/// the camera (the session each frame, a photo or debug view) is respected:
+/// the bob is laid on top of that placement and taken off again next frame.
+fn head_bob(
+    time: Res<Time>,
+    mut gait: ResMut<Gait>,
+    mut camera: Single<&mut Transform, With<Player>>,
+    mut placed: Local<Option<(Transform, Transform)>>,
+) {
+    let dt = time.delta_secs();
+    // The camera without last frame's bob: unchanged since we wrote it, or
+    // freshly placed by someone else.
+    let base = match *placed {
+        Some((base, written)) if **camera == written => base,
+        _ => **camera,
+    };
+    let last = placed.map(|(b, _)| b.translation);
+    let moved = match last {
+        Some(p) if dt > 0.0 => {
+            let step = Vec2::new(base.translation.x - p.x, base.translation.z - p.z).length();
+            // A teleport (photo, restart) is not a stride.
+            if step > 1.0 { 0.0 } else { step }
+        }
+        _ => 0.0,
+    };
+    if dt > 0.0 {
+        let pace = (moved / dt / 3.5).clamp(0.0, 1.3);
+        gait.amount += (pace - gait.amount) * (dt * 6.0).min(1.0);
+        gait.phase = (gait.phase + moved * STRIDE_PER_M) % std::f32::consts::TAU;
+    }
+    let a = gait.amount;
+    let mut tf = base;
+    if a > 1e-3 {
+        let right = base.rotation * Vec3::X;
+        let rise = -(1.0 - (gait.phase * 2.0).cos()) * 0.5 * BOB_RISE * a;
+        let sway = gait.phase.sin() * BOB_SWAY * a;
+        tf.translation += Vec3::Y * rise + right * sway;
+        tf.rotation *= Quat::from_rotation_z(gait.phase.sin() * BOB_ROLL * a);
+    }
+    **camera = tf;
+    *placed = Some((base, tf));
+}
+
+/// The torch lags the look a little and bobs with the stride. Presentation
+/// only: the beam's gameplay effect is its on/off state.
+fn torch_in_hand(
+    time: Res<Time>,
+    gait: Res<Gait>,
+    player: Single<&Transform, (With<Player>, Without<Flashlight>)>,
+    torch: Single<(&mut Flashlight, &mut Transform)>,
+    mut last: Local<Option<(f32, f32)>>,
+) {
+    let dt = time.delta_secs();
+    if dt <= 0.0 {
+        return;
+    }
+    let (mut hold, mut tf) = torch.into_inner();
+    let (yaw, pitch, _) = player.rotation.to_euler(EulerRot::YXZ);
+    let turn = match *last {
+        Some((y, x)) => {
+            let dy = (yaw - y + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+            Vec2::new(dy, pitch - x)
+        }
+        None => Vec2::ZERO,
+    };
+    *last = Some((yaw, pitch));
+    // Sway: pushed against the turn, eased back to rest.
+    let k = (dt * 9.0).min(1.0);
+    let push = (-turn * 0.6).clamp(Vec2::splat(-0.08), Vec2::splat(0.08));
+    hold.sway = (hold.sway + push) * (1.0 - k);
+    // Bob: the hand swings a little behind the head's footfall.
+    let p = gait.phase - 0.5;
+    let bob = Vec3::new(p.sin() * 0.006, -(p * 2.0).sin().abs() * 0.008, 0.0) * gait.amount;
+    let rest = torch_rest();
+    tf.translation = rest.translation + bob;
+    tf.rotation = Quat::from_euler(EulerRot::YXZ, hold.sway.x, hold.sway.y, 0.0) * rest.rotation;
+}
+
+/// Keeps the beam's fog volume centred on the eye.
+fn carry_fog(
+    player: Single<&Transform, (With<Player>, Without<TravellingFog>)>,
+    mut fog: Single<&mut Transform, With<TravellingFog>>,
+) {
+    fog.translation = player.translation;
 }
 
 pub(crate) fn reset_player(
@@ -215,7 +607,7 @@ pub(crate) fn reset_player(
     layout: Res<LayoutRes>,
     tuning: Res<TuningRes>,
     player: Single<(&mut Player, &mut Transform)>,
-    flashlight: Single<(&mut Flashlight, &mut SpotLight)>,
+    mut torch: Single<&mut Flashlight>,
     mut light: ResMut<LightOn>,
     mut intent: ResMut<CurrentIntent>,
 ) {
@@ -225,9 +617,7 @@ pub(crate) fn reset_player(
     let (mut player, mut tf) = player.into_inner();
     player.pose = Pose::spawn(&layout.0);
     *tf = eye_transform(&player.pose, &tuning.0, &layout.0);
-    let (mut torch, mut spot) = flashlight.into_inner();
     torch.on = true;
-    spot.intensity = FLASHLIGHT_LUMENS;
     light.0 = true;
     intent.0 = Intent::default();
 }

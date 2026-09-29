@@ -60,6 +60,8 @@ pub struct WhistlePhrase {
     pub speed: f32,
     /// How close it SEEMS, 0 = faint and far, 1 = right beside you.
     pub seeming_closeness: f32,
+    /// Heard only in the listener's fear: there was no whistle at all.
+    pub phantom: bool,
 }
 
 /// Inversion: truly near → seems far (0), truly far → seems close (1).
@@ -78,6 +80,27 @@ pub fn variant_for(seeming: f32) -> WhistleVariant {
     }
 }
 
+/// What Tureco makes of him. A dog knows where he truly is: the one cue on
+/// the llano that does not lie, and it only works up close.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DogSense {
+    Calm,
+    /// He is near: a low growl at the dark.
+    Growl,
+    /// He is right there: the dog barks him off, if it has the courage.
+    Bark,
+}
+
+pub fn dog_senses(true_distance: f32, tuning: &Tuning) -> DogSense {
+    if true_distance <= tuning.bark_range {
+        DogSense::Bark
+    } else if true_distance <= tuning.growl_range {
+        DogSense::Growl
+    } else {
+        DogSense::Calm
+    }
+}
+
 /// Schedules phrases for one listener. Owns no truth; reads it each tick.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CueDirector {
@@ -88,6 +111,8 @@ pub struct CueDirector {
     last_state: ThreatState,
     pub last_phrase: Option<WhistlePhrase>,
     pub phrases: u32,
+    /// Seconds since the last phrase that was only in the listener's head.
+    phantom_quiet: f32,
 }
 
 impl CueDirector {
@@ -102,7 +127,34 @@ impl CueDirector {
             last_state: ThreatState::Dormant,
             last_phrase: None,
             phrases: 0,
+            phantom_quiet: 0.0,
         }
+    }
+
+    /// A whistle only a badly frightened listener hears: any of the three
+    /// timbres, slightly slurred. Rare, spaced, never below `phantom_whistle_fear`,
+    /// and it says nothing about where he is.
+    pub fn phantom(&mut self, fear: f32, tuning: &Tuning, dt: f32) -> Option<WhistlePhrase> {
+        self.phantom_quiet += dt;
+        if fear < tuning.phantom_whistle_fear || self.phantom_quiet < tuning.phantom_whistle_every * 0.5 {
+            return None;
+        }
+        if self.rng.f32() >= dt / tuning.phantom_whistle_every {
+            return None;
+        }
+        self.phantom_quiet = 0.0;
+        let variant = match self.rng.below(3) {
+            0 => WhistleVariant::Loud,
+            1 => WhistleVariant::Middling,
+            _ => WhistleVariant::Faint,
+        };
+        Some(WhistlePhrase {
+            variant,
+            gain: variant.gain(tuning) * 0.7,
+            speed: 0.9 + 0.05 * self.rng.f32(),
+            seeming_closeness: 0.5,
+            phantom: true,
+        })
     }
 
     pub fn reset(&mut self, seed: u64) {
@@ -147,6 +199,7 @@ impl CueDirector {
                 gain: variant.gain(tuning) * 0.85,
                 speed: 0.97 + 0.06 * self.rng.f32(),
                 seeming_closeness: if variant == WhistleVariant::Loud { 1.0 } else { 0.5 },
+                phantom: false,
             };
             self.last_phrase = Some(phrase);
             self.phrases += 1;
@@ -168,17 +221,26 @@ impl CueDirector {
             ThreatState::Warning => tuning.warn_phrase_interval,
             ThreatState::Hunting => tuning.hunt_phrase_interval,
             _ => {
+                // The more of his bones are taken from him, the more he
+                // whistles: up to a third sooner at the worst of the night.
                 let (lo, hi) = tuning.stalk_phrase_interval;
-                self.rng.range(lo, hi)
+                self.rng.range(lo, hi) * (1.0 - 0.35 * enc.pressure.clamp(0.0, 1.0))
             }
         };
         let seeming = seeming_closeness(th.pos.distance(listener), tuning);
         let variant = variant_for(seeming);
+        // The Drunkard's return whistles slurred: slower, and never twice alike.
+        let speed = if crate::sim::Variant::of(tuning.seed) == crate::sim::Variant::Borracho {
+            0.86 + 0.2 * self.rng.f32()
+        } else {
+            0.97 + 0.06 * self.rng.f32()
+        };
         let phrase = WhistlePhrase {
             variant,
             gain: variant.gain(tuning),
-            speed: 0.97 + 0.06 * self.rng.f32(),
+            speed,
             seeming_closeness: seeming,
+            phantom: false,
         };
         self.last_phrase = Some(phrase);
         self.phrases += 1;
@@ -191,6 +253,24 @@ mod tests {
     use super::*;
     use crate::geometry::Layout;
     use crate::sim::Movement;
+
+    #[test]
+    fn only_deep_fear_hears_whistles_that_are_not_there_and_rarely() {
+        let t = Tuning::default();
+        let count = |fear: f32| {
+            let mut d = CueDirector::new(21);
+            (0..(600.0 / 0.05) as usize)
+                .filter_map(|_| d.phantom(fear, &t, 0.05))
+                .inspect(|p| assert!(p.phantom, "an imagined whistle is marked as one"))
+                .count()
+        };
+        assert_eq!(count(0.3), 0, "a calm mind hears nothing that is not there");
+        let frightened = count(0.95);
+        assert!(
+            (5..=40).contains(&frightened),
+            "ten minutes of terror: {frightened} imagined whistles"
+        );
+    }
 
     #[test]
     fn whistle_perception_is_inverted_from_true_distance() {

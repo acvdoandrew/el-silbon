@@ -213,33 +213,45 @@ def whistle_dry(rng, breath_amount, wobble):
     return tone, breath
 
 
+def echo(x, delay, gain, cutoff):
+    """One reflection off the far treeline: later, duller, quieter."""
+    out = list(x) + silence(delay)
+    return mix(out, one_pole_lowpass(x, cutoff), int(delay * SR), gain)
+
+
 def make_whistles(rng):
+    # The three must be unmistakable apart over rain: presence and breath up
+    # close; air loss (no highs), wet room and a late echo far off. Gains in
+    # the game widen the gap further (tuning.gain_*).
     out = {}
 
     # LOUD: seems right beside you (dry, breathy, full presence). The game
     # plays this when the Silbón is truly FAR away.
-    tone, breath = whistle_dry(rng, breath_amount=0.22, wobble=0.0)
+    tone, breath = whistle_dry(rng, breath_amount=0.32, wobble=0.0)
     body = [t + b for t, b in zip(tone, breath)]
-    room = reverb(body, size=0.55, damp=0.5, feedback=0.6)
-    loud = [d * 0.9 + r * 0.12 for d, r in zip(body, room)]
+    room = reverb(body, size=0.45, damp=0.55, feedback=0.5)
+    loud = [d * 0.96 + r * 0.06 for d, r in zip(body, room)]
     loud += silence(0.25)
-    out["whistle_loud.wav"] = normalize(fade(loud, 0.005, 0.2), 0.82)
+    out["whistle_loud.wav"] = normalize(fade(loud, 0.005, 0.2), 0.85)
 
-    # MIDDLING: somewhere across the grass.
+    # MIDDLING: somewhere across the grass — softened, half room, one slap.
     tone, breath = whistle_dry(rng, breath_amount=0.08, wobble=0.002)
     body = [t + b for t, b in zip(tone, breath)] + silence(1.2)
-    body = one_pole_lowpass(body, 5200.0)
-    room = reverb(body, size=1.0, damp=0.4, feedback=0.8)
-    mid = [d * 0.62 + r * 0.38 for d, r in zip(body, room)]
+    body = one_pole_lowpass(body, 4000.0)
+    body = echo(body, 0.19, 0.22, 3000.0)
+    room = reverb(body, size=1.0, damp=0.45, feedback=0.8)
+    mid = [d * 0.5 + r * 0.5 for d, r in zip(body, room)]
     out["whistle_mid.wav"] = normalize(fade(mid, 0.01, 0.4), 0.7)
 
-    # FAINT: thin, far, far away. The game plays this when he is truly NEAR.
+    # FAINT: thin, far, far away — the highs lost to the air, almost all
+    # room, answered late by the treeline. Played when he is truly NEAR.
     tone, breath = whistle_dry(rng, breath_amount=0.0, wobble=0.006)
     body = tone + silence(2.2)
     body = one_pole_highpass(body, 900.0)
-    body = one_pole_lowpass(one_pole_lowpass(body, 3300.0), 3600.0)
-    room = reverb(body, size=1.35, damp=0.55, feedback=0.86)
-    faint = [d * 0.22 + r * 0.78 for d, r in zip(body, room)]
+    body = one_pole_lowpass(one_pole_lowpass(body, 2300.0), 2500.0)
+    body = echo(echo(body, 0.43, 0.42, 1800.0), 0.86, 0.2, 1500.0)
+    room = reverb(body, size=1.5, damp=0.6, feedback=0.88)
+    faint = [d * 0.14 + r * 0.86 for d, r in zip(body, room)]
     out["whistle_faint.wav"] = normalize(fade(faint, 0.02, 0.9), 0.55)
     return out
 
@@ -882,6 +894,435 @@ def make_mechanics(rng):
     return files
 
 
+# --------------------------------------------------------------------------
+# Skill checks: the rhythm of the work
+# --------------------------------------------------------------------------
+
+def make_check_warn(rng):
+    """Two quick wooden taps and a small bright ring: the needle is coming."""
+    out = silence(0.45)
+    for t0, level in ((0.0, 0.8), (0.11, 1.0)):
+        i0 = int(t0 * SR)
+        click = biquad_bandpass(noise(rng, int(0.03 * SR)), 2400.0, 4.0)
+        for k, v in enumerate(click):
+            out[i0 + k] += v * math.exp(-(k / SR) / 0.006) * level * 3.0
+        damped(out, t0, 1760.0, 0.09, 0.35 * level)
+        damped(out, t0, 2640.0, 0.06, 0.15 * level)
+    return normalize(fade(out, 0.001, 0.08), 0.6)
+
+
+def make_check_great(rng):
+    """A soft, satisfied knock: the work took."""
+    out = silence(0.35)
+    damped(out, 0.0, 180.0, 0.07, 1.0)
+    damped(out, 0.0, 660.0, 0.05, 0.4)
+    tap = one_pole_highpass(noise(rng, int(0.02 * SR)), 1200.0)
+    for k, v in enumerate(tap):
+        out[k] += v * math.exp(-(k / SR) / 0.004) * 0.6
+    return normalize(fade(out, 0.001, 0.1), 0.55)
+
+
+def make_check_miss(rng):
+    """Iron on iron: a clank, then a long grinding screech that carries."""
+    n = int(1.6 * SR)
+    out = [0.0] * n
+    # The clank: a few inharmonic partials struck hard.
+    for f, d, g in ((310.0, 0.5, 0.8), (743.0, 0.35, 0.5), (1377.0, 0.25, 0.35), (2210.0, 0.18, 0.2)):
+        damped(out, 0.0, f, d, g)
+    grit = one_pole_highpass(noise(rng, n), 900.0)
+    ph = [0.0, 0.0, 0.0]
+    for i in range(n):
+        t = i / SR
+        env = min(1.0, max(0.0, t - 0.05) / 0.08) * math.exp(-max(0.0, t - 0.25) / 0.45)
+        # A bowed, wavering metal squeal with stick-slip roughness.
+        wob = 1.0 + 0.04 * math.sin(TAU * 7.0 * t) + 0.02 * math.sin(TAU * 23.0 * t)
+        stick = 0.5 + 0.5 * math.sin(TAU * 38.0 * t + 2.0 * math.sin(TAU * 3.0 * t))
+        s = 0.0
+        for k, f in enumerate((1180.0, 1870.0, 2950.0)):
+            ph[k] += TAU * f * wob * (1.0 - 0.18 * t) / SR
+            s += math.sin(ph[k]) / (k + 1)
+        out[i] += (s * (0.5 + 0.5 * stick) * 0.6 + grit[i] * 0.25 * stick) * env
+    out = one_pole_lowpass(out, 6500.0)
+    room = reverb(out, size=1.2, damp=0.5, feedback=0.78)
+    out = [d * 0.8 + r * 0.3 for d, r in zip(out + silence(0.8), room + silence(0.8))]
+    return normalize(fade(out, 0.001, 0.4), 0.85)
+
+
+def make_radio(rng):
+    """A late-night AM broadcast through a storm: hiss that breathes, crackle,
+    a man's murmured voice you can almost follow, and now and then a cuatro
+    strum from another station bleeding through. A seamless 12 s loop."""
+    loop, xfade = 12.0, 1.0
+    n = int((loop + xfade) * SR)
+    hiss = biquad_bandpass(noise(rng, n), 2200.0, 0.6)
+    out = [0.0] * n
+    # Voice: a glottal buzz through two moving formants, in phrases.
+    ph = 0.0
+    buzz = [0.0] * n
+    syll = 0.0
+    phrase_on = True
+    next_switch = rng.uniform(1.5, 3.0)
+    for i in range(n):
+        t = i / SR
+        if t > next_switch:
+            phrase_on = not phrase_on
+            next_switch = t + (rng.uniform(1.6, 3.2) if phrase_on else rng.uniform(0.3, 0.8))
+        pitch = 110.0 + 18.0 * math.sin(TAU * 0.4 * t) + 8.0 * math.sin(TAU * 2.3 * t)
+        ph += TAU * pitch / SR
+        syll = 0.5 + 0.5 * math.sin(TAU * 4.1 * t + 1.7 * math.sin(TAU * 0.9 * t))
+        g = (1.0 if phrase_on else 0.0) * syll
+        buzz[i] = (math.sin(ph) + 0.5 * math.sin(2 * ph) + 0.3 * math.sin(3 * ph) + 0.2 * math.sin(4 * ph)) * g
+    lo = biquad_bandpass(buzz, 600.0, 2.0)
+    mid = biquad_bandpass(buzz, 1500.0, 3.0)
+    voice = [a * 0.8 + b * 0.5 for a, b in zip(lo, mid)]
+    # The whole broadcast breathes in and out of the static.
+    for i in range(n):
+        t = i / SR
+        fade_sig = 0.55 + 0.45 * math.sin(TAU * t / (loop / 2.0))
+        out[i] = voice[i] * 0.5 * fade_sig + hiss[i] * (0.35 + 0.25 * (1.0 - fade_sig))
+    # Crackle.
+    t = 0.0
+    while t < loop + xfade - 0.01:
+        t += rng.expovariate(9.0)
+        i0 = int(t * SR)
+        amp = rng.uniform(0.2, 0.9)
+        for k in range(int(0.002 * SR)):
+            if i0 + k < n:
+                out[i0 + k] += rng.uniform(-1.0, 1.0) * amp * math.exp(-k / (0.0005 * SR))
+    # A distant cuatro strum bleeding in from another station.
+    for t0 in (3.3, 8.9):
+        for f in (294.0, 370.0, 440.0, 587.0):
+            damped(out, t0 + rng.uniform(0.0, 0.03), f, 0.5, 0.05)
+    out = one_pole_lowpass(one_pole_highpass(out, 300.0), 3400.0)
+    return normalize(loop_crossfade(out, loop, xfade), 0.6)
+
+
+# --------------------------------------------------------------------------
+# Fright: stingers, omens and the dread bed
+# --------------------------------------------------------------------------
+
+def make_sting_caught(rng):
+    """He is in your face: a shrieking cluster over a slammed low hit, the
+    whistle's last note torn upward, then a ringing that will not stop."""
+    n = int(2.8 * SR)
+    out = [0.0] * n
+    # Slam: sub drop plus a wide noise burst.
+    damped(out, 0.0, 48.0, 0.35, 1.2)
+    damped(out, 0.0, 96.0, 0.2, 0.6)
+    burst = one_pole_lowpass(noise(rng, n), 5000.0)
+    for i in range(int(0.25 * SR)):
+        out[i] += burst[i] * math.exp(-(i / SR) / 0.05) * 1.1
+    # Shriek: detuned high cluster with fast vibrato, rising.
+    phs = [rng.uniform(0, TAU) for _ in range(6)]
+    for i in range(n):
+        t = i / SR
+        env = min(1.0, t / 0.03) * math.exp(-max(0.0, t - 0.5) / 0.6)
+        s = 0.0
+        for k in range(6):
+            f = (1480.0 * (1.0 + 0.012 * (k - 2.5))) * (1.0 + 0.35 * min(1.0, t / 0.6))
+            f *= 1.0 + 0.02 * math.sin(TAU * (11.0 + k) * t)
+            phs[k] += TAU * f / SR
+            s += math.sin(phs[k])
+        out[i] += s / 6.0 * env * 0.7
+        # Tinnitus: a thin sine that lingers.
+        out[i] += math.sin(TAU * 6100.0 * t) * 0.05 * min(1.0, t / 0.3) * math.exp(-max(0.0, t - 1.2) / 0.9)
+    room = reverb(out, size=1.1, damp=0.4, feedback=0.75)
+    out = [d * 0.85 + r * 0.25 for d, r in zip(out + silence(0.5), room + silence(0.5))]
+    return normalize(fade(out, 0.0005, 0.6), 0.95)
+
+
+def make_sting_reveal(rng):
+    """Lightning shows him: a bowed string scrape into a stab of low brass."""
+    n = int(2.2 * SR)
+    out = [0.0] * n
+    grit = biquad_bandpass(noise(rng, n), 900.0, 1.5)
+    ph = [0.0, 0.0, 0.0]
+    for i in range(n):
+        t = i / SR
+        env = min(1.0, t / 0.015) * math.exp(-t / 0.7)
+        stick = 0.5 + 0.5 * math.sin(TAU * 31.0 * t)
+        s = 0.0
+        for k, f in enumerate((73.4, 110.0, 146.8)):
+            ph[k] += TAU * f / SR
+            # A buzzing, brassy tone: a clipped sine.
+            s += max(-0.6, min(0.6, 1.8 * math.sin(ph[k]))) / (k + 1)
+        out[i] += s * env * 0.6 + grit[i] * env * stick * 0.5
+    room = reverb(out, size=1.3, damp=0.5, feedback=0.8)
+    out = [d * 0.8 + r * 0.3 for d, r in zip(out + silence(0.6), room + silence(0.6))]
+    return normalize(fade(out, 0.0005, 0.5), 0.85)
+
+
+def make_sting_phantom(rng):
+    """Something at the edge of sight: an indrawn breath and a thin high tone."""
+    n = int(1.8 * SR)
+    out = [0.0] * n
+    breath = biquad_bandpass(noise(rng, n), 1600.0, 0.8)
+    for i in range(n):
+        t = i / SR
+        inhale = math.sin(math.pi * min(1.0, t / 0.6)) if t < 0.6 else 0.0
+        tone_env = min(1.0, max(0.0, t - 0.2) / 0.15) * math.exp(-max(0.0, t - 0.4) / 0.5)
+        out[i] = breath[i] * inhale * 0.7 + math.sin(TAU * 2350.0 * t + 0.3 * math.sin(TAU * 6.0 * t)) * tone_env * 0.25
+    room = reverb(out, size=1.4, damp=0.6, feedback=0.82)
+    out = [d * 0.6 + r * 0.5 for d, r in zip(out + silence(0.6), room + silence(0.6))]
+    return normalize(fade(out, 0.002, 0.5), 0.6)
+
+
+def make_sting_hunt(rng):
+    """He commits: a short, hard double hit and a rising screech of strings."""
+    n = int(1.6 * SR)
+    out = [0.0] * n
+    for t0, g in ((0.0, 1.0), (0.18, 0.8)):
+        damped(out, t0, 55.0, 0.25, g)
+        i0 = int(t0 * SR)
+        hit = one_pole_lowpass(noise(rng, int(0.08 * SR)), 2500.0)
+        for k, v in enumerate(hit):
+            out[i0 + k] += v * math.exp(-(k / SR) / 0.02) * g * 0.8
+    ph = 0.0
+    for i in range(n):
+        t = i / SR
+        env = min(1.0, max(0.0, t - 0.2) / 0.5) * math.exp(-max(0.0, t - 0.9) / 0.3)
+        ph += TAU * (600.0 + 700.0 * min(1.0, t / 1.0)) / SR
+        out[i] += (math.sin(ph) + 0.4 * math.sin(2.01 * ph)) * env * 0.25
+    return normalize(fade(out, 0.0005, 0.3), 0.85)
+
+
+def make_omen_bones(rng):
+    """Bones clattering somewhere off in the dark: far, dull and wet with room."""
+    out = silence(3.2)
+    t = 0.1
+    for _ in range(rng.randint(5, 8)):
+        mix(out, clack(rng, 0.06), int(t * SR), rng.uniform(0.2, 0.6))
+        t += rng.uniform(0.06, 0.28)
+    out = one_pole_lowpass(out, 2200.0)
+    room = reverb(out, size=1.5, damp=0.6, feedback=0.85)
+    out = [d * 0.35 + r * 0.8 for d, r in zip(out, room)]
+    return normalize(fade(out, 0.005, 0.8), 0.5)
+
+
+def make_omen_lamps(rng):
+    """The lamps die: the mains hum sags, fizzes and goes out."""
+    n = int(2.4 * SR)
+    out = [0.0] * n
+    zap = one_pole_highpass(noise(rng, n), 2800.0)
+    for i in range(n):
+        t = i / SR
+        sag = max(0.0, 1.0 - t / 1.8)
+        f = 60.0 * (0.8 + 0.2 * sag)
+        hum = math.sin(TAU * f * t) + 0.5 * math.sin(TAU * 2 * f * t)
+        flick = 1.0 if math.sin(TAU * 7.0 * t + 3.0 * math.sin(TAU * 1.3 * t)) > -0.2 else 0.3
+        out[i] = hum * sag * flick * 0.35 + zap[i] * (0.15 if flick < 1.0 else 0.02) * sag
+    return normalize(fade(out, 0.01, 0.3), 0.5)
+
+
+def make_omen_swell(rng):
+    """A slow, low swell under everything: something has changed nearby."""
+    n = int(4.0 * SR)
+    out = [0.0] * n
+    rumble = one_pole_lowpass(noise(rng, n), 180.0)
+    ph = [0.0, 0.0]
+    for i in range(n):
+        t = i / SR
+        env = math.sin(math.pi * min(1.0, t / 4.0)) ** 2
+        for k, f in enumerate((41.2, 61.7)):
+            ph[k] += TAU * f * (1.0 + 0.004 * math.sin(TAU * 0.3 * t)) / SR
+        out[i] = (math.sin(ph[0]) + 0.6 * math.sin(ph[1]) + rumble[i] * 3.0) * env
+    return normalize(fade(out, 0.2, 0.5), 0.55)
+
+
+def make_dread(rng):
+    """The dread bed: a seamless 16 s low drone of beating fifths and air,
+    mixed up as the night, the rite and the danger grow."""
+    loop, xfade = 16.0, 2.0
+    n = int((loop + xfade) * SR)
+    air = one_pole_lowpass(noise(rng, n), 400.0)
+    out = [0.0] * n
+    ph = [0.0, 0.0, 0.0, 0.0]
+    freqs = (36.7, 55.0, 55.4, 82.6)
+    for i in range(n):
+        t = i / SR
+        s = 0.0
+        for k, f in enumerate(freqs):
+            ph[k] += TAU * f * (1.0 + 0.003 * math.sin(TAU * (0.05 + 0.02 * k) * t)) / SR
+            s += math.sin(ph[k]) * (0.9 if k == 0 else 0.5)
+        swell = 0.75 + 0.25 * math.sin(TAU * t / 8.0)
+        out[i] = s * swell * 0.4 + air[i] * 2.0
+    return normalize(loop_crossfade(out, loop, xfade), 0.5)
+
+
+def make_lock_rattle(rng):
+    """A padlock yanked against its hasp: quick metal knocks and a shackle ring."""
+    out = silence(0.9)
+    t = 0.0
+    for k in range(rng.randint(3, 5)):
+        i0 = int(t * SR)
+        tick = one_pole_highpass(noise(rng, int(0.02 * SR)), 2500.0)
+        for j, v in enumerate(tick):
+            out[i0 + j] += v * math.exp(-(j / SR) / 0.004) * rng.uniform(0.5, 1.0)
+        damped(out, t, rng.uniform(2800.0, 3400.0), 0.06, 0.25)
+        damped(out, t, rng.uniform(1100.0, 1300.0), 0.08, 0.2)
+        t += rng.uniform(0.06, 0.12)
+    return normalize(fade(out, 0.001, 0.2), 0.7)
+
+
+def make_lock_open(rng):
+    """The shackle springs free and a ring of keys jingles."""
+    out = silence(1.3)
+    damped(out, 0.0, 900.0, 0.05, 0.6)
+    click = one_pole_highpass(noise(rng, int(0.015 * SR)), 2000.0)
+    for j, v in enumerate(click):
+        out[j] += v * math.exp(-(j / SR) / 0.003)
+    t = 0.12
+    for _ in range(9):
+        damped(out, t, rng.uniform(3500.0, 6200.0), rng.uniform(0.04, 0.09), rng.uniform(0.1, 0.3))
+        t += rng.uniform(0.03, 0.09)
+    return normalize(fade(out, 0.001, 0.3), 0.65)
+
+
+def make_weeping(rng):
+    """A grown man weeping, far off across the llano: breathy, broken sobs
+    over a low voiced moan, heavy with room."""
+    n = int(5.0 * SR)
+    out = [0.0] * n
+    breath = biquad_bandpass(noise(rng, n), 900.0, 1.2)
+    ph = 0.0
+    t = 0.2
+    sobs = []
+    while t < 4.4:
+        sobs.append((t, rng.uniform(0.18, 0.4), rng.uniform(0.6, 1.0)))
+        t += rng.uniform(0.35, 0.8)
+    for i in range(n):
+        tt = i / SR
+        env = 0.0
+        for (s0, d, g) in sobs:
+            if s0 <= tt < s0 + d:
+                u = (tt - s0) / d
+                env = max(env, g * math.sin(math.pi * u) ** 0.6)
+        moan_env = 0.35 * math.sin(math.pi * min(1.0, tt / 4.8))
+        pitch = 150.0 * (1.0 - 0.12 * min(1.0, tt / 4.5)) * (1.0 + 0.03 * math.sin(TAU * 5.5 * tt))
+        ph += TAU * pitch / SR
+        voice = math.sin(ph) + 0.5 * math.sin(2 * ph) + 0.25 * math.sin(3 * ph)
+        out[i] = voice * (moan_env + 0.6 * env) * 0.5 + breath[i] * env * 0.9
+    out = biquad_bandpass(out, 700.0, 0.7)
+    room = reverb(out, size=1.5, damp=0.6, feedback=0.86)
+    out = [d * 0.3 + r * 0.8 for d, r in zip(out + silence(1.0), room + silence(1.0))]
+    return normalize(fade(out, 0.1, 1.0), 0.5)
+
+
+def make_whip(rng):
+    """A bullwhip cracking far away in the dark: a sharp report and echoes."""
+    out = silence(2.6)
+    crack = one_pole_highpass(noise(rng, int(0.012 * SR)), 1500.0)
+    for j, v in enumerate(crack):
+        out[j] += v * math.exp(-(j / SR) / 0.002) * 2.0
+    swish = biquad_bandpass(noise(rng, int(0.15 * SR)), 3000.0, 1.0)
+    for j, v in enumerate(swish):
+        k = int(0.0 * SR) + j
+        out[k] += v * math.sin(math.pi * j / len(swish)) * 0.3
+    out = one_pole_lowpass(out, 5000.0)
+    room = reverb(out, size=1.6, damp=0.5, feedback=0.86)
+    out = [d * 0.5 + r * 0.9 for d, r in zip(out, room)]
+    return normalize(fade(out, 0.0005, 0.6), 0.6)
+
+
+def make_bottles(rng):
+    """Glass on glass out in the grass: two bottles knocking, one rolling."""
+    out = silence(2.0)
+    t = 0.05
+    for _ in range(rng.randint(3, 5)):
+        for f, d, g in ((rng.uniform(2200, 2600), 0.25, 0.4), (rng.uniform(3900, 4400), 0.15, 0.25), (rng.uniform(5800, 6400), 0.1, 0.15)):
+            damped(out, t, f, d, g)
+        t += rng.uniform(0.12, 0.35)
+    out = one_pole_lowpass(out, 5500.0)
+    room = reverb(out, size=1.3, damp=0.5, feedback=0.8)
+    out = [d * 0.5 + r * 0.7 for d, r in zip(out, room)]
+    return normalize(fade(out, 0.001, 0.5), 0.45)
+
+
+def make_banished(rng):
+    """He is laid to rest: the whistle's last note unwinding downward into a
+    long, warm, settling chord."""
+    n = int(6.0 * SR)
+    out = [0.0] * n
+    ph = 0.0
+    for i in range(int(2.2 * SR)):
+        t = i / SR
+        f = 1480.0 * (1.0 - 0.55 * min(1.0, t / 2.0))
+        ph += TAU * f / SR
+        out[i] += math.sin(ph) * 0.3 * math.exp(-t / 1.2)
+    for f, g in ((110.0, 0.5), (164.8, 0.35), (220.0, 0.3), (277.2, 0.2), (329.6, 0.15)):
+        for i in range(int(1.2 * SR), n):
+            t = (i - int(1.2 * SR)) / SR
+            env = min(1.0, t / 1.5) * math.exp(-max(0.0, t - 2.0) / 1.6)
+            out[i] += math.sin(TAU * f * t) * g * env * 0.5
+    room = reverb(out, size=1.4, damp=0.5, feedback=0.82)
+    out = [d * 0.7 + r * 0.4 for d, r in zip(out, room)]
+    return normalize(fade(out, 0.01, 1.0), 0.7)
+
+
+def make_growl(rng):
+    """A dog's low growl: a rough, pulsing rumble through a snarl formant."""
+    n = int(2.2 * SR)
+    out = [0.0] * n
+    ph = 0.0
+    rasp = one_pole_lowpass(noise(rng, n), 900.0)
+    for i in range(n):
+        t = i / SR
+        env = min(1.0, t / 0.25) * math.exp(-max(0.0, t - 1.6) / 0.25)
+        f = 85.0 + 10.0 * math.sin(TAU * 3.0 * t)
+        ph += TAU * f / SR
+        pulse = 0.55 + 0.45 * math.sin(TAU * 26.0 * t + math.sin(TAU * 7.0 * t))
+        buzz = math.sin(ph) + 0.6 * math.sin(2 * ph) + 0.4 * math.sin(3 * ph) + 0.25 * math.sin(4 * ph)
+        out[i] = (buzz * 0.4 + rasp[i] * 3.0) * pulse * env
+    out = biquad_bandpass(out, 420.0, 0.8)
+    return normalize(fade(out, 0.02, 0.2), 0.65)
+
+
+def make_bark(rng):
+    """Two hard barks, close, with the yard throwing them back."""
+    out = silence(1.8)
+    for t0 in (0.0, 0.33):
+        n = int(0.22 * SR)
+        ph = 0.0
+        rasp = biquad_bandpass(noise(rng, n), 1200.0, 1.0)
+        for j in range(n):
+            t = j / SR
+            env = min(1.0, t / 0.01) * math.exp(-t / 0.07)
+            f = 420.0 * (1.0 + 0.5 * math.exp(-t / 0.03)) * (1.0 - 0.3 * t / 0.22)
+            ph += TAU * f / SR
+            v = math.sin(ph) + 0.7 * math.sin(2 * ph) + 0.4 * math.sin(3 * ph)
+            out[int(t0 * SR) + j] += (v * 0.5 + rasp[j] * 1.5) * env
+    room = reverb(out, size=0.9, damp=0.5, feedback=0.7)
+    out = [d * 0.85 + r * 0.3 for d, r in zip(out, room)]
+    return normalize(fade(out, 0.001, 0.3), 0.8)
+
+
+def make_horror():
+    """Sounds added after the first two streams, each on its own seed so
+    adding or changing one never changes another."""
+    return {
+        "check_warn.wav": make_check_warn(random.Random(SEED + 101)),
+        "check_great.wav": make_check_great(random.Random(SEED + 102)),
+        "check_miss.wav": make_check_miss(random.Random(SEED + 103)),
+        "radio_broadcast.wav": make_radio(random.Random(SEED + 104)),
+        "sting_caught.wav": make_sting_caught(random.Random(SEED + 105)),
+        "sting_reveal.wav": make_sting_reveal(random.Random(SEED + 106)),
+        "sting_phantom.wav": make_sting_phantom(random.Random(SEED + 107)),
+        "sting_hunt.wav": make_sting_hunt(random.Random(SEED + 108)),
+        "omen_bones.wav": make_omen_bones(random.Random(SEED + 109)),
+        "omen_lamps.wav": make_omen_lamps(random.Random(SEED + 110)),
+        "omen_swell.wav": make_omen_swell(random.Random(SEED + 111)),
+        "dread_drone.wav": make_dread(random.Random(SEED + 112)),
+        "lock_rattle.wav": make_lock_rattle(random.Random(SEED + 113)),
+        "lock_open.wav": make_lock_open(random.Random(SEED + 114)),
+        "tell_weeping.wav": make_weeping(random.Random(SEED + 115)),
+        "tell_whip.wav": make_whip(random.Random(SEED + 116)),
+        "tell_bottles.wav": make_bottles(random.Random(SEED + 117)),
+        "banished.wav": make_banished(random.Random(SEED + 118)),
+        "dog_growl.wav": make_growl(random.Random(SEED + 119)),
+        "dog_bark.wav": make_bark(random.Random(SEED + 120)),
+    }
+
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -899,6 +1340,7 @@ def main():
     files["dawn.wav"] = make_dawn(rng)
     # A second, independent stream: adding sounds never changes the older files.
     files.update(make_mechanics(random.Random(SEED + 1)))
+    files.update(make_horror())
 
     for name, samples in files.items():
         path = os.path.join(args.out, name)

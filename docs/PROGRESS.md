@@ -1,10 +1,713 @@
 # Progress
 
-## Current handoff — 2026-09-29 (verification pass)
+## Current handoff — 2026-09-29 overnight (gameplay, fear, the tale)
 
-This section describes the current working tree. It supersedes the earlier
-2026-09-29 handoff (compile blocker, unverified driver) and the historical
-milestones below, none of which prove the current build.
+This section describes the current working tree: the Tier 1 look pass (the
+section after this one) plus the whole gameplay-and-fear roadmap the user
+approved, built overnight in nine gated phases (the build log below has the
+details, the reasons and the numbers for each). Nothing is committed.
+
+### Status
+
+- **Gate green** on the final tree: `cargo fmt --check`, `cargo check
+  --locked`, `cargo test --locked` (53 unit + 7 district + 38 session tests
+  pass; 3 opt-in ignored), `cargo clippy --locked --all-targets -- -D
+  warnings`.
+- **Sweep** (`cargo test --locked --release --test session -- --ignored
+  --nocapture the_routes_hold`): solo 150/150, shared 146/150 (≥ 97 %).
+- **Rendered `--smoke` and `--tour` pass** on the final build, and the
+  headless two-process UDP `--net-smoke` passes (see the evidence table).
+
+### What the game has now
+
+- **Tension**: a torch that runs down (spare batteries around the
+  landmarks) and whose lit beam draws him from 45 m; every bundle laid to
+  rest angers him more and he whistles more often; after three averted
+  warnings in a row he tires of waiting over you.
+- **Skill checks** (Space) while laying bones, cranking the pump and turning
+  the engine over; a miss screeches across the llano.
+- **The tale** in twenty pages of the old llano (letters, ledgers, a copla,
+  the parish register, a telegram, an almanac, a clipping, a prayer card, a
+  photograph, the shelf radio): the son, the deer, the father, the curse,
+  Tureco, the torn sack, and the Hacienda Santa Rosa's attempt to lay the
+  father down. Pages found are counted across nights.
+- **Fear**: a per-player director sends omens after long quiet (lamps die,
+  silence, bones in the dark, drag marks, his hat on the trail, phantoms at
+  high fear, a stolen torch late at night); phantom whistles at high fear;
+  jump scares (he lunges into your face when you are caught, a stinger when
+  lightning shows him close, a sting when a hunt begins); a dread drone.
+- **Puzzles**: the padlocked truck key (three digits, new every night,
+  written in three pages); the dynamo's lamp lines (two of three, switched
+  at the windmill panel; the bridge starts dark); naming him at the ceiba.
+- **Replay**: bundles hide in different places every night; three returns
+  of the Silbón (the Drunkard's, the Son, the Drover) with their own signs,
+  temper and trade-offs, revealed after the run; banishment as a second way
+  to win; a new night every solo launch (`Night #n`); distinctions on the
+  outcome screen.
+- **Friends**: caught with a teammate standing, you go into his sack and
+  are carried off; ají in his path (or Tureco's bark) drops you, or you are
+  gone in 35 s. **Tureco** the dog, untied behind the house, follows you,
+  growls truthfully when he is near and barks him off (90 s courage).
+
+### Evidence (final build)
+
+All under `screenshots/overnight-*/` (git-ignored). No desktop input, focus
+or window manipulation was automated; the drivers are in-game.
+
+| Run | Result |
+|---|---|
+| Gate | fmt, check, 53 unit + 7 district + 38 session tests, clippy: green |
+| Sweep, normal nights | solo 150/150, shared 146/150 (seeds 60, 103, 115, 149: downed at the altar at ~110 s) |
+| Sweep, `ROUTE_NIGHT=hard` / `gentle` | 136/150 + 133/150 / 150/150 + 149/150 (information only) |
+| Rendered `--photos` (`overnight-final/`, `overnight-pages/`) | exit 0; new frames `53_caught_lunge_down`, `54_caught_lunge_standing`, `55_tureco`, `56_ui_page_radio`, `57_ui_page_copla` reviewed |
+| Rendered `--smoke` (`overnight-final/smoke-run/`) | `SMOKE PASS`, 586.4 s simulated, two restarts, census unchanged (1 camera, 1 directional, 5 spots, 33 points, 1 ambience, 1 threat, 306 meshes, 144 UI nodes). Captures reviewed: lamp-line objective, key-box guidance, skill bar at the ignition, the Drover's cattle, the outcome with the night's reveal and distinctions, the caught lunge ("He has you.") |
+| Rendered `--tour` (`overnight-final/tour-run/`) | `SMOKE PASS`, 756.1 s simulated, three restarts |
+| Headless UDP pair, before lamp lines (`overnight-net/`, first run) | host and client `NET SMOKE PASS` |
+| Headless UDP pair, final build (`overnight-net/`) | host and client `NET SMOKE PASS` (shared win, shared failure, both restarts, the leaving carrier's load recovered) |
+| Rendered UDP pair, final build (`overnight-net-rendered/`) | both `NET SMOKE PASS` and `NET RENDER SMOKE PASS` (scene census preserved through run 3) |
+
+The smoke and tour ran on the build before `--night` (difficulty only adds
+a launch option, a tuning preset that defaults to the unchanged normal, and
+the handshake field); the final UDP pair covers the handshake.
+
+### Unverified (user-led)
+
+- Everything above in hands-on play: difficulty and pacing with the new
+  pressures (battery, lure, escalation, variants), whether the skill checks
+  feel fair at real frame rates and network latency, how often omens come,
+  whether the jump scares land and the phantoms read, the radio and
+  weeping sounds, Tureco's look and following, the padlock and naming
+  panels' usability, the sack with real friends.
+- Physical LAN, three- or four-human sessions.
+- The whistle mix changes and the Tier 1 lighting (earlier handoff).
+
+### How to try it
+
+```sh
+cargo run --release --locked                    # a new night every launch
+cargo run --release --locked -- --seed 42       # a chosen night (share it)
+cargo run --release --locked -- --night hard    # gentle | normal | hard
+cargo run --release --locked -- --host 127.0.0.1:5000 --seed 7   # host (friends join with the same --seed)
+cargo run --release --locked -- --join 127.0.0.1:5000 --seed 7
+```
+
+Checklist: read the note on the table and the shelf radio; untie Tureco
+behind the house; lay a bundle (answer the Space check); let the torch run
+low; open the key box with the three numbers (Madrina at the ceiba, the
+stilt hut ledger, the lookout cabin); switch the lamp lines at the panel;
+on another night, watch for the signs and name him at the ceiba (N); with a
+friend, get caught and have them pepper his path.
+
+### Next steps
+
+1. User playtest (try `--night hard` if normal does not scare you) and
+   tuning (numbers are in `tuning.rs`: `battery_*`,
+   `light_lure_*`, `pressure_rite`, `check_*`, `omen_quiet`,
+   `phantom_*`, `haul_*`, `dog_*`, `tell_every`, `averts_to_withdraw`).
+2. Roadmap items not built: two-person mechanisms, decoy bones, loadouts
+   and unlocks, difficulty tiers, a multi-night campaign.
+3. Visual Tiers 2–5 (CC0 textures, Blender glTF, CC0 audio) as planned
+   below; update `AGENTS.md`/`assets/SOURCES.md` with the first CC0 asset.
+
+## Previous handoff — 2026-09-29 (Tier 1 look pass)
+
+Tier 1 of the visual upgrade roadmap (below), plus three user requests made
+during it: head bob while walking, a darker night, and a more distinct
+whistle. Uncommitted; builds on commit 6812742.
+
+### What changed, and why
+
+- **Night levels** (`world/land.rs`): one set of constants — `MOON_LUX`
+  1,150 → 200, `NIGHT_AMBIENT` 90 → 10, horizon/zenith sky and fog colour
+  roughly halved — now read by the spawn (`app.rs`, `land.rs`) and by the
+  lightning flash (`world/weather.rs`), which only adds to them. The
+  flashlight and lamps keep their power, so they now carry the frame.
+- **Grading/post** (`player.rs`): `post_saturation` 1.14 → 0.9,
+  temperature −0.04 → −0.03, bloom 0.12 (shared `BLOOM` constant with the
+  flash), camera `Vignette` (0.55) and a faint `ChromaticAberration`
+  (0.006). The UI vignette in `ui/hud.rs` is untouched: it is fear and
+  exposure feedback.
+- **Flashlight**: a handheld torch model (lathe mesh: knurled grip, flared
+  head, glowing lens) held low right, nearly parallel to the view, with look
+  sway and a hand bob. Two spots from its head: the hot core (same 380 k
+  lumens, cone 0.1/0.27 rad, shadows, `VolumetricLight`) and a wide dim spill
+  (70 k, 0.22/0.62 rad, shadows) for the soft ring. `Flashlight` now sits on
+  the torch; `torch_light` switches both beams and the lens from its state.
+- **Volumetric beam**: `VolumetricFog` on the camera (64 steps, no jitter:
+  without TAA jitter reads as crawling grain; no ambient in the fog) and a
+  60 m `FogVolume` that follows the eye. First pass at density 0.035 was a
+  solid white cone; now 0.012 with light intensity 0.25.
+- **Lamp shadows** (`world/dynamic.rs`): the three nearest pooled lamps
+  within 28 m cast shadows (fixtures were already `NotShadowCaster`).
+- **Head bob** (`player.rs::head_bob`): rise, side sway and a slight roll
+  from a shared stride phase (`Gait`, also driving the torch bob), scaled
+  by pace. Presentation only: targeting, sight and aim read the `Pose`, not
+  the camera. It lays its offset on whoever placed the camera that frame
+  (session, photo or F12 view) and removes it next frame, and a jump over
+  1 m (teleport, restart) is not a stride.
+- **Whistle distinctness** (user: "not accurate or distinctive enough when
+  far and close"). The rules are unchanged and still inverted, non-spatial
+  (see `AGENTS.md`); the network cue stays categorical on purpose (no
+  invertible continuous distance), so the fix is in the categories:
+  - Gains 0.5/0.34/0.22 → 0.8/0.4/0.16 (`tuning.rs`).
+  - Timbres (`tools/gen_audio.py`): the loud one is closer and breathier;
+    the middling one gets one slap echo and half reverb; the faint one is
+    band-limited like sound across open air, with two late treeline echoes
+    and almost all reverb. The rng draws are unchanged, so only the three
+    whistle WAVs changed (verified).
+  - Measured active loudness as played: loud −15.0 → −9.8 dB, mid −23.5 →
+    −22.3 dB, faint −31.1 → −34.5 dB (a spread of 16 → 25 dB).
+  - The ambience and rain duck to 0.4× while any whistle sounds
+    (`tuning.whistle_duck`, `audio.rs::mix`), so the faint one is heard as
+    faint rather than lost.
+  If "not accurate" meant the loud-means-far inversion itself, that is
+  the design; changing it is a rules decision, not a mix fix.
+
+### Evidence
+
+- Gate green: `cargo fmt --check`, `cargo check --locked`,
+  `cargo test --locked` (78 passed, 1 opt-in ignored), `cargo clippy
+  --locked --all-targets -- -D warnings`.
+- Photos (`screenshots/tier1-look/`, git-ignored), reviewed at full
+  resolution: much darker frames; lanterns, the lit ranch window and porch
+  bulb read as the light sources; the Silbón reads as a silhouette against
+  the lit house; the torch head sits low right.
+- The rendered `--smoke` on the first Tier 1 build (before head bob, the
+  darker levels and the audio change) passed: `SMOKE PASS`, 508.0 s
+  simulated, two restarts with the census unchanged (4 spots now: core,
+  spill and the truck's two headlamps).
+- Final build (with head bob, darker levels and the new whistles):
+  `--photos` exit 0 (47 frames, reviewed), and the rendered `--smoke`
+  passes: `SMOKE PASS`, 508.0 s simulated (30,819 frames), win and failure
+  routes, two restarts with the census unchanged (1 camera, 1 directional,
+  4 spots, 32 points, 1 ambience, 1 threat, 276 meshes, 127 UI nodes).
+  The `--tour` and UDP pairs were not rerun for this pass.
+
+### Unverified (user-led)
+
+- How it feels in hands-on play: darkness vs readability, head bob comfort,
+  the torch against walls (a viewmodel can poke into geometry at contact),
+  the frame rate with volumetrics and three shadowed lamps.
+- Listening: the three whistles over rain, and the duck.
+
+### Next steps
+
+1. User-led check (commands below): walk the ranch with the torch on and
+   off; stand in rain near a lantern; turn quickly; sprint; press F to see
+   the lens and both beams switch. Listen for whistles at different
+   distances from him.
+2. If too dark: raise `NIGHT_AMBIENT` or `MOON_LUX` in `world/land.rs`.
+   If the head bob is too strong: `BOB_*` in `player.rs`.
+3. Tier 2 (HUD on demand, film grain), then CC0 textures (Tier 3) once
+   the asset policy files are updated.
+
+### Resume commands
+
+```sh
+cargo build --release --locked
+./target/release/el_silbon                                   # play solo
+./target/release/el_silbon --photos --shots screenshots/tier1-look
+./target/release/el_silbon --smoke  --shots screenshots/tier1-look/smoke-run
+python3 tools/gen_audio.py                                   # deterministic
+```
+
+## Overnight build log — 2026-09-29 (gameplay and fear roadmap)
+
+The user approved the whole gameplay and fear roadmap below, plus telling the
+tale through period documents and adding jump scares alongside the
+psychological horror, and left this running overnight. Work goes in phases;
+each ends with the gate green (fmt, check, test, clippy) and the opt-in
+300-route sweep at or above 97 %. Uncommitted.
+
+### Phase 1 — tension core (done, gated)
+
+- **Flashlight battery** (`net::session`, `tuning.battery_*`): 300 s of
+  light when full, draining only while switched on; at 0 the torch is dead
+  whatever the switch says (`Participant.light` is now switch AND charge).
+  Six pairs of spare batteries (`District::batteries`, beside existing
+  finds) restore 60 % and cannot be taken while the torch is fresh
+  (≥ 95 %). Wire: `Vitals.battery`, `Snapshot.batteries`,
+  `TargetKind::Batteries`, `Event::BatteriesTaken` (finder only). Protocol
+  id bumped to …0003. Presentation: below 18 % the beam gutters and drops
+  out (`player::torch_light`); HUD shows "Torch n%" under 50 % and "Torch:
+  dead"; the battery pair is a small lathe model on a perch.
+- **Beams draw him** (`Session::light_lure`): a lit torch he can see within
+  45 m makes him come and look (a noise at the holder, not masked by rain),
+  every 2 s. He notices a lit player at 28.6 m, so the torch reveals you
+  from much farther than your body does.
+- **Escalation**: `pressure_relief` is now `pressure_rite` (+0.08 per
+  bundle laid to rest, more than carrying one): the night gets harder as the
+  bones go home. Stalking whistles come up to a third sooner with pressure.
+- **Driver**: the route keeps its torch off while it hides and while he has
+  been seen in the last 45 s (`ScriptFrame.dark`, honoured by the test
+  pilot, `--smoke` and both network smokes through the same toggle key a
+  player uses); it picks spare batteries up as optional steps. Without the
+  torch discipline the lure trapped the solo route in a warn/hide loop at
+  the truck (136/150).
+- Tests: `a_torch_runs_down_and_dies_and_spare_batteries_bring_it_back`,
+  `a_lit_torch_he_can_see_draws_him_from_beyond_his_notice`; the pressure
+  test now requires escalation. Sweep: solo 150/150, shared 148/150.
+  New diagnostic: `ROUTE_LOG=1 ROUTE_SEED=n cargo test --release --test
+  session one_solo_seed -- --ignored --nocapture`.
+
+### Phase 2 — skill checks (done, gated)
+
+- New pure module `skill` (unit-tested): a per-player `Rhythm` seeded from
+  the run seed and player id. While a long task is worked — laying bones at
+  the altar (first check 0.5 s into each bundle; the hold is now 3.0 s),
+  cranking the pump, turning the engine over — a check comes every 2.5–5 s
+  of work: a 0.6 s warning (chime, pulsing frame), then a needle sweeps a
+  track in 1.1 s. Zone: 14 % of the track starting at 45–82 %; its first
+  4 % is great.
+- The host owns every check. `Action::Skill { id, needle }` claims where the
+  client saw the needle; `Rhythm::press` refuses another check, a claim
+  ahead of the host's needle (+6 % slack), older than the latency window
+  (0.35 s) or before the needle moved. Letting go mid-check costs nothing.
+- Great: +4 % of the task (the altar hold +12 %). Miss (outside the zone or
+  no press): −8 % of the pump or engine, or the bundle's laying starts over;
+  a 40 m noise at the site (the llano hears iron screech), a fright for the
+  worker, `Event::SkillMissed` for everyone. Two cranking together finish
+  sooner but each gets checks.
+- Wire: `Vitals.check: Option<CheckView>` (id, host needle, zone),
+  `Intent.skill`, `net::needle` (snapshot needle carried on by its age).
+  HUD: a SPACE bar under the hold progress (amber zone, pale great sliver,
+  red needle). Sounds: `check_warn`, `check_great`, `check_miss` on their
+  own seeds (no older file changed). First check teaches the key.
+- Driver: `RouteScript::skill_press` watches the needle between snapshots
+  and presses just inside the great sliver. Tests: `skill` unit tests and
+  `long_tasks_ask_for_skill_checks_a_miss_screeches_and_a_great_press_speeds_the_work`;
+  the rig's `work` answers checks. Sweep: solo 149/150, shared 146/150.
+
+### Phase 3 — the tale in the llano's own papers (done, gated)
+
+- `lore.rs` rewritten: every page has a `Medium` (note, letter, ranch
+  ledger, newspaper clipping, the back of a photograph, almanac margins, a
+  copla, a telegram, the parish register, a watch log, a prayer card, the
+  radio) and a title; `PAGES` = 19 (ids 0–18). The seven old notes are kept;
+  twelve new ones tell the legend in order and set up the run: the son and
+  the deer's entrails, the father he killed, the grandfather's chaparro
+  switch, the ají and the dog Tureco, the curse of the sack; the storm night
+  the sack tore on the caño fence, the five bundles hidden in the landmarks,
+  the parish book's instruction to lay the father at the Santa Rosa ceiba,
+  the telegram that says the truck is the only way out, the foreman's
+  ledger (escalation: "every sack we laid made him angrier"), and hints for
+  batteries, the light lure, skill-check rhythm and the stolen torch.
+- Placement (`District::notes`, all reachable per `tests/district.rs`): the
+  gate crates, the ranch cart, the house shelf (a real radio model with a
+  glowing dial, and a framed photograph), the coop, the windmill barrel,
+  the corral hay, the fields barrel, the tool shed, the stilt hut crates,
+  the tower's foot and the truck crates.
+- Presentation: the page panel shows the medium and title, paper colour by
+  medium (the radio card is dark with light ink), and "pages found n/19"
+  (`encounter::PagesRead`, kept across restarts so the tale builds over
+  several nights). Reading the radio plays `radio_broadcast.wav` (static,
+  crackle, a murmured announcer, a stray cuatro). The outcome screen counts
+  pages and closes the tale when all are read.
+- Rendered smoke on this build: `SMOKE PASS` (503 s simulated); the skill
+  bar, its lesson caption and the HUD reviewed in the captures.
+
+### Phase 4 — fear: omens, phantoms and jump scares (done, gated)
+
+- New pure module `director` (unit-tested): per player, seeded. Left alone
+  (not warned or hunted) for 35–70 s (shorter with pressure; longer and
+  only whispers before he wakes), the night sends an omen, never the same
+  twice running: lamps die, silence, bones clatter, drag marks, his hat on
+  the trail, a phantom (fear ≥ 0.55), a stolen torch (pressure ≥ 0.45).
+  Events `Omen*` go to that player only; none says where he is or changes
+  a rule.
+- Phantom whistles (`CueDirector::phantom`): at fear ≥ 0.7 a rare whistle
+  that is not there (any timbre, slurred), captioned "A whistle…? Or only
+  the blood in your ears." They do not add fear (an earlier version did and
+  fed a susto spiral that cost the sweep). `ServerMessage::Cue.phantom`.
+- `world::omen` presents it all near the listener's own eye: lamps and
+  lanterns within 35 m gutter out for 7 s; ambience and rain hush for 7 s
+  and end on one bone clack; two furrows of drag marks; his straw hat on the
+  trail (gone when you come within 5 m); an unlit tall hatted silhouette at
+  the edge of view for 0.7 s; a sweeping torch 30–42 m off that drifts and
+  winks out when approached.
+- Jump scares: caught, he lunges into the camera (arms up, shaking) with
+  `sting_caught`, and the outcome screen waits 1.6 s for it; a lightning
+  strike with him in view within 32 m plays `sting_reveal` (45 s cooldown);
+  a hunt starting plays `sting_hunt`. A `dread_drone` loop swells with the
+  night, the bundles laid and pursuit.
+- Rule change, anti-camping: after three averted warnings in a row he tires
+  of waiting over his prey, sinks and rises far away (`averts_to_withdraw`,
+  test `averted_again_and_again_he_tires_of_waiting_and_rises_elsewhere`).
+  Escalation had made him camp the ignition and the stilt hut; this fixed
+  the driver's warn/hide loops and is kinder to humans too.
+- New sounds (own seeds; no older file changed): `sting_caught`,
+  `sting_reveal`, `sting_phantom`, `sting_hunt`, `omen_bones`,
+  `omen_lamps`, `omen_swell`, `dread_drone`.
+- Sweep: solo 150/150, shared 150/150 (partner's truck wait raised to 900 s).
+- Unverified: how the omens and scares look and sound in hands-on play; the
+  rendered smoke checks they don't break the run.
+
+### Phase 5a — the padlocked truck key (done, gated)
+
+- The ignition now also needs the key (`Blocked::NeedKey`), padlocked in a
+  small steel box on the crates by the windmill (`District::lockbox`). Its
+  three digits come from the seed (`sim::lock_code`: new every night, first
+  digit 1–9) and are written into three pages with `{D1}{D2}{D3}`
+  (`lore::fill`): the Madrina's note at the ceiba altar (first), the
+  foreman's ledger in the stilt hut (second, and where the box is), the
+  guard's note in the lookout cabin (third). All three lie on the route
+  you walk anyway.
+- `E` at the box opens a padlock panel (client-local, like pages): 1/2/3
+  turn the dials (Shift turns back), Enter tries (`Action::TryCode`). The
+  host checks reach and the code; a wrong try rattles (`Event::LockRattle`
+  to the one trying, a 12 m noise), the right one clunks open
+  (`Event::KeyFound` to all; the lid opens and the padlock is gone).
+  HUD objective and guidance point to the box and the pages; sounds
+  `lock_rattle`, `lock_open`.
+- First placed by the truck, where the route ran along the road fence and
+  he could see (and expose) the driver through it with no cover or way to
+  reach him: 141/150 solo. At the windmill, right after the pump: 150/150.
+- Driver: opens the box after the pump with the code (as a player who read
+  the three pages). Tests: `every_seed_locks_the_key_with_its_own_three_digits`,
+  `the_truck_key_is_padlocked_and_only_the_pages_numbers_open_it_at_the_box`;
+  the whole-map playthrough opens the box; the truck test asks for the key.
+- Jump-scare framing reviewed with two new labelled photo frames
+  (`53_caught_lunge_down`, `54_caught_lunge_standing`, held by the photo
+  driver): he stops at 1.7 m, head snapped back so the brim lifts, two pale
+  eyes (new, tiny, only lit by light) in the dark skull, hooked hands thrown
+  wide, a hard light catching him. Also found: the photo mirror is fine for
+  the torch; an earlier version put him inside the camera (arms and coat
+  over the lens, pitch black).
+- Sweep: solo 150/150, shared 150/150.
+
+### Phase 5b — hiding places that change (done, gated)
+
+- `District::relic_sites`: each bundle but the table one has 2–3 hiding
+  places in its landmark (corral: shed, gate trough, east pens; fields:
+  cart, grass north, grass south; caño: two spots in the stilt hut;
+  lookout: the cabin deck, the shed at the tower's foot).
+  `Layout::with_seed(seed)` picks one per bundle; the app, the headless
+  network smoke and the sweeps use it (`Layout::new()` keeps the authored
+  spots for the fixed tests). Every candidate is proven reachable, and 40
+  seeds give at least 12 different nights.
+- Rejected after measurement: the deck's open front (shared 124/150: seen
+  from the whole llano with nowhere to break his sight).
+
+### Phase 6 — which of him walks tonight (done, gated)
+
+- `sim::Variant`, seeded per night: **El Borracho** (the drunkard's
+  return: hears 40 % farther and whistles slurred, but stalks 8 % slower;
+  bottles clink), **El Hijo** (the son himself: weeps each time a bundle is
+  laid, each laid bundle angers him 25 % more, but pepper keeps him counting
+  30 % longer), **El Arriero** (the drover: stalks 6 % faster, but the
+  herd bellows when he passes within 18 m and a whip cracks in the dark).
+  Hunt speed is never changed. First versions without trade-offs (the Son
+  ×1.6 anger, the Drover ×1.12 pace) cost the sweep (138/150 shared);
+  with trade-offs 150/146.
+- Signs: `Event::Weeping` (at each laid bundle, the Son), `WhipCrack` /
+  `BottleClink` every 60–110 s while he walks (session `tells`, own rng),
+  the Drover's cattle, the Drunkard's slurred phrase speed (perception).
+  Captions and sounds `tell_weeping`, `tell_whip`, `tell_bottles`.
+- A new page, "Las tres vueltas" (id 19, the tool shed; `PAGES` = 20),
+  teaches the three returns and the rite.
+- **Banishment, a second way to win**: with every bone at the ceiba, `N`
+  at the altar opens "Which of him walks tonight?", 1/2/3 and Enter
+  (`Action::Name`). Right: `Event::Banished`, he sinks for good, the run is
+  won (`banished` in the snapshot; its own outcome text and `banished.wav`).
+  Wrong: `Event::NameWrong`, he is roused at once, and the ceiba will not
+  hear another name for 60 s. The truck escape still works as before; the
+  driver keeps taking the truck.
+- Tests: `every_variant_walks_some_nights_and_only_the_right_name_lays_him_to_rest`,
+  `naming_him_rightly_at_the_ceiba_lays_him_to_rest_and_wrongly_enrages_him`,
+  `each_return_leaves_its_own_signs`. Sweep: solo 150/150, shared 146/150.
+
+### Phase 7 — bones in the sack (done, gated)
+
+- With a teammate still standing, a caught player is no longer left where
+  they fell: he puts them in his sack (`ThreatState::Hauling`,
+  `Encounter::haul`, `Event::Hauled`) and walks the patrol toward the node
+  farthest from everyone standing at 1.7 m/s (slower than a walking
+  teammate), blind to everything else. The captive's pose rides with him
+  (`Session.captive`); they cannot be revived while in the sack.
+- Pepper in his path stops him to count and he drops them
+  (`Event::SackDropped`): then the usual revive. Reaching the far node, or
+  35 s without being stopped, and they are gone (`Event::Taken`, dead).
+  Solo play is unchanged: caught alone, the night is over.
+- Wire: `PlayerView.hauled`, threat state code 5. Presentation: the
+  captive's avatar hides (inside the sack); the captive's own screen goes
+  dark brown, "IN HIS SACK — only ají in his path will make him drop you";
+  teammates get "He stuffed them into his sack and walks off! Get ají in
+  his path…", then "He drops the sack…" or "He is gone into the grass. And
+  so are they."
+- Tests: the revive test now plays haul → pepper → drop → revive;
+  `nobody_stops_him_and_the_one_in_his_sack_is_gone`. Sweep: solo 150/150,
+  shared 146/150.
+- Rendered smoke on the variants build: `SMOKE PASS` (561.7 s simulated).
+
+### Phase 8 — Tureco (done, gated)
+
+- The dog from the notes, tied to a post behind the house by the back door
+  (`District::dog_post`). Hold `E` to untie him (1.5 s, hold kind 7,
+  `Event::DogFreed`); he follows whoever freed him (or the nearest friend
+  standing within 12 m), trailing 1.8 m behind at up to 5.5 m/s. If his
+  friend is in the sack, he runs after the sack.
+- He senses the truth, up close only (`perception::dog_senses`): within
+  22 m of the Silbón he growls (`Event::DogGrowl` to his friend: "He is near
+  — whatever the whistle says"), the one cue that does not lie. Within
+  7 m, if he has the courage, he barks (`Event::DogBark`, a 30 m noise):
+  whatever the Silbón was doing (stalking, warning, hunting, hauling), he
+  flinches and sinks away to rise far off (`Encounter::flinch`); anyone in
+  his sack falls out. Courage returns after 90 s. Tied, he still growls and
+  barks at the house.
+- Wire: `Snapshot.dog: DogView` (pos, facing, mood 0 tied / 1 following /
+  2 growling / 3 barking, owner), `Scene.dog_tied`. Presentation
+  (`world::dog`): a lean brown dog (body, head with snout and pricked ears,
+  four swinging legs, tail), sitting on a rope at his post while tied,
+  head low to growl, thrown up to bark. Sounds `dog_growl`, `dog_bark`;
+  Doña Rosa's note now says where he is and that he fears dogs. New photo
+  frame `55_tureco` (reviewed).
+- The route driver leaves him tied, so the sweep measures the game without
+  him. Tests: `tureco_follows_whoever_unties_him_growls_when_he_is_near_and_barks_him_off`,
+  `tureco_barks_the_sack_open`. Sweep: solo 150/150, shared 146/150.
+
+### Phase 9 — power routing, a new night each launch, distinctions (done, gated)
+
+- **Lamp lines**: every powered pole lamp belongs to a line
+  (`Lamp::circuit`: 0 the hacienda and the western road, 1 the middle road
+  and the corral, 2 the eastern road and the bridge). The old dynamo feeds
+  two at most (`Progress::circuits`, `FIRST_CIRCUITS` = hacienda + corral:
+  the bridge starts dark). A panel on a post beside the pump
+  (`District::panel`, `TargetKind::Panel`, a press) steps through the three
+  pairs (`CIRCUIT_SETTINGS`), with a clunk (`Event::LinesSwitched`).
+  `Layout::is_lit(p, circuits)` now takes the live mask; fear, the driver's
+  "lie low only in lamplight" and the lamp pool all read it
+  (`WorldView.circuits`). The panel's three levers stand up for the live
+  lines; each line's bulbs glow on their own material. The objective line
+  names the lit lines. Since lamplight calms fear, choosing where the light
+  goes (the truck's wait at the bridge, or the road home) matters.
+- The driver switches the bridge line on after opening the key box. Test:
+  `the_dynamo_carries_two_lines_and_the_panel_chooses_which`.
+- **A new night every launch**: solo play without `--seed` rolls a seed
+  from the clock (bundle spots, padlock code, which of him walks, storm);
+  the debug routes keep 1997 and shared sessions still need the same
+  `--seed` on every machine. The briefing shows "Night #n", now describes
+  the key box, the rite, the rhythm, the battery, the sack and Tureco, and
+  lists Space and N.
+- **Outcome**: the night's variant is revealed ("Tonight it was the son
+  himself (El Hijo). Night #n.") and distinctions are listed: silent as the
+  grass (never seen), unbroken (nobody fell), nobody left behind (someone
+  got up), the one who named him, quick hands (under 8 minutes), keeper of
+  the tale (every page).
+- Sweep: solo 150/150, shared 146/150.
+
+### Phase 10 — how hard the night is (done, gated)
+
+- `--night gentle|normal|hard` (`tuning::Night`, `Tuning::with_night`;
+  normal is the tuned game, unchanged). Hard: he notices you 12 % farther,
+  his gaze downs you 15 % sooner, stalks 8 % faster, the torch lasts 70 %,
+  every rite angers him 30 % more, the beam lures from 20 % farther, omens
+  come 30 % sooner, the skill zone is 25 % narrower, and he needs four
+  averted warnings to tire. Gentle the reverse (and a wider zone that still
+  fits on the track). Hunt speed and the warning stay within the same caps
+  (test `every_night_keeps_him_slower_than_a_walker_and_his_warning_readable`).
+- Shared sessions: `ClientMessage::Hello.night`; a mismatch is refused with
+  "Night mismatch: restart with --night …". The briefing shows it.
+- The sweep measures other nights with `ROUTE_NIGHT=gentle|hard` (the gate
+  stays on normal): hard solo 136/150, shared 133/150; gentle 150/150,
+  149/150 — hard is genuinely harder for the scripted player.
+
+## Visual upgrade roadmap (2026-09-29)
+
+Source: a frame-by-frame review of a reference horror trailer ("The Widow",
+Godot + Blender MCP + CC0 textures and sounds) against our
+`screenshots/handoff-review/` captures. The gap is mostly **lighting and
+value structure**, then material detail, geometry, presentation.
+
+What the reference does: the frame is mostly near-black and light comes only
+from a few warm sources (candles, one lit window, the flashlight); the torch
+has a hot core and a soft ring and is always in hand; surfaces are CC0 PBR
+sets (brick, parquet, rust, wood) with normal and roughness maps; props are
+bevelled and trimmed; there is no HUD, only serif italic captions, a vignette
+and film grain; its best horror beat is a silhouette in a lit doorway.
+
+What ours does: a blue ambient of 90 plus 1,150 lux of moonlight lit every
+frame to one even mid-blue, with the sky brighter than the ground;
+`post_saturation` 1.14 pushed that blue; most lamps cast no shadow; props
+are sharp-edged boxes without contact darkening; the objective list and
+debug strip are in every frame; the Silbón portrait reads as a dark
+scarecrow.
+
+**Asset policy decision (user, 2026-09-29):** the user intends to adopt CC0
+textures, Blender-made glTF meshes (via Blender MCP) and CC0 audio. Until the
+first such asset lands, `AGENTS.md` and `assets/SOURCES.md` still say
+everything is original and generated; update both, and record every file's
+source URL and licence in `SOURCES.md`, in the same change that adds it.
+
+### Tier 1 — lighting pass (no new assets)
+
+- Night levels: ambient fill and moonlight cut hard, fog/sky darkened so the
+  practical lights (lanterns, ranch window, beacon, flashlight) carry the
+  frame. One set of constants, shared by the spawn and the lightning flash.
+- Grading: saturation below 1, practicals stay warm.
+- Flashlight: tight hot core plus a wide dim spill (Bevy 0.19's
+  `SpotLightTexture` projects orthographically, a cylinder, so it cannot
+  draw a cone cookie; two spots do it); a handheld torch model with lens
+  glow, walking bob and look sway.
+- Shadows on the nearest pooled lamps only (the fixtures are already
+  `NotShadowCaster`).
+- `VolumetricFog` in a volume that follows the camera, flashlight as a
+  `VolumetricLight`: beams in the rain.
+- Camera `Vignette` and a faint `ChromaticAberration` (Bevy's effect stack);
+  the fear/exposure UI vignette stays as gameplay feedback.
+- Deferred with reason: SSAO/contact shadows (with the ambient fill cut there
+  is little ambient left to occlude; contact shadows want TAA, which would
+  smear the vertex-animated grass and rain); film grain (needs a custom
+  post-process node; see the `post_processing.rs`/`custom_post_processing`
+  examples).
+
+### Tier 2 — presentation
+
+- HUD: objectives on a key press, or fading a few seconds after they change;
+  the debug strip only under F12.
+- Encounters staged so the Silbón is seen as a silhouette against light: a
+  lamp, a doorway, a lightning flash.
+- Caught screen: red/black treatment instead of the grey fog wash.
+- Film grain and, for trailers, letterbox framing.
+
+### Tier 3 — materials (CC0)
+
+- CC0 PBR sets (ambientCG, Poly Haven) at 1K–2K with colour, normal,
+  roughness and AO: rusted corrugated zinc, weathered planks, plaster, mud,
+  bark, stone, burlap. Keep procedural textures where they already read
+  well (grass, water ripples, notes, signs).
+- Grime darkening toward the ground, edge wear, roughness that follows the
+  rain (`wet.rs`), and decals (`clustered_decals.rs`) for mud, rust streaks
+  and puddles.
+
+### Tier 4 — geometry (Blender MCP glTF)
+
+- A bevelled-box builder in `world::mesh`, used wherever `cuboid` is now;
+  edges that catch highlights are the cheapest big win.
+- Hero assets modelled in Blender via Blender MCP and exported as `.glb`:
+  the Silbón, the truck, the ranch house, the ceiba, lanterns. Placement,
+  collision, sight and aim stay in `geometry::Layout`; glTF supplies meshes
+  only.
+- A readable, specific Silbón silhouette (over-long limbs, the bone sack, the
+  hat brim) for close encounters.
+
+### Tier 5 — audio (CC0)
+
+- CC0 foley for footsteps (dirt, grass, wood, water), wood creaks, rain on
+  zinc and thunder, replacing the synthesized ones where they sound thin.
+  The whistle phrases stay original and the perception rules (inverted,
+  non-spatial) are unchanged.
+
+## Gameplay and fear roadmap (proposal, 2026-09-29)
+
+User request: better tasks (skill checks like Dead by Daylight's
+generators), puzzles, more fear, and replayability with friends. Nothing
+here is built yet; it is a proposal for the user to choose from. The
+comparisons come from knowledge of the games, not from fresh research.
+
+### What the hit co-op horror games do, and what to take
+
+| Game | What makes it work | Take for El Silbón |
+|---|---|---|
+| Dead by Daylight | Long hold tasks split attention with random skill checks; a miss bangs loudly and tells the killer; teaming up is faster but riskier | Skill checks on the pump crank, truck repair and altar rite; a miss makes a noise he hears and loses progress |
+| Phasmophobia | Every contract is an investigation: which ghost is it? Evidence, tools, a journal, then a correct call; clear hunt tells | "Which Silbón tonight": seeded variants with tells and counters, and a notebook for the evidence |
+| Devour | Each objective completed makes the monster faster and angrier; the finale is a frenzy | Invert today's curve: each bundle laid to rest should *raise* his pressure (now `pressure_relief` lowers it) |
+| Left 4 Dead (AI Director) | Build-up, peak, relax pacing tuned to the team's stress; placements vary per run | A director that spaces omens, hunts and quiet stretches, and seeds the placements |
+| Lethal Company, R.E.P.O., Content Warning | Separation, proximity voice, comedy that turns to terror, spectating the dead | Tasks that force splitting up; the dead keep watching; proximity voice later (postponed in `AGENTS.md`) |
+| The Outlast Trials | Puzzles under pressure, two-person mechanisms, variants of each trial, unlocks | Two-player mechanisms (winch and light, gate and crank); seeded puzzle answers |
+| Alien: Isolation | The monster adapts: hide in lockers often and it checks lockers | He learns the party's habits: favourite grass, favourite lamp |
+
+### A. Tasks with skill checks (DBD-style)
+
+- **Pump crank** (exists as a hold): at random seeded moments a ring
+  appears; press in the zone. Good gives normal progress, great gives a
+  bonus, and a miss makes the windmill screech: a noise event at the tower,
+  lost progress and a fear spike. Two cranking together is faster but gets
+  more checks.
+- **Truck**: turn ignition into a short repair chain (fuel, spark plug,
+  choke) spread over the ranch and the extraction area, each a skill-check
+  hold, then a timed ignition.
+- **Altar rite**: laying the bones becomes a rhythm check.
+- **Architecture**: the check schedule comes from `rng`, inside `sim`. The
+  client sends the press with its sequence number; `net::session` judges it
+  inside a latency window on its own clock. Tests cover a miss making noise,
+  a great giving the bonus, determinism, and a late press being refused.
+
+### B. Puzzles (answers seeded per run, so they never repeat)
+
+- **Truck key padlock**: the code comes from clues (a date circled on the
+  calendar, the brand on the cattle, the count of crosses at the shrine).
+- **Power routing** at the windmill: limited capacity, so the team chooses
+  which lamps to light (a safe path to the ceiba, or the caño).
+- **The father's bones**: some bundles hold animal bones; notes say how to
+  tell (a ring on a finger bone, a cracked skull). The wrong bones at the
+  altar anger him.
+- **Two-person mechanisms**: the caño bridge winch while a partner holds
+  the beacon; the corral gate held while another drives the cattle.
+- **Tureco the dog** (already named in note 1): find and free him. His
+  growl points truthfully at the Silbón, against the inverted whistle, but
+  his barking draws him. The rule belongs in `perception`.
+
+### C. Fear
+
+- **Flashlight battery**: limited charge, flicker when low, batteries to
+  find, and the Silbón drawn to beams. The torch becomes a risk, which is
+  exactly what makes darkness frightening.
+- **Escalation**: every bundle laid to rest raises his pressure and how
+  often he whistles; the truck warm-up is the frenzy.
+- **Director and omens**: long quiet stretches; lamps dying one by one
+  along a path; the cattle all turning to face one way; the lit window
+  going dark; drag marks from the sack in the mud; the rain stopping
+  before a hunt.
+- **Stolen torch**: he sometimes carries a light at the edge of the fog,
+  and in co-op you cannot tell it from a teammate's. It is a
+  threat-behaviour state owned by the session.
+- **Bones in the sack**: a caught player is carried off in his sack, not
+  just downed; the team tracks the rattling and ambushes him with ají to
+  free them.
+- **Lightning reveals**: a strike shows him standing closer than you
+  thought (a silhouette, not a jump scare), used rarely.
+- **Hallucinations** at high fear, per player and cosmetic only: false
+  whistles, phantom silhouettes. They are produced in `perception` and
+  never change the truth.
+- **Counting you can hear**: bones clicking one by one nearby when an ají
+  stops him.
+
+### D. Replayability and mastery
+
+- Seeded placements: bundle sites, batteries, puzzle answers, which lamps
+  work, weather.
+- **Silbón variants** with evidence (examples: the Drunkard, drawn to noise
+  and bottles; the Son, calmed by prayer; the Drover, who fears dogs and the
+  whip). Each has tells and counters; naming him correctly opens a
+  banishment ending at dawn.
+- Several endings: the truck, the boat on the caño (needs fuel), or
+  banishment.
+- Loadouts and roles: lantern-bearer (steady light, slow), whip, radio,
+  extra ají. Unlocked through play, with a grade per run (stealth,
+  teamwork, speed) like DBD's emblems.
+- Difficulty tiers and modifiers (moonless, flood, no dog); a daily seed;
+  a campaign of several nights with the map changing between them.
+
+### Suggested order
+
+1. Flashlight battery and beams that draw him (small; gives Tier 1's
+   darkness its point).
+2. Skill checks on the pump, truck and altar, with noise on a miss.
+3. Escalation per bundle, plus director pacing and omens.
+4. Seeded placements and two puzzles (padlock code, power routing).
+5. Bones in the sack (capture and rescue).
+6. Silbón variants and evidence: the biggest replay hook, and the biggest
+   job.
+
+Every rule change lands in the pure layers (`sim`, `perception`,
+`script`), validated by `net::session`, with behaviour tests and the
+scripted route driver updated to play it.
+
+## Previous handoff — 2026-09-29 (verification pass, committed as 6812742)
+
+This section describes the tree as of commit 6812742. It supersedes the
+earlier 2026-09-29 handoff (compile blocker, unverified driver) and the
+historical milestones below, none of which prove the current build.
 
 ### Status
 
@@ -18,10 +721,9 @@ milestones below, none of which prove the current build.
 - **Photos rebuilt:** the widened-fog overviews and the powered
   watchtower/beacon view now render as intended; ground-level frames keep
   play fog and the restrained rain.
-- Nothing was committed or pushed. The index still records
-  `src/ui.rs -> src/ui/legacy_ui.rs` while the legacy file is deleted in the
-  working tree and the replacement is `src/ui/{mod,hud,map}.rs`; review that
-  deliberately when staging. Do not restore the obsolete UI.
+- Since committed as 6812742 (the `src/ui.rs` rename was resolved there;
+  the replacement is `src/ui/{mod,hud,map}.rs`). Do not restore the
+  obsolete UI.
 
 ### What changed in this pass, and why
 
