@@ -201,6 +201,30 @@ sight, aiming and visuals all read it.
 `cargo run --release --locked --example layout_svg -- target/layout.svg`
 draws it top-down.
 
+### Sound
+
+The llano's own things are placed: machines, frogs at the water, the
+windmill, the dynamo once powered, Tureco, teammates' footsteps, marks,
+the altar, the key box, the thunder (from the bolt you saw) and an omen's
+clatter behind you pan to their direction and fade with distance and
+behind walls (`sound_near`, `sound_far`, `sound_occluded` in
+`tuning.rs`). The whistle, the stingers and his signs are never placed:
+where he is must not leak through sound, and the whistle lies about
+distance by design.
+
+### The whistle
+
+`python3 tools/whistle_lab.py` plays the whistle as the game mixes it, with
+no build: the gains, the rain and insect beds, the duck under a whistle and
+the distance inversion are read from `src/tuning.rs`, the sounds are the
+game's files. Modes: `ladder` (loud, middling, faint; `--all-takes`), `ab`
+(loud and faint back to back), `approach` (he walks in from 60 m to 3 m and
+you hear which one each distance gives) and `night` (minutes of him
+stalking, on the game's irregular cadence). `--regen` rebuilds the whistle
+files from `tools/gen_audio.py` first; `--dry`, `--tense`, `--rain`,
+`--volume` and `--out FILE` shape or save the mix. Levels are the
+`gain_loud/mid/faint` tuning values (the files are loudness-matched).
+
 He walks a patrol graph over the trails and steps straight toward what he
 pursues, sliding along blockers; it is not a navmesh. Sight is 2D line of
 sight against the layout's blockers; the lookout deck sees the whole llano,
@@ -279,7 +303,8 @@ keyboard. After rebuilding, close the old window and relaunch.
   total time. Try a warning in the open, then hide behind a wall or crouch in
   tall grass; check that recovery feels fair.
 - Listen to the whistle, rain and thunder for comfort and whether the
-  inverted distance reads.
+  inverted distance reads (`python3 tools/whistle_lab.py ab` and `approach`
+  first, then in play).
 - Win once and lose once; restart with R from the outcome screen.
 - With two to four applications: join before Enter, check each controls only
   its own view, share a bundle hand-off (G then E), revive a downed teammate,

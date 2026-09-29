@@ -1,20 +1,26 @@
 //! Sound: the night ambience, rain and thunder, the non-spatial whistle
 //! phrases chosen by the perception layer, footsteps, machines and party
-//! cues. Every voice is mono and plays without panning or distance
-//! attenuation; gains are gentle and follow the master volume. Nothing here
-//! reads the Silbón's position — only this player's own body, the shared
-//! world state and this frame's events.
+//! cues; gains are gentle and follow the master volume.
+//!
+//! The llano's own things are *placed*: the machines, the frogs and the
+//! windmill, Tureco, teammates' footsteps, marks, the altar and the key box,
+//! a bolt's thunder, an omen's clatter behind you. They pan to where they
+//! are and fade with distance and behind walls (`Tuning::heard`). The
+//! whistle and everything whose source is him (stings, his signs, the hunt)
+//! stay unplaced, and nothing here reads the Silbón's position — only this
+//! player's own body, the shared world state and this frame's events.
 
 use std::collections::BTreeMap;
 
-use bevy::audio::Volume;
+use bevy::audio::{AudioSinkPlayback, SpatialScale, Volume};
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::app::{
     EncounterMsg, Flow, GameSet, LayoutRes, RunReset, Settings, StormClock, Truth, TuningRes, WhistleMsg,
 };
 use crate::net::Network;
-use crate::perception::WhistleVariant;
+use crate::perception::{WHISTLE_TAKES, WhistleVariant};
 use crate::player::Player;
 use crate::sim::{Event, ThreatState};
 use crate::storm;
@@ -30,7 +36,8 @@ enum Surface {
 
 #[derive(Resource)]
 struct Sounds {
-    whistles: [Handle<AudioSource>; 3],
+    /// `[variant][take]`: loud, middling, faint.
+    whistles: [[Handle<AudioSource>; WHISTLE_TAKES as usize]; 3],
     thunder: [Handle<AudioSource>; 2],
     steps: [[Handle<AudioSource>; 3]; 4],
     ambience: Handle<AudioSource>,
@@ -76,6 +83,59 @@ struct Sounds {
     theme: Handle<AudioSource>,
 }
 
+/// Where a placed sound truly comes from.
+#[derive(Component, Clone, Copy)]
+struct Anchor {
+    at: Vec3,
+    /// Direction only (a bolt's thunder): its level is its own.
+    far: bool,
+}
+
+impl Anchor {
+    fn at(at: Vec3) -> Self {
+        Self { at, far: false }
+    }
+}
+
+/// Placed emitters stand this far out from the listener in their true
+/// direction, at a spatial scale that keeps rodio's own distance gain at
+/// one: rodio only pans them, and distance and walls are `Tuning::heard`.
+const EMITTER_RADIUS: f32 = 2.0;
+const EMITTER_SCALE: f32 = 0.4;
+/// The listener's ears (metres apart).
+const EAR_GAP: f32 = 0.22;
+
+fn emitter_at(eye: Vec3, at: Vec3) -> Vec3 {
+    eye + (at - eye).normalize_or(Vec3::NEG_Z) * EMITTER_RADIUS
+}
+
+/// How the listener hears a placed sound: where their head is, and what
+/// stands between.
+#[derive(SystemParam)]
+struct Ears<'w, 's> {
+    layout: Res<'w, LayoutRes>,
+    tuning: Res<'w, TuningRes>,
+    head: Query<'w, 's, &'static Transform, With<Player>>,
+}
+
+impl Ears<'_, '_> {
+    fn eye(&self) -> Vec3 {
+        self.head.iter().next().map_or(Vec3::ZERO, |t| t.translation)
+    }
+
+    fn heard(&self, anchor: &Anchor) -> f32 {
+        if anchor.far {
+            return 1.0;
+        }
+        heard_at(&self.layout.0, &self.tuning.0, self.eye(), anchor.at)
+    }
+}
+
+fn heard_at(layout: &crate::geometry::Layout, tuning: &crate::tuning::Tuning, eye: Vec3, at: Vec3) -> f32 {
+    let (e, a) = (Vec2::new(eye.x, eye.z), Vec2::new(at.x, at.z));
+    tuning.heard(eye.distance(at), !layout.line_of_sight(e, a))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VoiceKind {
     /// The always-running loops, mixed by `mix`.
@@ -88,6 +148,11 @@ enum VoiceKind {
     Dread,
     /// The title screen's cuatro.
     Theme,
+    /// Placed loops: frogs at the water, the windmill's creak, the dynamo's
+    /// hum once the power is back.
+    Frogs,
+    Windmill,
+    Hum,
     Whistle,
     Effect,
 }
@@ -124,12 +189,15 @@ impl Plugin for SoundPlugin {
                 (
                     stop_voices_on_restart.in_set(GameSet::Control),
                     (
+                        attach_listener,
                         play_whistles,
                         play_effects,
                         play_stings,
                         play_pings,
                         footsteps,
+                        party_steps,
                         thunder,
+                        place_emitters,
                         mix,
                     )
                         .chain()
@@ -141,7 +209,13 @@ impl Plugin for SoundPlugin {
     }
 }
 
-fn load_sounds(mut commands: Commands, assets: Res<AssetServer>, tuning: Res<TuningRes>, settings: Res<Settings>) {
+fn load_sounds(
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    tuning: Res<TuningRes>,
+    layout: Res<LayoutRes>,
+    settings: Res<Settings>,
+) {
     let a = |name: &str| assets.load::<AudioSource>(format!("audio/{name}.wav"));
     let steps = |kind: &str| {
         [
@@ -151,7 +225,7 @@ fn load_sounds(mut commands: Commands, assets: Res<AssetServer>, tuning: Res<Tun
         ]
     };
     let sounds = Sounds {
-        whistles: [a("whistle_loud"), a("whistle_mid"), a("whistle_faint")],
+        whistles: ["loud", "mid", "faint"].map(|v| std::array::from_fn(|k| a(&format!("whistle_{v}_{k}")))),
         thunder: [a("thunder_a"), a("thunder_b")],
         steps: [steps("dirt"), steps("grass"), steps("wood"), steps("water")],
         ambience: a("ambience_llano"),
@@ -196,6 +270,9 @@ fn load_sounds(mut commands: Commands, assets: Res<AssetServer>, tuning: Res<Tun
         ping: a("ping"),
         theme: a("title_theme"),
     };
+    let frogs = a("frogs_loop");
+    let windmill = a("windmill_creak");
+    let hum = a("dynamo_hum");
     let t = &tuning.0;
     let spawn_loop = |commands: &mut Commands,
                       name: &'static str,
@@ -237,14 +314,65 @@ fn load_sounds(mut commands: Commands, assets: Res<AssetServer>, tuning: Res<Tun
         VoiceKind::Heartbeat,
         false,
     );
-    spawn_loop(
-        &mut commands,
-        "engine loop",
-        &sounds.engine,
-        t.sfx_gain * 0.9,
-        VoiceKind::Engine,
-        false,
-    );
+    // Placed loops start silent and glide in once `mix` has heard them.
+    let l = &layout.0;
+    let d = &l.district;
+    let on_ground = |p: Vec2, up: f32| Vec3::new(p.x, l.surface_height(p) + up, p.y);
+    let radio = d
+        .notes
+        .iter()
+        .find(|n| crate::lore::note(n.id).medium == crate::lore::Medium::Radio)
+        .map_or(d.pump, |n| n.pos);
+    use crate::geometry::district::LandmarkId;
+    let water = |id| on_ground(d.landmark(id).center, 0.3);
+    // The creak comes from the top of the water tower's frame.
+    let tower = d.landmark(LandmarkId::WaterTower).center;
+    let vane = Vec3::new(tower.x, d.tower_ground + d.tower_height, tower.y);
+    for (name, clip, gain, kind, at) in [
+        (
+            "engine loop",
+            &sounds.engine,
+            t.sfx_gain * 0.9,
+            VoiceKind::Engine,
+            on_ground(d.truck.center, 1.0),
+        ),
+        ("radio loop", &sounds.radio, t.sfx_gain * 0.8, VoiceKind::Radio, radio),
+        (
+            "pump crank loop",
+            &sounds.crank,
+            t.sfx_gain * 0.85,
+            VoiceKind::Crank,
+            d.pump,
+        ),
+        (
+            "frogs at the caño",
+            &frogs,
+            t.ambience_gain * 0.9,
+            VoiceKind::Frogs,
+            water(LandmarkId::Cano),
+        ),
+        (
+            "frogs at the marsh",
+            &frogs,
+            t.ambience_gain * 0.8,
+            VoiceKind::Frogs,
+            water(LandmarkId::Marsh),
+        ),
+        ("windmill creak", &windmill, t.sfx_gain * 0.7, VoiceKind::Windmill, vane),
+        ("dynamo hum", &hum, t.sfx_gain * 0.45, VoiceKind::Hum, d.panel),
+    ] {
+        commands.spawn((
+            Name::new(name),
+            AudioPlayer::new(clip.clone()),
+            PlaybackSettings::LOOP
+                .with_volume(Volume::Linear(0.0))
+                .with_spatial(true)
+                .with_spatial_scale(SpatialScale::new(EMITTER_SCALE)),
+            Transform::from_translation(at),
+            Voice { gain, kind },
+            Anchor::at(at),
+        ));
+    }
     spawn_loop(
         &mut commands,
         "title theme",
@@ -261,22 +389,6 @@ fn load_sounds(mut commands: Commands, assets: Res<AssetServer>, tuning: Res<Tun
         VoiceKind::Dread,
         false,
     );
-    spawn_loop(
-        &mut commands,
-        "radio loop",
-        &sounds.radio,
-        t.sfx_gain * 0.8,
-        VoiceKind::Radio,
-        false,
-    );
-    spawn_loop(
-        &mut commands,
-        "pump crank loop",
-        &sounds.crank,
-        t.sfx_gain * 0.85,
-        VoiceKind::Crank,
-        false,
-    );
     commands.insert_resource(sounds);
 }
 
@@ -288,6 +400,67 @@ fn one_shot(commands: &mut Commands, clip: &Handle<AudioSource>, gain: f32, spee
             .with_speed(speed),
         Voice { gain, kind },
     ));
+}
+
+/// A one-shot from a place on the llano (or unplaced, if `at` is none).
+fn placed_shot(
+    commands: &mut Commands,
+    ears: &Ears,
+    clip: &Handle<AudioSource>,
+    (gain, speed): (f32, f32),
+    anchor: Option<Anchor>,
+    master: f32,
+) {
+    let Some(anchor) = anchor else {
+        one_shot(commands, clip, gain, speed, VoiceKind::Effect, master);
+        return;
+    };
+    let heard = ears.heard(&anchor);
+    if heard <= 0.0 {
+        return;
+    }
+    commands.spawn((
+        AudioPlayer::new(clip.clone()),
+        PlaybackSettings::DESPAWN
+            .with_volume(Volume::Linear(gain * master * heard))
+            .with_speed(speed)
+            .with_spatial(true)
+            .with_spatial_scale(SpatialScale::new(EMITTER_SCALE)),
+        Transform::from_translation(emitter_at(ears.eye(), anchor.at)),
+        Voice {
+            gain,
+            kind: VoiceKind::Effect,
+        },
+        anchor,
+    ));
+}
+
+/// The camera carries the listener's ears — deliberately swapped. rodio
+/// 0.22's `Spatial::set_positions` gives each channel
+/// `((own_dist - other_dist) / gap + 1) / 4 + 0.5`, i.e. *more* volume to
+/// the ear farther from the source, which its inverse-square distance term
+/// normally outweighs. Placed emitters pin that term at one (see
+/// `EMITTER_SCALE`), so with Bevy's ears (left at -X) every sound would
+/// pan to the wrong side; with them swapped, a sound on the right is full
+/// in the right speaker and half in the left.
+fn attach_listener(mut commands: Commands, heads: Query<Entity, (With<Player>, Without<SpatialListener>)>) {
+    for head in &heads {
+        commands.entity(head).insert(SpatialListener {
+            left_ear_offset: Vec3::X * EAR_GAP / 2.0,
+            right_ear_offset: Vec3::X * EAR_GAP / -2.0,
+        });
+    }
+}
+
+/// Keep every placed emitter in its true direction as the listener moves.
+fn place_emitters(ears: Ears, mut emitters: Query<(&Anchor, &mut Transform), Without<Player>>) {
+    let eye = ears.eye();
+    for (anchor, mut tf) in &mut emitters {
+        let want = emitter_at(eye, anchor.at);
+        if tf.translation.distance_squared(want) > 1e-6 {
+            tf.translation = want;
+        }
+    }
 }
 
 fn play_whistles(
@@ -306,11 +479,12 @@ fn play_whistles(
         return;
     }
     for WhistleMsg(p) in phrases.read() {
-        let clip = match p.variant {
+        let takes = match p.variant {
             WhistleVariant::Loud => &sounds.whistles[0],
             WhistleVariant::Middling => &sounds.whistles[1],
             WhistleVariant::Faint => &sounds.whistles[2],
         };
+        let clip = &takes[(p.take % WHISTLE_TAKES) as usize];
         one_shot(
             &mut commands,
             clip,
@@ -328,21 +502,36 @@ fn play_stings(
     mut stings: MessageReader<crate::world::omen::Sting>,
     sounds: Res<Sounds>,
     settings: Res<Settings>,
-    tuning: Res<TuningRes>,
+    ears: Ears,
 ) {
     use crate::world::omen::Sting;
-    let g = tuning.0.sfx_gain;
+    let g = ears.tuning.0.sfx_gain;
     for sting in stings.read() {
-        let (clip, gain, speed) = match sting {
-            Sting::Caught => (&sounds.sting_caught, g * 1.5, 1.0),
-            Sting::Reveal => (&sounds.sting_reveal, g * 1.1, 1.0),
-            Sting::Phantom => (&sounds.sting_phantom, g * 0.8, 1.0),
-            Sting::Bones => (&sounds.omen_bones, g * 0.7, 1.0),
-            Sting::Lamps => (&sounds.omen_lamps, g * 0.6, 1.0),
-            Sting::Swell => (&sounds.omen_swell, g * 0.8, 1.0),
-            Sting::Clack => (&sounds.omen_bones, g * 0.45, 1.25),
+        // Stingers are the night's music, unplaced; only the clatter of
+        // bones behind you comes from somewhere (and never from him). A
+        // placed clatter is louder at its source, so it lands at the level
+        // it had unplaced.
+        let (clip, gain, speed, at) = match *sting {
+            Sting::Caught => (&sounds.sting_caught, g * 1.5, 1.0, None),
+            Sting::Reveal => (&sounds.sting_reveal, g * 1.1, 1.0, None),
+            Sting::Phantom => (&sounds.sting_phantom, g * 0.8, 1.0, None),
+            Sting::Bones(at) => (&sounds.omen_bones, g * 0.7, 1.0, at),
+            Sting::Lamps => (&sounds.omen_lamps, g * 0.6, 1.0, None),
+            Sting::Swell => (&sounds.omen_swell, g * 0.8, 1.0, None),
+            Sting::Clack(at) => (&sounds.omen_bones, g * 0.45, 1.25, at),
         };
-        one_shot(&mut commands, clip, gain, speed, VoiceKind::Effect, settings.volume);
+        let lift = at.map_or(1.0, |at| {
+            let h = heard_at(&ears.layout.0, &ears.tuning.0, ears.eye(), at);
+            if h > 0.0 { (1.0 / h).min(4.0) } else { 1.0 }
+        });
+        placed_shot(
+            &mut commands,
+            &ears,
+            clip,
+            (gain * lift, speed),
+            at.map(Anchor::at),
+            settings.volume,
+        );
     }
 }
 
@@ -351,10 +540,30 @@ fn play_effects(
     mut events: MessageReader<EncounterMsg>,
     sounds: Res<Sounds>,
     settings: Res<Settings>,
-    tuning: Res<TuningRes>,
+    net: Res<Network>,
+    ears: Ears,
 ) {
-    let g = tuning.0.sfx_gain;
+    let g = ears.tuning.0.sfx_gain;
+    let l = &ears.layout.0;
+    let d = &l.district;
+    let on_ground = |p: Vec2, up: f32| Vec3::new(p.x, l.surface_height(p) + up, p.y);
+    let dog = net.snapshot().map(|s| on_ground(Vec2::from_array(s.dog.pos), 0.5));
     for EncounterMsg(e) in events.read() {
+        // Where it happens, when that is a thing of the llano's (the actor
+        // of a pickup or a revive is not known here: those stay unplaced).
+        let at = match e {
+            Event::PowerRestored => Some(d.panel),
+            Event::TruckStarted => Some(on_ground(d.truck.center, 1.0)),
+            Event::RelicDelivered | Event::AllBonesHome | Event::Banished => Some(l.ceiba.offering),
+            Event::LockRattle | Event::KeyFound => Some(d.lockbox),
+            Event::CattleSpooked => Some(on_ground(
+                d.landmark(crate::geometry::district::LandmarkId::Corral).center,
+                1.0,
+            )),
+            Event::BeaconLit => Some(d.beacon),
+            Event::DogGrowl | Event::DogBark | Event::DogFreed => dog,
+            _ => None,
+        };
         let (clip, gain, speed) = match e {
             Event::RelicTaken => (&sounds.bones, g, 1.0),
             Event::RelicDropped => (&sounds.bones_set, g * 0.8, 1.0),
@@ -393,7 +602,14 @@ fn play_effects(
             Event::Escaped => (&sounds.dawn, g * 0.9, 1.0),
             _ => continue,
         };
-        one_shot(&mut commands, clip, gain, speed, VoiceKind::Effect, settings.volume);
+        placed_shot(
+            &mut commands,
+            &ears,
+            clip,
+            (gain, speed),
+            at.map(Anchor::at),
+            settings.volume,
+        );
     }
 }
 
@@ -403,7 +619,7 @@ fn play_pings(
     net: Res<Network>,
     sounds: Res<Sounds>,
     settings: Res<Settings>,
-    tuning: Res<TuningRes>,
+    ears: Ears,
     mut seen: Local<BTreeMap<u64, f32>>,
 ) {
     let pings = net.snapshot().map_or(&[][..], |s| s.pings.as_slice());
@@ -412,12 +628,17 @@ fn play_pings(
         let fresh = seen.get(&p.by).is_none_or(|left| p.left > *left);
         seen.insert(p.by, p.left);
         if fresh {
-            one_shot(
+            // A mark is a signal to the party: it carries farther than other
+            // placed sounds (lifted up to threefold) and still says where it is.
+            let at = Vec3::from_array(p.pos);
+            let h = heard_at(&ears.layout.0, &ears.tuning.0, ears.eye(), at);
+            let lift = if h > 0.0 { (0.35 / h).clamp(1.0, 3.0) } else { 1.0 };
+            placed_shot(
                 &mut commands,
+                &ears,
                 &sounds.ping,
-                tuning.0.sfx_gain * 0.7,
-                1.0,
-                VoiceKind::Effect,
+                (ears.tuning.0.sfx_gain * 0.7 * lift, 1.0),
+                Some(Anchor::at(at)),
                 settings.volume,
             );
         }
@@ -453,16 +674,7 @@ fn footsteps(
     }
     *carried %= stride;
     let (crouch, sprint) = net.me().map_or((false, false), |p| (p.crouch, p.sprint));
-    let d = &layout.0.district;
-    let surface = if layout.0.wading(pos) {
-        Surface::Water
-    } else if d.surface_at(pos).is_some() {
-        Surface::Wood
-    } else if d.grass.iter().any(|r| r.contains(pos)) {
-        Surface::Grass
-    } else {
-        Surface::Dirt
-    };
+    let surface = surface_at(&layout.0, pos);
     let gait = if sprint {
         1.0
     } else if crouch {
@@ -485,26 +697,102 @@ fn footsteps(
 }
 
 /// Thunder rolls in after each flash, late by the storm's own distance.
-fn thunder(
-    mut commands: Commands,
-    clock: Res<StormClock>,
-    tuning: Res<TuningRes>,
-    settings: Res<Settings>,
-    sounds: Res<Sounds>,
-) {
+fn thunder(mut commands: Commands, clock: Res<StormClock>, settings: Res<Settings>, sounds: Res<Sounds>, ears: Ears) {
     if clock.t <= clock.prev || clock.t - clock.prev > 1.0 {
         return;
     }
-    if let Some(power) = storm::thunder_onset(tuning.0.seed, clock.prev, clock.t) {
+    let seed = ears.tuning.0.seed;
+    if let Some(strike) = storm::thunder_strike(seed, clock.prev, clock.t) {
         let variant = ((clock.t * 7.0) as usize) % 2;
-        one_shot(
+        // From the bolt everyone saw, far out on the llano.
+        let (ground, _) = storm::bolt_ground(seed, strike.at);
+        placed_shot(
             &mut commands,
+            &ears,
             &sounds.thunder[variant],
-            tuning.0.sfx_gain * (0.55 + 0.75 * power.clamp(0.0, 1.0)),
-            1.0,
-            VoiceKind::Effect,
+            (
+                ears.tuning.0.sfx_gain * (0.55 + 0.75 * strike.power.clamp(0.0, 1.0)),
+                1.0,
+            ),
+            Some(Anchor {
+                at: Vec3::new(ground.x, 120.0, ground.y),
+                far: true,
+            }),
             settings.volume,
         );
+    }
+}
+
+/// Teammates' footfalls, from where they walk: the party can be heard
+/// coming (and anyone might be mistaken for one). Nobody down, stunned,
+/// hauled in his sack or jumping across the map makes a step.
+#[allow(clippy::too_many_arguments)]
+fn party_steps(
+    mut commands: Commands,
+    settings: Res<Settings>,
+    sounds: Res<Sounds>,
+    net: Res<Network>,
+    state: Res<State<Flow>>,
+    ears: Ears,
+    mut walked: Local<BTreeMap<u64, (Vec2, f32, usize)>>,
+) {
+    let Some(s) = net.snapshot().filter(|_| *state.get() == Flow::Playing) else {
+        walked.clear();
+        return;
+    };
+    let me = net.id();
+    walked.retain(|id, _| s.players.iter().any(|p| p.id == *id));
+    let l = &ears.layout.0;
+    let stride = ears.tuning.0.stride;
+    for p in &s.players {
+        if Some(p.id) == me {
+            continue;
+        }
+        let pos = Vec2::from_array(p.position);
+        let entry = walked.entry(p.id).or_insert((pos, 0.0, 0));
+        let moved = entry.0.distance(pos);
+        entry.0 = pos;
+        if p.status != 0 || p.hauled || moved > 2.0 {
+            entry.1 = 0.0;
+            continue;
+        }
+        entry.1 += moved;
+        if entry.1 < stride {
+            continue;
+        }
+        entry.1 %= stride;
+        entry.2 += 1;
+        let surface = surface_at(l, pos);
+        let gait = if p.sprint {
+            1.0
+        } else if p.crouch {
+            0.3
+        } else {
+            0.62
+        };
+        let load = 1.0 + 0.12 * p.carrying as f32;
+        const PITCH: [f32; 5] = [1.02, 0.95, 1.07, 0.98, 0.93];
+        placed_shot(
+            &mut commands,
+            &ears,
+            &sounds.steps[surface as usize][entry.2 % 3],
+            (ears.tuning.0.sfx_gain * gait * load * 0.8, PITCH[entry.2 % PITCH.len()]),
+            Some(Anchor::at(Vec3::new(pos.x, l.surface_height(pos) + 0.1, pos.y))),
+            settings.volume,
+        );
+    }
+}
+
+fn surface_at(layout: &crate::geometry::Layout, pos: Vec2) -> Surface {
+    let d = &layout.district;
+    if layout.wading(pos) {
+        Surface::Water
+    } else if d.surface_at(pos).is_some() {
+        Surface::Wood
+    } else if d.grass.iter().any(|r| r.contains(pos)) {
+        Surface::Grass
+    } else {
+        Surface::Dirt
     }
 }
 
@@ -518,10 +806,12 @@ fn mix(
     clock: Res<StormClock>,
     mut hush: ResMut<Hush>,
     mut sinks: Query<(&Voice, &mut AudioSink)>,
+    mut placed: Query<(&Voice, &Anchor, &mut SpatialAudioSink)>,
     state: Res<State<Flow>>,
     net: Res<Network>,
     note: Res<crate::encounter::NoteOpen>,
     fright: Res<crate::world::omen::Fright>,
+    ears: Ears,
 ) {
     let tense = matches!(
         truth.encounter.threat.state,
@@ -578,10 +868,9 @@ fn mix(
         .any(|(voice, sink)| voice.kind == VoiceKind::Whistle && !sink.is_paused() && !sink.empty());
     let duck = if whistling { tuning.0.whistle_duck } else { 1.0 };
 
-    for (voice, mut sink) in &mut sinks {
-        if *state.get() == Flow::Paused {
-            sink.pause();
-        }
+    let paused = *state.get() == Flow::Paused;
+    let powered = world.power >= 1.0 && !over;
+    let level = |voice: &Voice, sink: &mut dyn AudioSinkPlayback| -> f32 {
         let mut v = voice.gain * settings.volume;
         match voice.kind {
             VoiceKind::Ambience => {
@@ -594,6 +883,9 @@ fn mix(
                 v *= heart_level * heart_level;
                 sink.set_speed(heart_speed);
             }
+            VoiceKind::Frogs => v *= hush_omen * duck * hush.0,
+            VoiceKind::Windmill => v *= duck * (0.7 + 0.3 * rain),
+            VoiceKind::Hum => v *= if powered { duck } else { 0.0 },
             VoiceKind::Engine => {
                 v *= if engine_on { 0.6 + 0.4 * world.warm } else { 0.0 };
                 sink.set_speed(0.92 + 0.16 * world.warm);
@@ -602,6 +894,12 @@ fn mix(
             VoiceKind::Radio => v *= if radio_on { 1.0 } else { 0.0 },
             VoiceKind::Whistle if net.status() == 2 => v = 0.0,
             VoiceKind::Whistle | VoiceKind::Effect => {}
+        }
+        v
+    };
+    let apply = |voice: &Voice, sink: &mut dyn AudioSinkPlayback, v: f32| {
+        if paused {
+            sink.pause();
         }
         let now = sink.volume().to_linear();
         // Loops glide to their level; one-shots keep theirs.
@@ -613,17 +911,31 @@ fn mix(
         if (now - v).abs() > 0.002 || (v == 0.0 && now != 0.0) {
             sink.set_volume(Volume::Linear(v));
         }
+    };
+    for (voice, mut sink) in &mut sinks {
+        let v = level(voice, &mut *sink);
+        apply(voice, &mut *sink, v);
+    }
+    for (voice, anchor, mut sink) in &mut placed {
+        let v = level(voice, &mut *sink) * ears.heard(anchor);
+        apply(voice, &mut *sink, v);
     }
 }
 
-fn pause_all(sinks: Query<&AudioSink>) {
+fn pause_all(sinks: Query<&AudioSink>, placed: Query<&SpatialAudioSink>) {
     for sink in &sinks {
+        sink.pause();
+    }
+    for sink in &placed {
         sink.pause();
     }
 }
 
-fn resume_all(sinks: Query<&AudioSink>) {
+fn resume_all(sinks: Query<&AudioSink>, placed: Query<&SpatialAudioSink>) {
     for sink in &sinks {
+        sink.play();
+    }
+    for sink in &placed {
         sink.play();
     }
 }

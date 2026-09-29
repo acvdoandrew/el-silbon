@@ -255,10 +255,9 @@ pub fn rain_swell(
 /// shape is a pure function of the seed and the strike's exact onset time, so
 /// every player sees the same bolt.
 fn bolt_mesh(seed: u64, at: f32) -> Mesh {
-    let mut rng = Rng::fork(seed, u64::from(at.to_bits()));
-    let azimuth = rng.range(0.0, std::f32::consts::TAU);
-    let dist = rng.range(260.0, 520.0);
-    let base = Vec3::new(azimuth.cos() * dist, 0.0, azimuth.sin() * dist);
+    let (ground, mut rng) = storm::bolt_ground(seed, at);
+    let base = Vec3::new(ground.x, 0.0, ground.y);
+    let azimuth = ground.y.atan2(ground.x);
     let top_h = rng.range(230.0, 330.0);
     let mut pts = Vec::new();
     let mut p = base + Vec3::new(rng.signed(40.0), top_h, rng.signed(40.0));

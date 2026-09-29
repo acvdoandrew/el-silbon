@@ -5,7 +5,9 @@
 //! peer draws the same flashes and plays the same thunder from the run clock
 //! in the snapshot, so nothing about the weather is sent over the wire.
 
+use crate::rng::Rng;
 use crate::tuning::Tuning;
+use bevy::math::Vec2;
 
 /// One lightning opportunity per slot.
 const SLOT: f32 = 26.0;
@@ -93,10 +95,24 @@ pub fn thunder(seed: u64, t: f32) -> f32 {
 
 /// The thunder clap that starts in `(t0, t1]`, if any: its power.
 pub fn thunder_onset(seed: u64, t0: f32, t1: f32) -> Option<f32> {
+    thunder_strike(seed, t0, t1).map(|s| s.power)
+}
+
+/// The strike whose thunder starts in `(t0, t1]`, if any.
+pub fn thunder_strike(seed: u64, t0: f32, t1: f32) -> Option<Strike> {
     strikes_near(seed, t1)
         .chain(strikes_near(seed, t0))
         .find(|s| s.thunder_at > t0 && s.thunder_at <= t1)
-        .map(|s| s.power)
+}
+
+/// Where the strike flashed at `at` hits the llano, far out (260–520 m from
+/// the centre), and the generator its channel is drawn from: the bolt on
+/// screen and its thunder come from the same place for every player.
+pub fn bolt_ground(seed: u64, at: f32) -> (Vec2, Rng) {
+    let mut rng = Rng::fork(seed, u64::from(at.to_bits()));
+    let azimuth = rng.range(0.0, std::f32::consts::TAU);
+    let dist = rng.range(260.0, 520.0);
+    (Vec2::new(azimuth.cos(), azimuth.sin()) * dist, rng)
 }
 
 /// The lightning that starts in `(t0, t1]`, if any: its power.

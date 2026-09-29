@@ -1301,6 +1301,7 @@ impl Session {
                     variant: cue.variant as u8,
                     speed: cue.speed,
                     phantom: cue.phantom,
+                    take: cue.take,
                 },
             ));
             if frightened {

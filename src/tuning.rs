@@ -321,12 +321,26 @@ pub struct Tuning {
     pub cue_near_distance: f32,
     /// True distance at (and above) which the whistle seems LOUDEST.
     pub cue_far_distance: f32,
-    /// Seconds between whistle phrases while stalking (min, max).
+    /// Seemingly-close thresholds above which a phrase is heard as loud,
+    /// and as middling (below both: faint).
+    pub cue_loud_above: f32,
+    pub cue_mid_above: f32,
+    /// Seconds between whistle phrases while stalking (min, max), usually…
     pub stalk_phrase_interval: (f32, f32),
+    /// …but sometimes he answers himself almost at once (chance, seconds)…
+    pub stalk_answer_chance: f32,
+    pub stalk_answer: (f32, f32),
+    /// …and sometimes the llano goes quiet for a long while (chance, seconds).
+    pub stalk_silence_chance: f32,
+    pub stalk_silence: (f32, f32),
     /// Seconds between phrases during a warning.
     pub warn_phrase_interval: f32,
     /// Seconds between phrases during a hunt.
     pub hunt_phrase_interval: f32,
+    /// Warning and hunt intervals vary by up to this fraction either way.
+    pub phrase_jitter: f32,
+    /// Playback speed range of a phrase (it also moves the pitch).
+    pub whistle_speed: (f32, f32),
     /// Seconds from manifestation to the first phrase.
     pub first_phrase_delay: f32,
     /// Seconds between far-off whistles before he has manifested.
@@ -342,9 +356,10 @@ pub struct Tuning {
     /// mean seconds between such whistles.
     pub phantom_whistle_fear: f32,
     pub phantom_whistle_every: f32,
-    /// Linear playback gains of the three perceived variants: about 14 dB
-    /// between "right beside you" and "far, far away", so the category is
-    /// unmistakable over rain (the timbres carry the rest).
+    /// Linear playback gains of the three perceived variants. The files are
+    /// loudness-matched, so these are the whole level difference: about
+    /// 20 dB between "right beside you" and "far, far away" (the timbres
+    /// carry the rest). `tools/whistle_lab.py` plays them at these levels.
     pub gain_loud: f32,
     pub gain_mid: f32,
     pub gain_faint: f32,
@@ -361,6 +376,13 @@ pub struct Tuning {
     /// Ambience and rain multiplier while a whistle sounds, so a faint one
     /// is heard as faint rather than lost.
     pub whistle_duck: f32,
+    /// How the llano's placed sounds (machines, the dog, teammates, frogs;
+    /// never the whistle) fall off: full within `sound_near` metres, then
+    /// inversely with distance, silent by `sound_far`; a wall or bank
+    /// between leaves `sound_occluded` of it.
+    pub sound_near: f32,
+    pub sound_far: f32,
+    pub sound_occluded: f32,
 
     // ------------------------------------------------------------ simulation
     /// Largest step the truth layer integrates at once (hitches are clamped).
@@ -519,9 +541,17 @@ impl Default for Tuning {
 
             cue_near_distance: 5.0,
             cue_far_distance: 42.0,
-            stalk_phrase_interval: (7.0, 10.0),
+            cue_loud_above: 0.62,
+            cue_mid_above: 0.3,
+            stalk_phrase_interval: (5.0, 11.0),
+            stalk_answer_chance: 0.15,
+            stalk_answer: (1.8, 3.4),
+            stalk_silence_chance: 0.2,
+            stalk_silence: (15.0, 26.0),
             warn_phrase_interval: 3.2,
             hunt_phrase_interval: 3.8,
+            phrase_jitter: 0.35,
+            whistle_speed: (0.92, 1.06),
             first_phrase_delay: 1.2,
             prologue_phrase_interval: (28.0, 46.0),
             omen_quiet: (35.0, 70.0),
@@ -529,15 +559,18 @@ impl Default for Tuning {
             stolen_light_pressure: 0.45,
             phantom_whistle_fear: 0.7,
             phantom_whistle_every: 25.0,
-            gain_loud: 0.8,
-            gain_mid: 0.4,
-            gain_faint: 0.16,
+            gain_loud: 1.0,
+            gain_mid: 0.3,
+            gain_faint: 0.1,
 
             ambience_gain: 0.32,
             ambience_hush: 0.25,
             sfx_gain: 0.55,
             rain_gain: 0.36,
             whistle_duck: 0.4,
+            sound_near: 3.0,
+            sound_far: 90.0,
+            sound_occluded: 0.45,
 
             max_step: 0.1,
         }
@@ -604,11 +637,38 @@ impl Tuning {
     pub fn hearing_gain(&self, pressure: f32) -> f32 {
         1.0 + 0.6 * pressure.clamp(0.0, 1.0)
     }
+
+    /// How loud a placed sound is `distance` metres away (0..1): full up
+    /// close, inverse distance beyond, faded out towards `sound_far`,
+    /// dulled when something stands between.
+    pub fn heard(&self, distance: f32, occluded: bool) -> f32 {
+        let d = distance.max(self.sound_near);
+        let inverse = self.sound_near / d;
+        let edge = (1.0 - (d - self.sound_near) / (self.sound_far - self.sound_near)).clamp(0.0, 1.0);
+        let fade = edge * edge * (3.0 - 2.0 * edge);
+        inverse * fade * if occluded { self.sound_occluded } else { 1.0 }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placed_sounds_fade_with_distance_and_behind_walls() {
+        let t = Tuning::default();
+        assert_eq!(t.heard(0.0, false), 1.0);
+        assert_eq!(t.heard(t.sound_near, false), 1.0);
+        let mut prev = 1.0;
+        for d in 1..200 {
+            let g = t.heard(d as f32 * 0.5, false);
+            assert!(g <= prev + 1e-6, "never louder farther away");
+            assert!(t.heard(d as f32 * 0.5, true) < g || g == 0.0, "a wall always dulls it");
+            prev = g;
+        }
+        assert_eq!(t.heard(t.sound_far, false), 0.0);
+        assert!(t.heard(30.0, false) > 0.02, "a machine across the llano is still heard");
+    }
 
     #[test]
     fn every_night_keeps_him_slower_than_a_walker_and_his_warning_readable() {

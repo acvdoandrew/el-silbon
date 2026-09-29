@@ -12,6 +12,10 @@ use crate::rng::Rng;
 use crate::sim::{Encounter, Presence, ThreatState};
 use crate::tuning::Tuning;
 
+/// Performances of the phrase recorded at each distance
+/// (`whistle_{loud,mid,faint}_{take}.wav`, see `tools/gen_audio.py`).
+pub const WHISTLE_TAKES: u8 = 4;
+
 /// The three recorded timbres of the same phrase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WhistleVariant {
@@ -62,6 +66,9 @@ pub struct WhistlePhrase {
     pub seeming_closeness: f32,
     /// Heard only in the listener's fear: there was no whistle at all.
     pub phantom: bool,
+    /// Which performance (`0..WHISTLE_TAKES`): how he whistles it this time,
+    /// never where he is.
+    pub take: u8,
 }
 
 /// Inversion: truly near → seems far (0), truly far → seems close (1).
@@ -70,10 +77,10 @@ pub fn seeming_closeness(true_distance: f32, tuning: &Tuning) -> f32 {
     ((true_distance - tuning.cue_near_distance) / span).clamp(0.0, 1.0)
 }
 
-pub fn variant_for(seeming: f32) -> WhistleVariant {
-    if seeming >= 0.62 {
+pub fn variant_for(seeming: f32, tuning: &Tuning) -> WhistleVariant {
+    if seeming >= tuning.cue_loud_above {
         WhistleVariant::Loud
-    } else if seeming >= 0.3 {
+    } else if seeming >= tuning.cue_mid_above {
         WhistleVariant::Middling
     } else {
         WhistleVariant::Faint
@@ -113,6 +120,7 @@ pub struct CueDirector {
     pub phrases: u32,
     /// Seconds since the last phrase that was only in the listener's head.
     phantom_quiet: f32,
+    last_take: Option<u8>,
 }
 
 impl CueDirector {
@@ -128,6 +136,43 @@ impl CueDirector {
             last_phrase: None,
             phrases: 0,
             phantom_quiet: 0.0,
+            last_take: None,
+        }
+    }
+
+    /// A performance other than the last one: he never whistles it the same
+    /// way twice running.
+    fn take(&mut self) -> u8 {
+        let take = match self.last_take {
+            None => self.rng.below(WHISTLE_TAKES as usize) as u8,
+            Some(last) => {
+                let t = self.rng.below(WHISTLE_TAKES as usize - 1) as u8;
+                if t >= last { t + 1 } else { t }
+            }
+        };
+        self.last_take = Some(take);
+        take
+    }
+
+    fn speed(&mut self, tuning: &Tuning) -> f32 {
+        let (lo, hi) = tuning.whistle_speed;
+        self.rng.range(lo, hi)
+    }
+
+    /// Seconds until the next phrase while he stalks: no steady rhythm to
+    /// settle into. Usually a while; sometimes he answers himself almost at
+    /// once; sometimes the llano goes quiet for a long time. The more of his
+    /// bones are taken, the sooner (up to a third) — except an answer.
+    fn stalk_gap(&mut self, tuning: &Tuning, pressure: f32) -> f32 {
+        let roll = self.rng.f32();
+        let sooner = 1.0 - 0.35 * pressure.clamp(0.0, 1.0);
+        if roll < tuning.stalk_answer_chance {
+            self.rng.range(tuning.stalk_answer.0, tuning.stalk_answer.1)
+        } else if roll < tuning.stalk_answer_chance + tuning.stalk_silence_chance {
+            self.rng.range(tuning.stalk_silence.0, tuning.stalk_silence.1) * sooner
+        } else {
+            let (lo, hi) = tuning.stalk_phrase_interval;
+            self.rng.range(lo, hi) * sooner
         }
     }
 
@@ -154,6 +199,7 @@ impl CueDirector {
             speed: 0.9 + 0.05 * self.rng.f32(),
             seeming_closeness: 0.5,
             phantom: true,
+            take: self.take(),
         })
     }
 
@@ -197,9 +243,10 @@ impl CueDirector {
             let phrase = WhistlePhrase {
                 variant,
                 gain: variant.gain(tuning) * 0.85,
-                speed: 0.97 + 0.06 * self.rng.f32(),
+                speed: self.speed(tuning),
                 seeming_closeness: if variant == WhistleVariant::Loud { 1.0 } else { 0.5 },
                 phantom: false,
+                take: self.take(),
             };
             self.last_phrase = Some(phrase);
             self.phrases += 1;
@@ -217,23 +264,20 @@ impl CueDirector {
         if self.countdown > 0.0 {
             return None;
         }
+        let jitter =
+            |d: &mut Self, base: f32| base * d.rng.range(1.0 - tuning.phrase_jitter, 1.0 + tuning.phrase_jitter);
         self.countdown = match th.state {
-            ThreatState::Warning => tuning.warn_phrase_interval,
-            ThreatState::Hunting => tuning.hunt_phrase_interval,
-            _ => {
-                // The more of his bones are taken from him, the more he
-                // whistles: up to a third sooner at the worst of the night.
-                let (lo, hi) = tuning.stalk_phrase_interval;
-                self.rng.range(lo, hi) * (1.0 - 0.35 * enc.pressure.clamp(0.0, 1.0))
-            }
+            ThreatState::Warning => jitter(self, tuning.warn_phrase_interval),
+            ThreatState::Hunting => jitter(self, tuning.hunt_phrase_interval),
+            _ => self.stalk_gap(tuning, enc.pressure),
         };
         let seeming = seeming_closeness(th.pos.distance(listener), tuning);
-        let variant = variant_for(seeming);
+        let variant = variant_for(seeming, tuning);
         // The Drunkard's return whistles slurred: slower, and never twice alike.
         let speed = if crate::sim::Variant::of(tuning.seed) == crate::sim::Variant::Borracho {
-            0.86 + 0.2 * self.rng.f32()
+            self.speed(tuning) - 0.08 + 0.1 * self.rng.f32()
         } else {
-            0.97 + 0.06 * self.rng.f32()
+            self.speed(tuning)
         };
         let phrase = WhistlePhrase {
             variant,
@@ -241,6 +285,7 @@ impl CueDirector {
             speed,
             seeming_closeness: seeming,
             phantom: false,
+            take: self.take(),
         };
         self.last_phrase = Some(phrase);
         self.phrases += 1;
@@ -277,10 +322,10 @@ mod tests {
         let t = Tuning::default();
         // Truly close: seems faint and far away.
         assert_eq!(seeming_closeness(2.0, &t), 0.0);
-        assert_eq!(variant_for(seeming_closeness(6.0, &t)), WhistleVariant::Faint);
+        assert_eq!(variant_for(seeming_closeness(6.0, &t), &t), WhistleVariant::Faint);
         // Truly far: seems loud, right beside you.
         assert_eq!(seeming_closeness(60.0, &t), 1.0);
-        assert_eq!(variant_for(seeming_closeness(45.0, &t)), WhistleVariant::Loud);
+        assert_eq!(variant_for(seeming_closeness(45.0, &t), &t), WhistleVariant::Loud);
         // Monotonic: the farther he truly is, the closer he seems.
         let mut prev = -1.0;
         for d in 0..80 {
@@ -352,5 +397,45 @@ mod tests {
         for _ in 0..1200 {
             assert!(cue.tick(1.0 / 60.0, &enc, listener, &t).is_none());
         }
+    }
+
+    #[test]
+    fn a_stalking_whistle_keeps_no_steady_rhythm_and_is_never_performed_twice_alike() {
+        let layout = Layout::new();
+        let t = Tuning::default();
+        let mut enc = Encounter::new(&layout);
+        enc.threat.state = ThreatState::Stalking;
+        enc.threat.presence = Presence::Present;
+        enc.threat.pos = Vec2::new(0.0, -20.0);
+        let mut cue = CueDirector::new(5);
+        let listener = Vec2::ZERO;
+        let dt = 1.0 / 60.0;
+        let mut heard = Vec::new();
+        for i in 0..(30 * 60 * 60) {
+            if let Some(p) = cue.tick(dt, &enc, listener, &t) {
+                heard.push((i as f32 * dt, p));
+            }
+        }
+        assert!(heard.len() > 60, "half an hour of stalking: {} phrases", heard.len());
+        let gaps: Vec<f32> = heard.windows(2).map(|w| w[1].0 - w[0].0).collect();
+        // Sometimes he answers himself at once; sometimes he falls quiet.
+        assert!(gaps.iter().any(|&g| g < t.stalk_answer.1 + 0.1), "no quick answers");
+        assert!(
+            gaps.iter().any(|&g| g > t.stalk_phrase_interval.1 + 1.0),
+            "no long silences"
+        );
+        // Every performance comes up, and never the same one twice running.
+        for w in heard.windows(2) {
+            assert_ne!(w[0].1.take, w[1].1.take);
+        }
+        for take in 0..WHISTLE_TAKES {
+            assert!(heard.iter().any(|(_, p)| p.take == take), "take {take} never heard");
+        }
+        // Nor at one speed (which is also its pitch).
+        let speeds = heard.iter().map(|(_, p)| p.speed);
+        let (lo, hi) = speeds.fold((f32::MAX, f32::MIN), |(lo, hi), s| (lo.min(s), hi.max(s)));
+        assert!(hi - lo > 0.08, "speeds {lo}..{hi}");
+        // None of it tells where he is: the same distance, the same variant.
+        assert!(heard.iter().all(|(_, p)| p.variant == heard[0].1.variant));
     }
 }

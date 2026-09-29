@@ -38,15 +38,18 @@ pub const LUNGE_IN: f32 = 0.28;
 const REVEAL_COOL: f32 = 45.0;
 
 /// A sound the frights ask for.
-#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
 pub enum Sting {
     Caught,
     Reveal,
     Phantom,
-    Bones,
+    /// Bones in the dark, from a spot behind the listener when there is one
+    /// (a place near the listener's own eye, never where he is).
+    Bones(Option<Vec3>),
     Lamps,
     Swell,
-    Clack,
+    /// The click that ends a silence, behind the listener too.
+    Clack(Option<Vec3>),
 }
 
 #[derive(Resource, Default)]
@@ -409,7 +412,8 @@ pub fn frights(
             }
             Event::OmenSilence => fright.silence = Some(0.0),
             Event::OmenBones => {
-                stings.write(Sting::Bones);
+                let behind = spot(layout, eye, -fwd, (5.0, 9.0), (0.0, 0.9), turn).map(ground);
+                stings.write(Sting::Bones(behind));
             }
             Event::OmenDrag => {
                 if let Some(p) = spot(layout, eye, fwd, (4.0, 9.0), (0.1, 0.9), turn) {
@@ -465,7 +469,8 @@ pub fn frights(
         if t >= SILENCE {
             fright.silence = None;
         } else if t >= SILENCE - 1.0 && t - dt < SILENCE - 1.0 {
-            stings.write(Sting::Clack);
+            let behind = spot(layout, eye, -fwd, (3.0, 6.0), (0.2, 1.1), fright.turn).map(ground);
+            stings.write(Sting::Clack(behind));
         }
     }
     if let Some(s) = &mut fright.lunge {

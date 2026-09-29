@@ -142,6 +142,7 @@ fn drift(
                 speed: 0.96 + 0.05 * h,
                 seeming_closeness: 0.3,
                 phantom: false,
+                take: (night.turn / 2 % crate::perception::WHISTLE_TAKES as u32) as u8,
             }));
         }
     }

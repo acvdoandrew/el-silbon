@@ -312,6 +312,9 @@ pub enum ServerMessage {
         speed: f32,
         /// Heard only in this listener's fear: there was no whistle.
         phantom: bool,
+        /// Which performance of the phrase (says nothing about where he is).
+        #[serde(default)]
+        take: u8,
     },
     Events {
         run: u64,

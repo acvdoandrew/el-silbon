@@ -1,5 +1,240 @@
 # Progress
 
+## Current handoff — 2026-09-29 (placed sound; scare and co-op proposal)
+
+Uncommitted, on top of the uncommitted whistle work below (both on
+`8fa6fd7`). The user asked for more spatial, realistic audio, better jump
+scares, a scarier game and funnier, more repeatable play with friends; the
+scare and co-op part is a proposal (next section), the audio is built.
+
+### What changed (audio)
+
+- **Placed sounds** (`audio.rs`): a `SpatialListener` on the camera (its
+  ears deliberately swapped: rodio 0.22's pan gives *more* to the farther
+  ear, which only its inverse-square term normally hides, and placed
+  emitters pin that term at one; documented at `attach_listener`); each
+  placed voice carries an `Anchor` (its true point). Its emitter stands
+  2 m out in that direction at a spatial scale that keeps rodio's own
+  (inverse-square, far too steep) distance gain at one, so rodio only pans
+  and `Tuning::heard` does distance (full within 3 m, inverse beyond,
+  faded out by 90 m) and occlusion (0.45 behind the layout's sight
+  blockers). `mix`, pause/resume and restart cover both sink kinds.
+- **Placed**: the truck engine, the radio, the pump crank; new loops of
+  frogs at the caño and the marsh, the windmill's creak, the dynamo's hum
+  once powered (`gen_audio.py`, own seeds; older files byte-identical);
+  power, truck start, the altar (bones laid, all home, banishment), the key
+  box, the beacon, the cattle, Tureco's growl/bark/freeing (at the dog),
+  marks (at the mark, lifted up to threefold so they carry), thunder (from
+  the bolt everyone saw; `storm::bolt_ground` now shared with the bolt
+  mesh, which is unchanged), the bones and the silence's click omens (from
+  a spot behind the listener), and **teammates' footsteps** (new: surface,
+  gait and load from the snapshot; none while down, stunned, hauled or
+  jumping more than 2 m in a frame, since a hauled player stands at his
+  true position).
+- **Never placed**: the whistle (the perception boundary: its apparent
+  distance lies and nothing may say where he is), every stinger, the hunt,
+  his signs (weeping, whip, bottles), counting; own actions whose actor is
+  unknown to the listener stay centred.
+
+### Verified
+
+- Gate green: fmt, clippy `-D warnings`, 57 unit (new: placed sounds
+  fade monotonically, vanish at `sound_far`, and a wall always dulls them)
+  + 7 district + 38 session tests.
+- Rendered `--menu-shots` (release): `MENU SHOTS OK`, no panic and no
+  audio/listener warnings, so every audio system's parameters validate
+  and the placed loops play on the title and in a solo night.
+- Headless UDP pair: not rerun for this change (the protocol is unchanged
+  and the headless mode has no audio); the whistle build's pair passed.
+
+### Unverified (user-led)
+
+- By ear: the panning (mild by rodio's design: a sound fully to one side
+  is full in that speaker and half in the other; check it is not
+  reversed, e.g. the windmill on your right when it stands on your right), the
+  falloff distances, whether the frogs, windmill and hum sit right, thunder
+  from the bolt's side, the clatter behind you.
+- Teammates' footsteps need a shared night (two applications on one
+  machine or real friends): hear a friend walk up behind you; nothing
+  while they are downed or in his sack.
+
+## Scare and co-op roadmap v2 (proposal, 2026-09-29)
+
+Nothing here is built; it is for the user to choose from. Comparisons come
+from knowledge of the games plus a few quick searches this session
+(Game Developer on jump-scare timing and Alien: Isolation's fake-outs; PC
+Gamer, GamesRadar and Game Rant on R.E.P.O. and Lethal Company).
+
+### Already in the game (so not proposed again)
+
+The inverted whistle (four takes, no steady rhythm), omens (lamps die,
+silence, bones, drag marks, his hat, phantoms, the stolen torch), phantom
+whistles at high fear, the caught lunge and its stinger, the lightning
+reveal, the hunt sting, the dread drone and heartbeat, the dying torch and
+the beam that draws him, escalation per bundle, three variants with tells,
+the sack, Tureco, skill checks, the padlock, power routing, naming him,
+difficulty, distinctions, the journal and tally, now placed sound.
+
+### What the references teach
+
+| Source | Lesson | For El Silbón |
+|---|---|---|
+| Alien: Isolation | Fear lives in the minutes before an encounter; directional sound is information and threat at once; fake-outs are a breather after tension | A scare *budget* with build-up and release; placed sound as bait |
+| Amnesia, P.T. | Imagination beats the model; show him late and briefly; safe spaces must fail sometimes | The house stops being safe; fewer, better glimpses |
+| Outlast (Trials) | Active hiding (hold your breath, peek) keeps the player doing something while terrified | Hold breath in the grass |
+| Phasmophobia | Dead players stay in the game; investigation arguments | The dead become ánimas who haunt the living |
+| R.E.P.O. | Clumsy shared carrying of something fragile is the funniest objective in horror | A two-person carry that rattles |
+| Lethal Company | Leaving someone behind; the voice of the dead going quiet; proximity voice | The truck can leave without you; voice is postponed here |
+| Among Us, Dread Hunger | A secret traitor multiplies replays | An optional accomplice mode |
+
+### A. Scarier, and better jump scares
+
+Cost: S small, M medium, L large. Layer and any constraint in brackets.
+
+1. **A scare budget** (M; `director`, pure): build-up (insects and frogs
+   fall silent, rain eases, heartbeat) → peak (a real scare) → release,
+   and sometimes the peak is a *fake-out* (a cow lows next to you, a door
+   bangs in the wind, Tureco knocks a bucket) placed near the listener.
+   At most one real scare every 4–6 minutes, so each lands.
+2. **Better lunges** (S–M; presentation): 0.3–0.5 s of total silence
+   before the hit (every loop cut), a camera kick, a field-of-view punch
+   and a vignette flash; three lunge poses instead of one; sometimes the
+   lunge comes from the side you are not facing (a placed rush of wind).
+3. **Footsteps that are nobody's** (S; `perception`/omen, placed): at high
+   fear, steps in the grass behind you, placed like a teammate's. Solo it
+   is plainly wrong; in co-op you cannot tell. Never at his true position.
+4. **False marks** (S; omen, co-op): at high fear a teammate's mark tick
+   sounds from somewhere nobody marked ("I didn't ping that").
+5. **The house is not safe** (S–M; omen, placed): the ranch lamp dies
+   while you are inside; a door bangs; knocks on the wall you are not
+   facing; the radio turns itself on to static.
+6. **Hold your breath** (M; `body`/`sim`, session-validated): crouched in
+   grass or behind a wall, hold a key: noise falls, stamina drains,
+   heartbeat pounds; letting go gasps (a noise he hears). Hiding becomes
+   something you do.
+7. **Don't look at him** (S; `sim`): watching him while he warns fills
+   your fear faster (the legend's advice), so players look away and
+   imagine instead.
+8. *Decision* **Nature goes quiet near him** (S; `perception`): insects
+   and frogs hush when he is truly within ~20 m. A truthful cue like
+   Tureco's, competing with the lying whistle; the user decides.
+9. *Decision* **A whistle with a lying direction** (S; `perception`):
+   the whistle is pinned unplaced by `AGENTS.md`. Option: pan it from a
+   direction chosen to mislead (behind you, or mirrored), never the true
+   one. Changes a core rule, so only if the user wants it.
+
+### B. Funny and repeatable with friends
+
+1. **Night awards** (S; session stats → outcome screen): per player,
+   "Screamed the most" (sustos), "Dropped the bones 4 times", "Left
+   behind", "Tureco's favourite", "Scared by a cow". The screenshot moment
+   at the end of every night.
+2. **Shouts and gestures** (S–M; new action, avatars): point, wave,
+   "shh", "follow me", and a shout of "¡corran!" that warns everyone and
+   is also a noise he hears. Honest warnings and funny betrayals without
+   voice chat.
+3. **The truck leaves** (S; session): the driver can go when they choose;
+   those left behind watch the lights leave and are caught at dawn.
+   Scored, remembered, argued over.
+4. **Ánimas** (M; session actions for the dead, presentation): the dead
+   and the hauled become restless souls who, once a minute, can flicker a
+   lamp, knock a bottle, rattle the key box or send one friend a phantom
+   whistle. They cannot see him or mark him (no truth leak). Death stops
+   being time out.
+5. **A two-person carry** (M–L; `sim` + session): the father's skull in
+   a wooden box: two carriers within 2 m, slow, and every bump or drop
+   rattles loudly. R.E.P.O.'s piano on the llano.
+6. **Mud and water** (M; `sim`, presentation): sprinting downhill in the
+   rain can slip you; falling in the caño splashes loudly and a friend can
+   pull you out.
+7. **Struggle in the sack** (S; session, presentation): the hauled player
+   mashes to make the sack rattle louder so friends can find them.
+8. **Nights with a twist** (S–M; `tuning` presets like `Night`): full
+   moon (no rain, seen farther), flood (more water), Tureco ran off, old
+   batteries, wake night (more omens); a daily night number friends share,
+   with best times.
+9. **Things to earn** (M; `profile`): hats, ruanas and torch colours
+   unlocked by the tally and awards.
+10. *Decision* **An accomplice** (L; hidden role, protocol): one player
+    secretly serves him (pockets a bundle, sends phantoms). Big replay
+    hook, and it touches the protocol's hidden information.
+11. *Decision* **Proximity voice**: the heart of Lethal Company's and
+    R.E.P.O.'s comedy, and postponed in `AGENTS.md`. B2 and B4 are the
+    non-voice substitutes until the user brings voice back.
+
+### Suggested order
+
+1. Quick wins: A2 better lunges, A3 phantom footsteps, A4 false marks,
+   B1 night awards, B3 the truck leaves.
+2. Then: A1 the scare budget, A5 the house, B2 shouts, B4 ánimas.
+3. Then: A6 hold your breath, B5 the two-person carry, B8 twists, B9
+   unlocks.
+4. Decisions first: A8, A9, B10, B11.
+
+## Current handoff — 2026-09-29 (the whistle)
+
+Uncommitted on top of `8fa6fd7` (title screen and menus). The user found
+the loud and faint whistles hard to tell apart, wanted to test the whistle
+alone without building the game or hunting for him, and found its steady
+rhythm unscary.
+
+### What changed
+
+- **Distances that read** (`tools/gen_audio.py`): the three distances now
+  move every cue the same way. Measured before, the middling file was
+  duller than the faint one (so timbre contradicted level). Now: *loud* =
+  an intake of breath, then dry, breathy, full harmonics, slightly
+  overdriven, no room; *middling* = no breath, harmonics mostly gone, one
+  slap echo, half room; *faint* = a bare, nearly pure thread arriving late,
+  gusting with the wind, two treeline echoes, almost all room. The files
+  are loudness-matched, so `gain_loud/mid/faint` (now 1.0 / 0.3 / 0.1,
+  20 dB loud-to-faint; were 0.8 / 0.4 / 0.16) are the only level knob.
+  Also fixed: every note boundary clicked (the envelope jumped 0.62 → 0);
+  the old whistle had it too.
+- **Four takes** of the phrase, each at all three distances
+  (`whistle_{loud,mid,faint}_{0..3}.wav`, replacing the three old files):
+  the phrase as told; lower and slower, sinking; broken off after a
+  silence; hurried, stumbling into a slide. `perception` picks one per
+  phrase, never the same twice running; the take travels in the network
+  cue (`take`, serde default) and says nothing about where he is.
+- **No steady rhythm**: stalking gaps are usually 5–11 s, but 15 % of the
+  time he answers himself in 1.8–3.4 s and 20 % of the time the llano goes
+  quiet for 15–26 s; warning and hunt intervals vary ±35 %; playback speed
+  (and so pitch) spreads 0.92–1.06. All in `tuning.rs`, as are the
+  variant thresholds (`cue_loud_above`, `cue_mid_above`).
+- **Whistle lab** (`tools/whistle_lab.py`, Python stdlib, no build):
+  `ladder`, `ab`, `approach`, `night`; mixes the game's files over its rain
+  and insect loops with the game's gains and duck, all read from
+  `tuning.rs`; `--regen` rebuilds the whistle files first (~3 s).
+
+### Verified
+
+- Gate green: fmt, clippy `-D warnings`, 56 unit (new: the stalking
+  whistle keeps no steady rhythm, uses every take and never repeats one,
+  spreads its speed, and its variant still depends on distance alone) +
+  7 district + 38 session tests.
+- Sweep (`the_routes_hold`): solo 150/150, shared 149/150 (was 146/150;
+  the cadence feeds fear through the faint and middling phrases).
+- Audio: every non-whistle file byte-identical after regeneration;
+  spectrograms show the loud/middling/faint ordering and no note clicks.
+  In the lab's mix at the default rain, the faint phrase sits about 6 dB
+  over the ducked bed and the loud one about 17 dB over the bed.
+- All four lab modes render (`--out`); playback itself was not listened to.
+- Headless two-process UDP `--net-smoke` (the cue gained `take`): host and
+  client `NET SMOKE PASS`. The host needed about 650 s of wall time; the
+  previous build finished inside a 600 s cap, so the new cadence can
+  lengthen the scripted shared night a little (more warnings and frights
+  along the way); every step completed.
+
+### Unverified (user-led)
+
+- Whether loud, middling and faint are now unmistakable by ear, and
+  whether faint is too quiet on your speakers or headphones (try
+  `python3 tools/whistle_lab.py ab`, then `approach`; adjust
+  `gain_faint` in `tuning.rs` and rerun; no build needed).
+- Whether the new cadence and takes feel less predictable and scarier in
+  play; the rendered smoke was not rerun.
+
 ## Current handoff — 2026-09-29 (title screen, menus, profile)
 
 Main is at `5b8b971` (the overnight work, merged as PR #1). This section

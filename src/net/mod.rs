@@ -550,6 +550,7 @@ fn update(
                 variant,
                 speed,
                 phantom,
+                take,
             } if *r == run && *serial > *last_serial => {
                 *last_serial = *serial;
                 let variant = match *variant {
@@ -564,6 +565,7 @@ fn update(
                     speed: *speed,
                     seeming_closeness: 0.0,
                     phantom: *phantom,
+                    take: *take,
                 }));
             }
             ServerMessage::Events {

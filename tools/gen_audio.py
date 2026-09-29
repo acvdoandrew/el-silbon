@@ -5,10 +5,14 @@ Pure Python standard library (no numpy). Re-running produces byte-identical
 files for the same SEED. Output: 16-bit PCM, mono, 44.1 kHz WAV files in
 assets/audio/. The game plays all of them non-spatially (no panning, no
 distance attenuation); perceived distance of the whistle is baked into the
-three timbre variants below and chosen by the game's perception layer.
+three distances below (each in several takes) and chosen by the game's
+perception layer.
 
-Usage:  python3 tools/gen_audio.py            (writes into ../assets/audio)
+Usage:  python3 tools/gen_audio.py                  (writes into ../assets/audio)
         python3 tools/gen_audio.py --out DIR
+        python3 tools/gen_audio.py --only-whistles  (just the whistle takes, ~3 s)
+
+To hear the whistles as the game mixes them: python3 tools/whistle_lab.py
 """
 
 import argparse
@@ -219,40 +223,204 @@ def echo(x, delay, gain, cutoff):
     return mix(out, one_pole_lowpass(x, cutoff), int(delay * SR), gain)
 
 
-def make_whistles(rng):
-    # The three must be unmistakable apart over rain: presence and breath up
-    # close; air loss (no highs), wet room and a late echo far off. Gains in
-    # the game widen the gap further (tuning.gain_*).
-    out = {}
+def skip_old_whistles(rng):
+    """The first stream once rendered the three whistles here. Draw the same
+    numbers they drew, so every later file of that stream stays identical."""
+    n = int((sum(d for _, d in PHRASE) + 0.35) * SR)
+    for _ in range(3):
+        rng.uniform(0.0, TAU)
+        noise(rng, n)
 
-    # LOUD: seems right beside you (dry, breathy, full presence). The game
-    # plays this when the Silbón is truly FAR away.
-    tone, breath = whistle_dry(rng, breath_amount=0.32, wobble=0.0)
-    body = [t + b for t, b in zip(tone, breath)]
-    room = reverb(body, size=0.45, damp=0.55, feedback=0.5)
-    loud = [d * 0.96 + r * 0.06 for d, r in zip(body, room)]
-    loud += silence(0.25)
-    out["whistle_loud.wav"] = normalize(fade(loud, 0.005, 0.2), 0.85)
 
-    # MIDDLING: somewhere across the grass — softened, half room, one slap.
-    tone, breath = whistle_dry(rng, breath_amount=0.08, wobble=0.002)
-    body = [t + b for t, b in zip(tone, breath)] + silence(1.2)
-    body = one_pole_lowpass(body, 4000.0)
-    body = echo(body, 0.19, 0.22, 3000.0)
+# Four performances of the phrase. Each is rendered at all three perceived
+# distances, so the distance is always the timbre and the take is only the
+# way he whistles it this time: steps are semitones above the base note, a
+# None is a breath of silence.
+WHISTLE_BASE = 830.0
+TAKES = [
+    # As the tale tells it: seven steps up, the last held and rising.
+    dict(shift=0, tempo=1.0, steps=[0, 2, 4, 5, 7, 9, 10], end="rise"),
+    # Lower and slower; the last note held, then sinking.
+    dict(shift=-2, tempo=1.18, steps=[0, 2, 4, 5, 7, 9, 10], end="fall"),
+    # Broken off: five steps, a silence, two higher notes, cut short.
+    dict(shift=1, tempo=0.95, steps=[0, 2, 4, 5, 7, None, 11, 12], end="cut"),
+    # Hurried, one step stumbled on, ending in a long slide up.
+    dict(shift=-1, tempo=0.84, steps=[0, 2, 4, 4, 5, 7, 9, 10], end="glide"),
+]
+WHISTLE_TAKES = len(TAKES)
+
+
+def whistle_take(rng, take):
+    """One performance, dry; returns (tone, breath envelope)."""
+    spec = TAKES[take]
+    tempo = spec["tempo"]
+    segments = []  # (start, end, freq or None)
+    t = 0.0
+    steps = spec["steps"]
+    for k, step in enumerate(steps):
+        last = k == len(steps) - 1
+        if step is None:
+            d = 0.42 * tempo
+        elif last:
+            d = (0.2 if spec["end"] == "cut" else 0.95) * tempo
+        else:
+            d = 0.24 * tempo * rng.uniform(0.86, 1.14)
+        f = None if step is None else WHISTLE_BASE * 2.0 ** ((step + spec["shift"]) / 12.0)
+        segments.append((t, t + d, f))
+        t += d
+    phrase_end = t
+    tail = 0.0 if spec["end"] == "cut" else 0.35
+    n = int((phrase_end + tail + 0.05) * SR)
+    tone = [0.0] * n
+    env = [0.0] * n
+    phase = 0.0
+    wob_phase = rng.uniform(0.0, TAU)
+    seg = 0
+    last_f = segments[-1][2]
+    prev_f = segments[0][2]
+    for i in range(n):
+        t = i / SR
+        while seg < len(segments) - 1 and t >= segments[seg][1]:
+            if segments[seg][2] is not None:
+                prev_f = segments[seg][2]
+            seg += 1
+        a, b, fk = segments[seg]
+        if t < phrase_end:
+            if fk is None:
+                f, amp = prev_f, 0.0
+            else:
+                f = fk
+                if seg > 0 and segments[seg - 1][2] is not None and t - a < GLIDE:
+                    u = (t - a) / GLIDE
+                    u = u * u * (3.0 - 2.0 * u)
+                    f = prev_f + (fk - prev_f) * u
+                local = (t - a) / (b - a)
+                # Tongued steps dip to 0.62 between notes and never to zero
+                # (a jump to silence is a click); a note next to a rest
+                # starts from and ends in silence.
+                after_note = seg > 0 and segments[seg - 1][2] is not None
+                floor_in = 0.62 if after_note else 0.0
+                attack = floor_in + (1.0 - floor_in) * min(1.0, (t - a) / 0.022)
+                final = seg == len(segments) - 1
+                if final:
+                    style = spec["end"]
+                    if style == "rise":
+                        f = fk * (1.0 + 0.085 * local * local)
+                    elif style == "fall":
+                        f = fk * (1.0 + 0.04 * local - 0.16 * max(0.0, local - 0.35) ** 1.5)
+                    elif style == "glide":
+                        f = fk * (1.0 + 0.3 * local * local)
+                    release = min(1.0, (b - t) / 0.012) if style == "cut" else 1.0
+                    amp = attack * release
+                else:
+                    r = min(1.0, (b - t) / 0.03)
+                    before_note = segments[seg + 1][2] is not None
+                    amp = attack * ((0.62 + 0.38 * r) if before_note else r)
+        else:
+            # Falling breathy tail (none after a phrase cut short).
+            u = min(1.0, (t - phrase_end) / max(tail, 1e-3))
+            end_f = {"rise": 1.085, "fall": 0.93, "glide": 1.3}.get(spec["end"], 1.0)
+            f = last_f * end_f * (1.0 - 0.22 * u)
+            amp = max(0.0, 1.0 - u) ** 1.6 if tail > 0.0 else 0.0
+        vib_depth = 0.004 + (0.009 if seg == len(segments) - 1 else 0.0)
+        vib = 1.0 + vib_depth * math.sin(TAU * 5.3 * t)
+        vib *= 1.0 + 0.003 * math.sin(TAU * 0.9 * t + wob_phase)
+        phase += TAU * f * vib / SR
+        tone[i] = (math.sin(phase) + 0.07 * math.sin(2.0 * phase + 0.4) + 0.015 * math.sin(3.0 * phase)) * amp
+        env[i] = amp
+    return tone, env
+
+
+def active_rms(x, window=1.0):
+    """RMS of the loudest `window` seconds: how loud the phrase itself is,
+    whatever its tail of echoes and room."""
+    w = int(window * SR)
+    if len(x) <= w:
+        return math.sqrt(sum(v * v for v in x) / max(1, len(x)))
+    acc = sum(v * v for v in x[:w])
+    best = acc
+    for i in range(w, len(x)):
+        acc += x[i] * x[i] - x[i - w] * x[i - w]
+        best = max(best, acc)
+    return math.sqrt(max(0.0, best) / w)
+
+
+# Every whistle file has the same phrase loudness; the game's three gains
+# (tuning.gain_loud/mid/faint) are the only level difference between them.
+WHISTLE_RMS = 0.3
+
+
+def level(x, rms=WHISTLE_RMS, ceiling=0.97):
+    r = max(1e-9, active_rms(x))
+    g = rms / r
+    peak = max(abs(v) for v in x) * g
+    if peak > ceiling:
+        g *= ceiling / peak
+    return [v * g for v in x]
+
+
+def whistle_near(rng, take):
+    """LOUD: right beside you. An intake of breath first, then the phrase
+    dry, breathy and full, a little overdriven, no room at all. Played when
+    he is truly FAR."""
+    tone, env = whistle_take(rng, take)
+    breath = one_pole_lowpass(one_pole_highpass(noise(rng, len(tone)), 1500.0), 7500.0)
+    body = [t * 1.25 + b * e * 0.42 for t, b, e in zip(tone, breath, env)]
+    body = [math.tanh(1.5 * v) / math.tanh(1.5) for v in body]
+    # The intake before he whistles: only heard this close.
+    pre = int(0.42 * SR)
+    inhale = biquad_bandpass(noise(rng, pre), 1300.0, 0.9)
+    for i in range(pre):
+        u = i / pre
+        inhale[i] *= math.sin(math.pi * u) ** 2 * 0.5
+    out = inhale + body + silence(0.2)
+    room = reverb(out, size=0.35, damp=0.6, feedback=0.4)
+    out = [d + r * 0.04 for d, r in zip(out, room)]
+    return level(fade(out, 0.005, 0.15))
+
+
+def whistle_across(rng, take):
+    """MIDDLING: somewhere across the grass. No breath, the brightness gone,
+    one slap off the nearest wall, half room."""
+    tone, _ = whistle_take(rng, take)
+    body = tone + silence(1.4)
+    body = one_pole_lowpass(one_pole_lowpass(body, 2600.0), 2600.0)
+    body = echo(body, 0.17, 0.32, 2200.0)
     room = reverb(body, size=1.0, damp=0.45, feedback=0.8)
-    mid = [d * 0.5 + r * 0.5 for d, r in zip(body, room)]
-    out["whistle_mid.wav"] = normalize(fade(mid, 0.01, 0.4), 0.7)
+    out = [d * 0.55 + r * 0.45 for d, r in zip(body, room)]
+    return level(fade(out, 0.01, 0.4))
 
-    # FAINT: thin, far, far away — the highs lost to the air, almost all
-    # room, answered late by the treeline. Played when he is truly NEAR.
-    tone, breath = whistle_dry(rng, breath_amount=0.0, wobble=0.006)
-    body = tone + silence(2.2)
-    body = one_pole_highpass(body, 900.0)
-    body = one_pole_lowpass(one_pole_lowpass(body, 2300.0), 2500.0)
-    body = echo(echo(body, 0.43, 0.42, 1800.0), 0.86, 0.2, 1500.0)
-    room = reverb(body, size=1.5, damp=0.6, feedback=0.88)
-    faint = [d * 0.14 + r * 0.86 for d, r in zip(body, room)]
-    out["whistle_faint.wav"] = normalize(fade(faint, 0.02, 0.9), 0.55)
+
+def whistle_far(rng, take):
+    """FAINT: far, far away. A bare thread of tone that the wind carries and
+    drops, late to arrive, answered twice by the treeline and drowned in
+    the open night. Played when he is truly NEAR."""
+    tone, _ = whistle_take(rng, take)
+    body = silence(0.09) + tone + silence(2.6)
+    body = one_pole_highpass(one_pole_highpass(body, 700.0), 700.0)
+    for _ in range(4):
+        body = one_pole_lowpass(body, 1250.0)
+    # Gusts: the level wanders as the wind carries it and lets it go.
+    gust = one_pole_lowpass(one_pole_lowpass(noise(rng, len(body)), 0.8), 0.8)
+    peak = max(1e-9, max(abs(g) for g in gust))
+    body = [v * (0.55 + 0.45 * max(-1.0, min(1.0, g / peak))) for v, g in zip(body, gust)]
+    body = echo(echo(body, 0.46, 0.5, 1200.0), 0.95, 0.3, 1000.0)
+    room = reverb(body, size=1.6, damp=0.62, feedback=0.9)
+    out = [d * 0.12 + r * 0.88 for d, r in zip(body, room)]
+    return level(fade(out, 0.03, 1.0))
+
+
+WHISTLE_DISTANCES = (("loud", whistle_near), ("mid", whistle_across), ("faint", whistle_far))
+
+
+def make_whistles():
+    """whistle_{loud,mid,faint}_{take}.wav; each take on its own seed, the
+    same performance at all three distances."""
+    out = {}
+    for take in range(WHISTLE_TAKES):
+        for d, (name, render) in enumerate(WHISTLE_DISTANCES):
+            # The same take seed at every distance: the same performance.
+            out[f"whistle_{name}_{take}.wav"] = render(random.Random(SEED + 300 + take), take)
     return out
 
 
@@ -1353,6 +1521,92 @@ def make_theme(rng):
     return normalize(loop_crossfade(out, loop, xfade), 0.45)
 
 
+def make_frogs(rng):
+    """A 12 s seamless loop of frogs at the water's edge: a few voices, each
+    croaking in its own slow rhythm, close enough to place."""
+    loop, xfade = 12.0, 1.5
+    n = int((loop + xfade) * SR)
+    out = [0.0] * n
+    voices = [(420.0, 1.3), (610.0, 0.9), (330.0, 1.7), (780.0, 0.7)]
+    for base, every in voices:
+        t = rng.uniform(0.0, every)
+        while t < loop + xfade - 0.5:
+            f = base * rng.uniform(0.94, 1.06)
+            # A croak: a few fast pulses of a buzzy, nasal tone.
+            pulses = rng.randint(2, 5)
+            for k in range(pulses):
+                start = int((t + k * 0.055) * SR)
+                length = int(0.04 * SR)
+                for i in range(length):
+                    j = start + i
+                    if j >= n:
+                        break
+                    u = i / length
+                    env = math.sin(math.pi * u) ** 1.5
+                    ph = TAU * f * i / SR
+                    v = math.sin(ph) + 0.5 * math.sin(2.0 * ph) + 0.3 * math.sin(3.0 * ph)
+                    out[j] += v * env * 0.25
+            t += every * rng.uniform(0.6, 1.6)
+    wet = reverb(out, size=0.8, damp=0.5, feedback=0.7)
+    out = [d * 0.8 + w * 0.2 for d, w in zip(out, wet)]
+    return normalize(loop_crossfade(out, loop, xfade), 0.6)
+
+
+def make_windmill(rng):
+    """A 9 s seamless loop: the windmill's vane creaking round on a dry
+    bearing, a tail rattle, the wind in the blades."""
+    loop, xfade = 9.0, 1.0
+    n = int((loop + xfade) * SR)
+    out = [0.0] * n
+    wind = one_pole_lowpass(noise(rng, n), 900.0)
+    for i in range(n):
+        t = i / SR
+        out[i] = wind[i] * 0.5 * (0.6 + 0.4 * math.sin(TAU * t / 4.5))
+    # Creaks: a squeal of rubbing metal, once or twice a turn.
+    t = 0.4
+    while t < loop + xfade - 1.0:
+        f0 = rng.uniform(380.0, 520.0)
+        length = rng.uniform(0.35, 0.7)
+        start = int(t * SR)
+        ph = 0.0
+        for i in range(int(length * SR)):
+            j = start + i
+            if j >= n:
+                break
+            u = i / (length * SR)
+            f = f0 * (1.0 + 0.25 * math.sin(math.pi * u)) + 30.0 * math.sin(TAU * 23.0 * i / SR)
+            ph += TAU * f / SR
+            env = math.sin(math.pi * u) ** 0.7
+            v = math.sin(ph) + 0.6 * math.sin(2.02 * ph) + 0.35 * math.sin(3.05 * ph)
+            out[j] += v * env * 0.22
+        t += rng.uniform(2.0, 3.4)
+    # The tail rattling in its bracket.
+    for k in range(int((loop + xfade) / 0.9)):
+        start = int((k * 0.9 + rng.uniform(0.0, 0.3)) * SR)
+        mix(out, clack(rng, 0.05), start, 0.25)
+    wet = reverb(out, size=1.0, damp=0.45, feedback=0.75)
+    out = [d * 0.75 + w * 0.25 for d, w in zip(out, wet)]
+    return normalize(loop_crossfade(out, loop, xfade), 0.6)
+
+
+def make_hum(rng):
+    """A 4 s seamless loop: the dynamo turning and the line humming once the
+    power is back (mains-like 60 Hz and its harmonics, a whine and a tick)."""
+    loop, xfade = 4.0, 0.5
+    n = int((loop + xfade) * SR)
+    air = one_pole_lowpass(noise(rng, n), 3000.0)
+    out = [0.0] * n
+    for i in range(n):
+        t = i / SR
+        s = 0.0
+        for k, g in ((1, 0.6), (2, 0.35), (3, 0.25), (5, 0.12)):
+            s += math.sin(TAU * 60.0 * k * t) * g
+        whine = math.sin(TAU * 1240.0 * t + 2.0 * math.sin(TAU * 0.5 * t)) * 0.03
+        wobble = 0.85 + 0.15 * math.sin(TAU * 2.0 * t)
+        out[i] = s * wobble * 0.5 + whine + air[i] * 0.04
+    return normalize(loop_crossfade(out, loop, xfade), 0.5)
+
+
 def make_horror():
     """Sounds added after the first two streams, each on its own seed so
     adding or changing one never changes another."""
@@ -1378,6 +1632,9 @@ def make_horror():
         "dog_growl.wav": make_growl(random.Random(SEED + 119)),
         "dog_bark.wav": make_bark(random.Random(SEED + 120)),
         "title_theme.wav": make_theme(random.Random(SEED + 121)),
+        "frogs_loop.wav": make_frogs(random.Random(SEED + 122)),
+        "windmill_creak.wav": make_windmill(random.Random(SEED + 123)),
+        "dynamo_hum.wav": make_hum(random.Random(SEED + 124)),
     }
 
 
@@ -1385,12 +1642,17 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", default=os.path.join(here, "..", "assets", "audio"))
+    parser.add_argument("--only-whistles", action="store_true", help="regenerate only the whistle takes")
     args = parser.parse_args()
     os.makedirs(args.out, exist_ok=True)
+    if args.only_whistles:
+        write_all(args.out, make_whistles())
+        return
 
     rng = random.Random(SEED)
     files = {}
-    files.update(make_whistles(rng))
+    skip_old_whistles(rng)
+    files.update(make_whistles())
     files["ambience_llano.wav"] = make_ambience(rng)
     files["bones_rattle.wav"] = make_bones(rng)
     files["restitution.wav"] = make_restitution(rng)
@@ -1400,8 +1662,12 @@ def main():
     files.update(make_mechanics(random.Random(SEED + 1)))
     files.update(make_horror())
 
+    write_all(args.out, files)
+
+
+def write_all(out, files):
     for name, samples in files.items():
-        path = os.path.join(args.out, name)
+        path = os.path.join(out, name)
         write_wav(path, samples)
         print(f"wrote {os.path.relpath(path)}  {len(samples) / SR:5.2f}s")
 
