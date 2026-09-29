@@ -1,6 +1,41 @@
 # Progress
 
-## Current handoff — 2026-09-29 (the trailer, redone)
+## Current handoff — 2026-09-29 (the whistle from a recording)
+
+Uncommitted. The user asked for the whistle of a YouTube clip ("El Silbon
+Silbido", oNGPZNXmZ1c) in place of ours, after being told its licence is
+unknown and it is not original work; they chose to use it. It is kept as
+`assets/audio/source/el_silbon_silbido.wav` (44.1 kHz mono, hum and hiss
+removed) and recorded in `assets/SOURCES.md` as third-party, **not cleared
+for release**. `tools/gen_audio.py` builds the twelve whistle files from it
+(two performances, and each played at 0.93 and 1.05 speed for four takes)
+through the same close / across / far processing, with the filters raised
+for its higher register (1.2 to 2.35 kHz); without the file it falls back
+to the synthesized whistle below. The catch's whistle in your ear
+(`whistle_ear.wav`) is still synthesized. Unverified: the user's ear
+(`python3 tools/whistle_lab.py`; renders in `~/Music/el_silbon_whistles/`).
+
+## Earlier handoff — 2026-09-29 (a spookier whistle)
+
+Uncommitted. The user found the game's whistle funny and the trailer's
+opening one (the game's own faint take) spooky. The close and middling
+takes were a bright, brisk, clean major run (with overdrive on the close
+one): a tune. `tools/gen_audio.py` now performs the same seven rising
+steps in a dark mode, slow and legato (each note slid and scooped into),
+a few cents off true, with a slow, wide waver; the tone is a pure
+fundamental plus noise through a narrow resonance that follows the pitch
+(`pitched_air`), so it breathes like a real whistle; the close take lost
+its overdrive and gained a small dark room. The three distances and the
+inversion are unchanged; only the 12 whistle files changed. Phrases run
+3.6–5.0 s at the close distance (3.4 s before).
+
+Four ElevenLabs sound-effect whistles (flow `t3VPUz9ndVLhNvptnZKb`) were
+made for comparison only; none plays the tale's seven rising steps, and
+game audio stays generated in code unless the user chooses otherwise.
+Unverified: the user has not listened yet (`python3 tools/whistle_lab.py`,
+`ab`, `approach`, `night`).
+
+## Earlier handoff — 2026-09-29 (the trailer, redone)
 
 The teaser was re-rendered with the v2 models (`--trailer`, 2094 frames)
 and re-cut with the same narration, score and sound: 89.4 s, -13.5 LUFS,

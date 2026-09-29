@@ -235,23 +235,32 @@ def skip_old_whistles(rng):
 # Four performances of the phrase. Each is rendered at all three perceived
 # distances, so the distance is always the timbre and the take is only the
 # way he whistles it this time: steps are semitones above the base note, a
-# None is a breath of silence.
-WHISTLE_BASE = 830.0
+# None is a breath of silence. Seven steps up, as the tale has it, but in a
+# dark mode, slow and sliding, never quite in tune: a man alone in the night,
+# not a tune (the brisk major run of the first build sounded jolly).
+WHISTLE_BASE = 700.0
 TAKES = [
     # As the tale tells it: seven steps up, the last held and rising.
-    dict(shift=0, tempo=1.0, steps=[0, 2, 4, 5, 7, 9, 10], end="rise"),
+    dict(shift=0, tempo=1.0, steps=[0, 2, 3, 5, 7, 8, 10], end="rise"),
     # Lower and slower; the last note held, then sinking.
-    dict(shift=-2, tempo=1.18, steps=[0, 2, 4, 5, 7, 9, 10], end="fall"),
+    dict(shift=-2, tempo=1.2, steps=[0, 2, 3, 5, 7, 8, 10], end="fall"),
     # Broken off: five steps, a silence, two higher notes, cut short.
-    dict(shift=1, tempo=0.95, steps=[0, 2, 4, 5, 7, None, 11, 12], end="cut"),
+    dict(shift=1, tempo=0.95, steps=[0, 1, 3, 5, 7, None, 10, 11], end="cut"),
     # Hurried, one step stumbled on, ending in a long slide up.
-    dict(shift=-1, tempo=0.84, steps=[0, 2, 4, 4, 5, 7, 9, 10], end="glide"),
+    dict(shift=-1, tempo=0.85, steps=[0, 1, 3, 3, 5, 7, 8, 10], end="glide"),
 ]
 WHISTLE_TAKES = len(TAKES)
+STEP = 0.3  # seconds a step, before the take's tempo
+SLIDE = 0.11  # seconds sliding from one note into the next
 
 
 def whistle_take(rng, take):
-    """One performance, dry; returns (tone, breath envelope)."""
+    """One performance, dry; returns (tone, breath envelope, pitch track).
+
+    Legato: each note is reached by a slow slide and scooped into from a
+    little below; every note sits a few cents off true; a slow, wide waver
+    and a breathy onset. The tone is a whistle's: a pure fundamental with a
+    band of air around it (see `pitched_air`)."""
     spec = TAKES[take]
     tempo = spec["tempo"]
     segments = []  # (start, end, freq or None)
@@ -260,19 +269,24 @@ def whistle_take(rng, take):
     for k, step in enumerate(steps):
         last = k == len(steps) - 1
         if step is None:
-            d = 0.42 * tempo
+            d = 0.5 * tempo
         elif last:
-            d = (0.2 if spec["end"] == "cut" else 0.95) * tempo
+            d = (0.28 if spec["end"] == "cut" else 1.05) * tempo
         else:
-            d = 0.24 * tempo * rng.uniform(0.86, 1.14)
-        f = None if step is None else WHISTLE_BASE * 2.0 ** ((step + spec["shift"]) / 12.0)
+            d = STEP * tempo * rng.uniform(0.85, 1.2)
+        if step is None:
+            f = None
+        else:
+            cents = rng.uniform(-28.0, 18.0)  # never quite in tune, mostly flat
+            f = WHISTLE_BASE * 2.0 ** ((step + spec["shift"] + cents / 100.0) / 12.0)
         segments.append((t, t + d, f))
         t += d
     phrase_end = t
-    tail = 0.0 if spec["end"] == "cut" else 0.35
+    tail = 0.0 if spec["end"] == "cut" else 0.45
     n = int((phrase_end + tail + 0.05) * SR)
     tone = [0.0] * n
     env = [0.0] * n
+    freqs = [0.0] * n
     phase = 0.0
     wob_phase = rng.uniform(0.0, TAU)
     seg = 0
@@ -289,46 +303,119 @@ def whistle_take(rng, take):
             if fk is None:
                 f, amp = prev_f, 0.0
             else:
-                f = fk
-                if seg > 0 and segments[seg - 1][2] is not None and t - a < GLIDE:
-                    u = (t - a) / GLIDE
+                local = (t - a) / (b - a)
+                after_note = seg > 0 and segments[seg - 1][2] is not None
+                if after_note and t - a < SLIDE:
+                    u = (t - a) / SLIDE
                     u = u * u * (3.0 - 2.0 * u)
                     f = prev_f + (fk - prev_f) * u
-                local = (t - a) / (b - a)
-                # Tongued steps dip to 0.62 between notes and never to zero
-                # (a jump to silence is a click); a note next to a rest
-                # starts from and ends in silence.
-                after_note = seg > 0 and segments[seg - 1][2] is not None
-                floor_in = 0.62 if after_note else 0.0
-                attack = floor_in + (1.0 - floor_in) * min(1.0, (t - a) / 0.022)
+                else:
+                    # scooped in from a little below, settling late
+                    scoop = max(0.0, 1.0 - (t - a) / (SLIDE * 1.6))
+                    f = fk * (1.0 - 0.03 * scoop * scoop)
+                # breathy swells: legato between notes, a soft start from a rest
+                floor_in = 0.78 if after_note else 0.0
+                attack = floor_in + (1.0 - floor_in) * min(1.0, (t - a) / 0.07)
+                swell = 0.85 + 0.15 * math.sin(math.pi * min(1.0, local))
                 final = seg == len(segments) - 1
                 if final:
                     style = spec["end"]
                     if style == "rise":
-                        f = fk * (1.0 + 0.085 * local * local)
+                        f *= 1.0 + 0.06 * local * local
                     elif style == "fall":
-                        f = fk * (1.0 + 0.04 * local - 0.16 * max(0.0, local - 0.35) ** 1.5)
+                        f *= 1.0 + 0.02 * local - 0.14 * max(0.0, local - 0.3) ** 1.5
                     elif style == "glide":
-                        f = fk * (1.0 + 0.3 * local * local)
-                    release = min(1.0, (b - t) / 0.012) if style == "cut" else 1.0
-                    amp = attack * release
+                        f *= 1.0 + 0.24 * local * local
+                    release = min(1.0, (b - t) / 0.02) if style == "cut" else 1.0
+                    amp = attack * swell * release
                 else:
-                    r = min(1.0, (b - t) / 0.03)
+                    r = min(1.0, (b - t) / 0.05)
                     before_note = segments[seg + 1][2] is not None
-                    amp = attack * ((0.62 + 0.38 * r) if before_note else r)
+                    amp = attack * swell * ((0.8 + 0.2 * r) if before_note else r)
         else:
-            # Falling breathy tail (none after a phrase cut short).
+            # A long, falling breath of a tail (none after a phrase cut short).
             u = min(1.0, (t - phrase_end) / max(tail, 1e-3))
-            end_f = {"rise": 1.085, "fall": 0.93, "glide": 1.3}.get(spec["end"], 1.0)
-            f = last_f * end_f * (1.0 - 0.22 * u)
-            amp = max(0.0, 1.0 - u) ** 1.6 if tail > 0.0 else 0.0
-        vib_depth = 0.004 + (0.009 if seg == len(segments) - 1 else 0.0)
-        vib = 1.0 + vib_depth * math.sin(TAU * 5.3 * t)
-        vib *= 1.0 + 0.003 * math.sin(TAU * 0.9 * t + wob_phase)
-        phase += TAU * f * vib / SR
-        tone[i] = (math.sin(phase) + 0.07 * math.sin(2.0 * phase + 0.4) + 0.015 * math.sin(3.0 * phase)) * amp
+            end_f = {"rise": 1.06, "fall": 0.88, "glide": 1.24}.get(spec["end"], 1.0)
+            f = last_f * end_f * (1.0 - 0.3 * u)
+            amp = max(0.0, 1.0 - u) ** 1.4 if tail > 0.0 else 0.0
+        # a slow, wide waver, deepening on the held note, and a drift
+        held = seg == len(segments) - 1
+        vib = 1.0 + (0.006 + (0.012 if held else 0.0)) * math.sin(TAU * 4.1 * t + wob_phase)
+        vib *= 1.0 + 0.006 * math.sin(TAU * 0.45 * t + 2.0 * wob_phase)
+        f *= vib
+        freqs[i] = f
+        phase += TAU * f / SR
+        tone[i] = (math.sin(phase) + 0.02 * math.sin(2.0 * phase + 0.4)) * amp
         env[i] = amp
-    return tone, env
+    return tone, env, freqs
+
+
+def pitched_air(rng, freqs, env, bandwidth=120.0):
+    """The air of a real whistle: noise through a narrow resonance that
+    follows the pitch, so the tone breathes instead of beeping."""
+    y1 = y2 = 0.0
+    out = [0.0] * len(freqs)
+    r = 1.0 - math.pi * bandwidth / SR
+    for i, f in enumerate(freqs):
+        c = 2.0 * r * math.cos(TAU * max(f, 50.0) / SR)
+        y = (1.0 - r) * rng.uniform(-1.0, 1.0) + c * y1 - r * r * y2
+        y2, y1 = y1, y
+        out[i] = y
+    peak = max(1e-9, max(abs(v) for v in out))
+    return [v / peak * e for v, e in zip(out, env)]
+
+
+# The whistle itself is a recording chosen by the user: "El Silbon
+# Silbido" (YouTube oNGPZNXmZ1c, uploaded by lisandrolivier, 2017; licence
+# unknown, see assets/SOURCES.md), cleaned to 44.1 kHz mono with the video's
+# hum and hiss taken out. It holds the phrase twice: a creep of short,
+# tongued notes up from about 1.2 to 2.35 kHz and a long held note. Takes 2
+# and 3 are the same two performances played a little lower and slower, and
+# a little higher and faster. Without the file the synthesized performance
+# below stands in.
+SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "audio", "source",
+                      "el_silbon_silbido.wav")
+SOURCE_TAKES = [(0.09, 3.99, 1.0), (4.0, 7.9, 1.0), (0.09, 3.99, 0.93), (4.0, 7.9, 1.05)]
+_source = None
+
+
+def source_take(take):
+    """One recorded performance, at its playback rate (below 1: lower and
+    slower); returns the samples, or None without the recording."""
+    global _source
+    if _source is None:
+        if not os.path.exists(SOURCE):
+            return None
+        with wave.open(SOURCE, "rb") as w:
+            assert w.getframerate() == SR and w.getnchannels() == 1 and w.getsampwidth() == 2
+            raw = w.readframes(w.getnframes())
+        _source = [v / 32768.0 for v in struct.unpack("<%dh" % (len(raw) // 2), raw)]
+    start, end, rate = SOURCE_TAKES[take]
+    clip = _source[int(start * SR):int(end * SR)]
+    n = int(len(clip) / rate)
+    out = [0.0] * n
+    for i in range(n):
+        pos = i * rate
+        k = int(pos)
+        f = pos - k
+        a = clip[min(k, len(clip) - 1)]
+        b = clip[min(k + 1, len(clip) - 1)]
+        out[i] = a + (b - a) * f
+    return fade(out, 0.004, 0.08)
+
+
+def whistle_voice(rng, take, air=0.45, breath=0.12):
+    """The dry performance: the recording when it is there, otherwise the
+    synthesized tone with its band of air and a little hiss."""
+    recorded = source_take(take)
+    if recorded is not None:
+        env = one_pole_lowpass([abs(v) for v in recorded], 20.0)
+        peak = max(1e-9, max(env))
+        return recorded, [e / peak for e in env]
+    tone, env, freqs = whistle_take(rng, take)
+    band = pitched_air(rng, freqs, env)
+    hiss = one_pole_lowpass(one_pole_highpass(noise(rng, len(tone)), 1500.0), 7000.0)
+    return [tn + bd * air + h * e * breath for tn, bd, h, e in zip(tone, band, hiss, env)], env
 
 
 def active_rms(x, window=1.0):
@@ -361,50 +448,49 @@ def level(x, rms=WHISTLE_RMS, ceiling=0.97):
 
 def whistle_near(rng, take):
     """LOUD: right beside you. An intake of breath first, then the phrase
-    dry, breathy and full, a little overdriven, no room at all. Played when
-    he is truly FAR."""
-    tone, env = whistle_take(rng, take)
-    breath = one_pole_lowpass(one_pole_highpass(noise(rng, len(tone)), 1500.0), 7500.0)
-    body = [t * 1.25 + b * e * 0.42 for t, b, e in zip(tone, breath, env)]
-    body = [math.tanh(1.5 * v) / math.tanh(1.5) for v in body]
+    close and breathy — every waver and every slip of the air — in a small,
+    dark room. Played when he is truly FAR."""
+    voice, env = whistle_voice(rng, take, air=0.55, breath=0.22)
     # The intake before he whistles: only heard this close.
-    pre = int(0.42 * SR)
-    inhale = biquad_bandpass(noise(rng, pre), 1300.0, 0.9)
+    pre = int(0.55 * SR)
+    inhale = biquad_bandpass(noise(rng, pre), 1100.0, 0.8)
     for i in range(pre):
         u = i / pre
-        inhale[i] *= math.sin(math.pi * u) ** 2 * 0.5
-    out = inhale + body + silence(0.2)
-    room = reverb(out, size=0.35, damp=0.6, feedback=0.4)
-    out = [d + r * 0.04 for d, r in zip(out, room)]
-    return level(fade(out, 0.005, 0.15))
+        inhale[i] *= math.sin(math.pi * u) ** 2 * 0.45
+    out = inhale + voice + silence(0.5)
+    room = reverb(one_pole_lowpass(out, 3500.0), size=0.5, damp=0.7, feedback=0.6)
+    out = [d + r * 0.14 for d, r in zip(out, room)]
+    return level(fade(out, 0.005, 0.3))
 
 
 def whistle_across(rng, take):
-    """MIDDLING: somewhere across the grass. No breath, the brightness gone,
-    one slap off the nearest wall, half room."""
-    tone, _ = whistle_take(rng, take)
-    body = tone + silence(1.4)
-    body = one_pole_lowpass(one_pole_lowpass(body, 2600.0), 2600.0)
-    body = echo(body, 0.17, 0.32, 2200.0)
-    room = reverb(body, size=1.0, damp=0.45, feedback=0.8)
-    out = [d * 0.55 + r * 0.45 for d, r in zip(body, room)]
-    return level(fade(out, 0.01, 0.4))
+    """MIDDLING: somewhere across the grass. Less breath, the brightness
+    gone, one slap off the nearest wall, half room."""
+    voice, _ = whistle_voice(rng, take, air=0.4, breath=0.05)
+    body = voice + silence(1.6)
+    top = 3400.0 if os.path.exists(SOURCE) else 2400.0  # the recording sits higher than the synth
+    body = one_pole_lowpass(one_pole_lowpass(body, top), top)
+    body = echo(body, 0.17, 0.32, top * 0.85)
+    room = reverb(body, size=1.1, damp=0.5, feedback=0.82)
+    out = [d * 0.5 + r * 0.5 for d, r in zip(body, room)]
+    return level(fade(out, 0.01, 0.5))
 
 
 def whistle_far(rng, take):
     """FAINT: far, far away. A bare thread of tone that the wind carries and
     drops, late to arrive, answered twice by the treeline and drowned in
     the open night. Played when he is truly NEAR."""
-    tone, _ = whistle_take(rng, take)
-    body = silence(0.09) + tone + silence(2.6)
-    body = one_pole_highpass(one_pole_highpass(body, 700.0), 700.0)
+    voice, _ = whistle_voice(rng, take, air=0.3, breath=0.0)
+    body = silence(0.09) + voice + silence(2.6)
+    high = os.path.exists(SOURCE)  # the recording sits higher than the synth
+    body = one_pole_highpass(one_pole_highpass(body, 900.0 if high else 600.0), 900.0 if high else 600.0)
     for _ in range(4):
-        body = one_pole_lowpass(body, 1250.0)
+        body = one_pole_lowpass(body, 2100.0 if high else 1150.0)
     # Gusts: the level wanders as the wind carries it and lets it go.
     gust = one_pole_lowpass(one_pole_lowpass(noise(rng, len(body)), 0.8), 0.8)
     peak = max(1e-9, max(abs(g) for g in gust))
     body = [v * (0.55 + 0.45 * max(-1.0, min(1.0, g / peak))) for v, g in zip(body, gust)]
-    body = echo(echo(body, 0.46, 0.5, 1200.0), 0.95, 0.3, 1000.0)
+    body = echo(echo(body, 0.46, 0.5, 1900.0 if high else 1200.0), 0.95, 0.3, 1600.0 if high else 1000.0)
     room = reverb(body, size=1.6, damp=0.62, feedback=0.9)
     out = [d * 0.12 + r * 0.88 for d, r in zip(body, room)]
     return level(fade(out, 0.03, 1.0))
