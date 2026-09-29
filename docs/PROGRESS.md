@@ -1,6 +1,42 @@
 # Progress
 
-## Current handoff — 2026-09-29 (the whistle from a recording)
+## Current handoff — 2026-09-29 (first remote playtest notes)
+
+Notes only; nothing below is implemented or triaged yet. From the first
+two-player test of the Windows build (`0.1.0-test.1`) over Tailscale.
+
+### Bugs
+
+- **River**: players cannot walk through the river.
+- **Skill checks**: a missed skill check did not slow task progress.
+- **Audio level**: the overall mix is too loud, and the in-game volume
+  slider does not control it properly.
+- **Whistle distance**: the whistle sounded the same far and near. By
+  design it is inverted (faint when he is close, loud when far), so check
+  whether the three distances are distinguishable at all with the
+  recorded whistle, not just whether the inversion reads.
+
+### Missing features
+
+- **Fullscreen**: no fullscreen mode.
+- **Spectating**: a dead player has nothing to watch; add a spectator view
+  of the surviving teammates.
+- **Finding downed allies**: hard to find a downed teammate; they need a
+  clearer marker or sound.
+- **Brightness and contrast**: on some monitors El Silbón is hard to see;
+  add brightness and contrast sliders to the settings.
+
+### Design ideas
+
+- **Rising difficulty**: get harder as more bones are laid to rest.
+- **Telling the tale**: find a better way to tell the legend in game than
+  the twenty pages.
+- **The truck key code**: its code is spread over three of the twenty
+  pages, so players end up hunting for all twenty. Put the code in a few
+  dedicated notes instead, or make it a puzzle, such as one told through
+  the radio broadcasts.
+
+## Earlier handoff — 2026-09-29 (the whistle from a recording)
 
 Uncommitted. The user asked for the whistle of a YouTube clip ("El Silbon
 Silbido", oNGPZNXmZ1c) in place of ours, after being told its licence is
