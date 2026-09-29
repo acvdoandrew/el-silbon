@@ -1,47 +1,47 @@
-//! Encounter truth: objectives, the Silbón's hidden state and transitions.
+//! Encounter truth: the Silbón's hidden state, the world's shared progress and
+//! the rules that connect them.
 //!
-//! Headless and deterministic. The ECS layer feeds a [`TickInput`] per frame
-//! and reacts to the [`Event`]s pushed out; nothing in here knows about
-//! rendering, audio or input devices. Offline play advances this encounter
-//! directly; `net::session` reuses its threat rules on the authoritative host
-//! and sends only player-facing cues and legitimate visible presentation.
+//! Headless and deterministic. `net::session` owns the players and feeds this
+//! module positions, noise and interactions; nothing in here knows about
+//! rendering, audio or input devices. Solo play and hosted play run the very
+//! same rules.
 
-use bevy::math::Vec2;
+use bevy::math::{Vec2, Vec3};
 
-use crate::geometry::{Layout, ground};
+use crate::geometry::Layout;
 use crate::tuning::Tuning;
 
+pub type PlayerId = u64;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Objective {
-    /// Enter the house and take the bone satchel.
-    FindSatchel,
-    /// Carry the bones to the ceiba and hold at its roots.
-    ReturnBones,
-    /// Bones returned: walk back to the road.
-    Escape,
+pub enum Outcome {
+    Running,
+    /// Everyone still standing reached the running truck.
     Won,
+    /// Nobody is left on their feet.
     Failed,
 }
 
-impl Objective {
+impl Outcome {
     pub fn is_over(self) -> bool {
-        matches!(self, Objective::Won | Objective::Failed)
+        !matches!(self, Outcome::Running)
     }
 }
 
 /// The Silbón's true behavioural state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ThreatState {
-    /// Not yet here; the bones are still on the table.
+    /// Not yet here: the first bone bundle is still where it lay.
     Dormant,
-    /// Walking his authored route, lurking, creeping toward a visible player.
+    /// Walking his patrol, lurking, investigating noise, creeping toward a
+    /// visible player.
     Stalking,
     /// He has seen you. Break line of sight before the hunt begins.
     Warning,
     /// Closing in while he can see you; exposure builds.
     Hunting,
-    /// The bones are home. He leaves.
-    Resolved,
+    /// Stopped by pepper: he squats to count his bones.
+    Counting,
 }
 
 /// Whether he is physically present in the world.
@@ -53,31 +53,36 @@ pub enum Presence {
         t: f32,
     },
     Present,
-    /// Sinking away; `relocate` = re-manifest far from the player afterwards.
+    /// Sinking away; `relocate` = re-manifest far from everyone afterwards.
     Sinking {
         t: f32,
         relocate: bool,
     },
 }
 
-/// How he is moving along the authored anchor ring.
+/// How he is moving along the patrol graph.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Movement {
-    /// Standing on anchor `i`.
+    /// Standing on node `i`.
     AtAnchor(usize),
-    /// Walking the ring between two anchors.
-    Ring { from: usize, to: usize },
-    /// Left anchor `home` and walks straight toward a visible player.
+    /// Walking the graph between two adjacent nodes.
+    Walk { from: usize, to: usize },
+    /// Left node `home` and walks straight toward a visible player.
     Creep { home: usize },
-    /// Walking straight back to anchor `home`.
+    /// Walking straight back to node `home`.
     Return { home: usize },
-    /// Not moving (warning, hunting without sight, rising, sinking).
+    /// Left node `home` and walks straight toward the spot of a noise.
+    Investigate { home: usize },
+    /// Standing where he heard something, listening.
+    Search,
+    /// Not moving (warning, hunting without sight, rising, sinking, counting).
     Still,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
 pub enum Event {
-    SatchelTaken,
+    RelicTaken = 0,
     ThreatManifested,
     WarningBegan,
     HuntBegan,
@@ -85,41 +90,76 @@ pub enum Event {
     WarningAverted,
     /// Sight broken long enough during a hunt: he withdraws.
     LostTrack,
-    /// He rose again at a distant anchor after withdrawing.
+    /// He rose again at a distant node after withdrawing.
     ThreatReturned,
-    RestitutionComplete,
-    ThreatResolved,
+    RelicDelivered,
     Escaped,
-    Caught,
+    /// The hunted player went down.
+    Downed,
+    RelicDropped,
+    AllBonesHome,
+    PowerRestored,
+    TruckStarted,
+    AjiTaken,
+    AjiUsed,
+    CountingBegan,
+    CountingEnded,
+    Susto,
+    Revived,
+    Died,
+    CattleSpooked,
+    BeaconLit,
+    Prayed,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ActionError {
-    /// The action does not belong to the current objective.
-    WrongObjective,
-    /// The player is not where the action can be performed.
-    OutOfReach,
-    /// The encounter already ended.
-    Finished,
-}
+impl Event {
+    pub const ALL: [Event; 24] = [
+        Event::RelicTaken,
+        Event::ThreatManifested,
+        Event::WarningBegan,
+        Event::HuntBegan,
+        Event::WarningAverted,
+        Event::LostTrack,
+        Event::ThreatReturned,
+        Event::RelicDelivered,
+        Event::Escaped,
+        Event::Downed,
+        Event::RelicDropped,
+        Event::AllBonesHome,
+        Event::PowerRestored,
+        Event::TruckStarted,
+        Event::AjiTaken,
+        Event::AjiUsed,
+        Event::CountingBegan,
+        Event::CountingEnded,
+        Event::Susto,
+        Event::Revived,
+        Event::Died,
+        Event::CattleSpooked,
+        Event::BeaconLit,
+        Event::Prayed,
+    ];
 
-/// Everything the truth layer needs from one player for one tick.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct TickInput {
-    pub dt: f32,
-    pub player: Vec2,
-    /// The client pressed interact while aiming at a reachable satchel.
-    pub take_satchel: bool,
-    /// The client is holding interact while aiming at the reachable hollow.
-    pub hold_offering: bool,
+    pub fn from_code(code: u8) -> Option<Event> {
+        Self::ALL.get(code as usize).copied()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
     pub warnings: u32,
     pub hunts: u32,
-    /// Averted warnings plus lost-track withdrawals.
+    /// Averted warnings, lost-track withdrawals and counted-bones escapes.
     pub recoveries: u32,
+    pub downs: u32,
+    pub revives: u32,
+}
+
+/// A heard noise he cannot stop thinking about.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Focus {
+    pub pos: Vec2,
+    pub ttl: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -136,16 +176,28 @@ pub struct Threat {
     pub state_time: f32,
     /// While > 0 he cannot begin a warning.
     pub cooldown: f32,
-    /// 0..1; reaching 1 during a hunt ends the encounter.
+    /// 0..1; reaching 1 during a hunt downs the hunted player.
     pub exposure: f32,
     /// Seconds without sight during a warning or hunt.
     pub unseen: f32,
-    /// Seconds lurking at the right anchor without sight.
+    /// Seconds lurking at the right node without sight.
     pub lurk_time: f32,
-    /// He currently has line of sight to the player.
+    /// He currently has line of sight to his prey.
     pub has_sight: bool,
-    /// Out of patience: walking the whole ring instead of waiting.
+    /// Out of patience: roaming the whole patrol instead of waiting.
     pub circling: bool,
+    /// The last noise that caught his attention.
+    pub focus: Option<Focus>,
+    /// Seconds left searching the spot of a noise.
+    pub search: f32,
+    /// Seconds left counting bones.
+    pub counting: f32,
+    /// Node he came from (roaming does not double back).
+    pub prev: usize,
+    /// Roaming choice counter: deterministic variety.
+    pub turns: u32,
+    /// Seconds spent walking without progress.
+    pub stall: f32,
 }
 
 impl Threat {
@@ -153,7 +205,7 @@ impl Threat {
         Self {
             state: ThreatState::Dormant,
             presence: Presence::Hidden,
-            pos: layout.ring[0],
+            pos: layout.patrol.nodes[0],
             facing: Vec2::new(0.0, 1.0),
             speed: 0.0,
             movement: Movement::Still,
@@ -164,6 +216,12 @@ impl Threat {
             lurk_time: 0.0,
             has_sight: false,
             circling: false,
+            focus: None,
+            search: 0.0,
+            counting: 0.0,
+            prev: 0,
+            turns: 0,
+            stall: 0.0,
         }
     }
 
@@ -184,27 +242,130 @@ impl Threat {
     }
 }
 
+/// Where a bone bundle is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Relic {
+    Ground(Vec3),
+    Carried(PlayerId),
+    Delivered,
+}
+
+/// A pepper ward on the ground: he cannot cross it, and touching it makes
+/// him stop to count his bones.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AjiZone {
+    pub pos: Vec2,
+    pub radius: f32,
+    pub life: f32,
+    /// He has already stopped to count here.
+    pub spent: bool,
+}
+
+/// The shared, non-player progress of the run.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Progress {
+    pub relics: Vec<Relic>,
+    pub aji_taken: Vec<bool>,
+    /// 0..1: 1 = the windmill runs and the lamps are lit.
+    pub power: f32,
+    /// 0..1: 1 = the engine is running.
+    pub truck: f32,
+    /// Seconds the engine has been running.
+    pub warm: f32,
+    /// Seconds the beacon still burns, and until it can be lit again.
+    pub beacon: f32,
+    pub beacon_cooldown: f32,
+    /// Seconds of bellowing left, cooldown, and the unsettled-herd meter.
+    pub cattle_alarm: f32,
+    pub cattle_cooldown: f32,
+    pub cattle_spook: f32,
+}
+
+impl Progress {
+    fn new(layout: &Layout) -> Self {
+        Self {
+            relics: layout.district.relics.iter().map(|&p| Relic::Ground(p)).collect(),
+            aji_taken: vec![false; layout.district.aji.len()],
+            power: 0.0,
+            truck: 0.0,
+            warm: 0.0,
+            beacon: 0.0,
+            beacon_cooldown: 0.0,
+            cattle_alarm: 0.0,
+            cattle_cooldown: 0.0,
+            cattle_spook: 0.0,
+        }
+    }
+
+    pub fn delivered(&self) -> usize {
+        self.relics.iter().filter(|r| matches!(r, Relic::Delivered)).count()
+    }
+    pub fn carried_by(&self, id: PlayerId) -> usize {
+        self.relics.iter().filter(|r| **r == Relic::Carried(id)).count()
+    }
+    pub fn carried_total(&self) -> usize {
+        self.relics.iter().filter(|r| matches!(r, Relic::Carried(_))).count()
+    }
+    pub fn bones_home(&self) -> bool {
+        self.delivered() == self.relics.len()
+    }
+    pub fn power_on(&self) -> bool {
+        self.power >= 1.0
+    }
+    pub fn truck_running(&self) -> bool {
+        self.truck >= 1.0
+    }
+    /// The engine has run long enough to drive away.
+    pub fn truck_ready(&self, tuning: &Tuning) -> bool {
+        self.truck_running() && self.warm >= tuning.truck_warmup
+    }
+    pub fn beacon_ready(&self) -> bool {
+        self.beacon <= 0.0 && self.beacon_cooldown <= 0.0
+    }
+}
+
+/// The player he is currently interested in, as he perceives them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Prey {
+    pub pos: Vec2,
+    /// Multiplier on how far away he notices them (crouch, light).
+    pub sight: f32,
+    /// Crouched in tall grass: only visible up close.
+    pub concealed: bool,
+}
+
+impl Prey {
+    pub fn plain(pos: Vec2) -> Self {
+        Self {
+            pos,
+            sight: 1.0,
+            concealed: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Encounter {
-    pub objective: Objective,
+    pub outcome: Outcome,
     pub threat: Threat,
-    /// Restitution progress 0..1 (pauses, never resets, when interrupted).
-    pub restitution: f32,
-    /// Restitution advanced during the last tick.
-    pub restituting: bool,
+    pub progress: Progress,
+    pub zones: Vec<AjiZone>,
     pub elapsed: f32,
     pub stats: Stats,
+    /// 0..1, recomputed every tick from the night and the run's progress.
+    pub pressure: f32,
 }
 
 impl Encounter {
     pub fn new(layout: &Layout) -> Self {
         Self {
-            objective: Objective::FindSatchel,
+            outcome: Outcome::Running,
             threat: Threat::dormant(layout),
-            restitution: 0.0,
-            restituting: false,
+            progress: Progress::new(layout),
+            zones: Vec::new(),
             elapsed: 0.0,
             stats: Stats::default(),
+            pressure: 0.0,
         }
     }
 
@@ -213,199 +374,331 @@ impl Encounter {
         *self = Self::new(layout);
     }
 
-    pub fn carrying(&self) -> bool {
-        self.objective == Objective::ReturnBones
-    }
+    // ------------------------------------------------------------ the world
 
-    pub fn player_speed(&self, tuning: &Tuning) -> f32 {
-        if self.carrying() {
-            tuning.carry_speed
+    /// Advance the world's own clocks and the night's pressure.
+    pub fn tick_world(&mut self, tuning: &Tuning, dt: f32) {
+        self.elapsed += dt;
+        let p = &mut self.progress;
+        p.beacon = (p.beacon - dt).max(0.0);
+        if p.beacon <= 0.0 {
+            p.beacon_cooldown = (p.beacon_cooldown - dt).max(0.0);
+        }
+        p.cattle_alarm = (p.cattle_alarm - dt).max(0.0);
+        p.cattle_cooldown = (p.cattle_cooldown - dt).max(0.0);
+        p.cattle_spook = (p.cattle_spook - 0.3 * dt).max(0.0);
+        for z in &mut self.zones {
+            z.life -= dt;
+        }
+        self.zones.retain(|z| z.life > 0.0);
+        if p.truck_running() {
+            p.warm += dt;
+        }
+        self.pressure = if p.truck_running() {
+            1.0
         } else {
-            tuning.walk_speed
+            let night = (self.elapsed / tuning.night_length).clamp(0.0, 1.0);
+            (tuning.pressure_base + tuning.pressure_night * night + tuning.pressure_carry * p.carried_total() as f32
+                - tuning.pressure_relief * p.delivered() as f32)
+                .clamp(0.05, tuning.pressure_max)
+        };
+    }
+
+    /// A player picks up bundle `index`. The first ever pickup wakes him.
+    pub fn take_relic(&mut self, index: usize, id: PlayerId, events: &mut Vec<Event>) -> bool {
+        match self.progress.relics.get_mut(index) {
+            Some(r @ Relic::Ground(_)) => {
+                *r = Relic::Carried(id);
+                events.push(Event::RelicTaken);
+                true
+            }
+            _ => false,
         }
     }
 
-    /// Take the satchel. Validates objective and reach on the truth side.
-    pub fn take_satchel(
-        &mut self,
-        layout: &Layout,
-        tuning: &Tuning,
-        player: Vec2,
-        events: &mut Vec<Event>,
-    ) -> Result<(), ActionError> {
-        if self.objective.is_over() {
-            return Err(ActionError::Finished);
+    /// Put down the first bundle `id` carries at `at`.
+    pub fn drop_relic(&mut self, id: PlayerId, at: Vec3, events: &mut Vec<Event>) -> bool {
+        if let Some(r) = self.progress.relics.iter_mut().find(|r| **r == Relic::Carried(id)) {
+            *r = Relic::Ground(Vec3::new(at.x, at.y + 0.35, at.z));
+            events.push(Event::RelicDropped);
+            true
+        } else {
+            false
         }
-        if self.objective != Objective::FindSatchel {
-            return Err(ActionError::WrongObjective);
-        }
-        if player.distance(ground(layout.satchel)) > tuning.satchel_reach + tuning.reach_slack {
-            return Err(ActionError::OutOfReach);
-        }
-        self.objective = Objective::ReturnBones;
-        events.push(Event::SatchelTaken);
+    }
 
-        // Controlled manifestation: the anchor farthest from the player.
-        let (anchor, _) = layout.farthest_anchor(player);
+    /// Everything `id` carries falls around `at` (captured or gone).
+    pub fn release_all(&mut self, id: PlayerId, at: Vec3) {
+        let mut n = 0.0_f32;
+        for r in &mut self.progress.relics {
+            if *r == Relic::Carried(id) {
+                let a = n * 1.9;
+                let spread = if n == 0.0 { 0.0 } else { 0.45 };
+                *r = Relic::Ground(Vec3::new(at.x + a.cos() * spread, at.y + 0.35, at.z + a.sin() * spread));
+                n += 1.0;
+            }
+        }
+    }
+
+    /// Lay one carried bundle at the altar.
+    pub fn deliver_relic(&mut self, id: PlayerId, events: &mut Vec<Event>) -> bool {
+        let Some(r) = self.progress.relics.iter_mut().find(|r| **r == Relic::Carried(id)) else {
+            return false;
+        };
+        *r = Relic::Delivered;
+        events.push(Event::RelicDelivered);
+        if self.progress.bones_home() {
+            events.push(Event::AllBonesHome);
+        }
+        true
+    }
+
+    pub fn take_aji(&mut self, index: usize, events: &mut Vec<Event>) -> bool {
+        match self.progress.aji_taken.get_mut(index) {
+            Some(taken) if !*taken => {
+                *taken = true;
+                events.push(Event::AjiTaken);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Scatter pepper at `pos`.
+    pub fn place_aji(&mut self, tuning: &Tuning, pos: Vec2, events: &mut Vec<Event>) {
+        self.zones.push(AjiZone {
+            pos,
+            radius: tuning.aji_zone_radius,
+            life: tuning.aji_zone_life,
+            spent: false,
+        });
+        events.push(Event::AjiUsed);
+    }
+
+    /// Crank the pump for `dt` seconds.
+    pub fn work_pump(&mut self, tuning: &Tuning, dt: f32, events: &mut Vec<Event>) {
+        if self.progress.power_on() {
+            return;
+        }
+        self.progress.power = (self.progress.power + dt / tuning.pump_hold).min(1.0);
+        if self.progress.power_on() {
+            events.push(Event::PowerRestored);
+        }
+    }
+
+    /// Turn the ignition for `dt` seconds. Refused until the bones are home
+    /// and the power is on.
+    pub fn work_truck(&mut self, tuning: &Tuning, dt: f32, events: &mut Vec<Event>) -> bool {
+        if !self.progress.bones_home() || !self.progress.power_on() || self.progress.truck_running() {
+            return false;
+        }
+        self.progress.truck = (self.progress.truck + dt / tuning.truck_hold).min(1.0);
+        if self.progress.truck_running() {
+            events.push(Event::TruckStarted);
+        }
+        true
+    }
+
+    pub fn light_beacon(&mut self, tuning: &Tuning, events: &mut Vec<Event>) -> bool {
+        if !self.progress.beacon_ready() {
+            return false;
+        }
+        self.progress.beacon = tuning.beacon_burn;
+        self.progress.beacon_cooldown = tuning.beacon_cooldown;
+        events.push(Event::BeaconLit);
+        true
+    }
+
+    // ------------------------------------------------------------ the threat
+
+    /// He rises far from everyone. Only from dormancy (or, rarely, hidden).
+    pub fn manifest(&mut self, layout: &Layout, tuning: &Tuning, watchers: &[Vec2], events: &mut Vec<Event>) {
+        let (node, _) = layout.patrol.farthest_from(watchers);
         let th = &mut self.threat;
+        let nearest = watchers
+            .iter()
+            .copied()
+            .min_by(|a, b| {
+                a.distance_squared(layout.patrol.nodes[node])
+                    .total_cmp(&b.distance_squared(layout.patrol.nodes[node]))
+            })
+            .unwrap_or(Vec2::ZERO);
         th.set_state(ThreatState::Stalking);
         th.presence = Presence::Rising { t: 0.0 };
-        th.pos = layout.ring[anchor];
-        th.facing = (player - th.pos).normalize_or(Vec2::Y);
-        th.movement = Movement::AtAnchor(anchor);
+        th.pos = layout.patrol.nodes[node];
+        th.facing = (nearest - th.pos).normalize_or(Vec2::Y);
+        th.movement = Movement::AtAnchor(node);
+        th.prev = node;
         th.cooldown = tuning.first_warn_delay;
         th.exposure = 0.0;
         th.lurk_time = 0.0;
         th.circling = false;
+        th.focus = None;
         events.push(Event::ThreatManifested);
-        Ok(())
     }
 
-    /// Hold at the ceiba's hollow for `dt`. Validates objective and reach.
-    pub fn hold_offering(
-        &mut self,
-        layout: &Layout,
-        tuning: &Tuning,
-        player: Vec2,
-        dt: f32,
-        events: &mut Vec<Event>,
-    ) -> Result<(), ActionError> {
-        if self.objective.is_over() {
-            return Err(ActionError::Finished);
+    /// The engine roars: whatever he was doing, he comes. Wakes him if needed.
+    pub fn rouse(&mut self, layout: &Layout, tuning: &Tuning, watchers: &[Vec2], events: &mut Vec<Event>) {
+        if self.threat.state == ThreatState::Dormant || matches!(self.threat.presence, Presence::Hidden) {
+            self.manifest(layout, tuning, watchers, events);
         }
-        if self.objective != Objective::ReturnBones {
-            return Err(ActionError::WrongObjective);
-        }
-        if player.distance(ground(layout.ceiba.offering)) > tuning.offering_reach + tuning.reach_slack {
-            return Err(ActionError::OutOfReach);
-        }
-        self.restituting = true;
-        self.restitution = (self.restitution + dt / tuning.restitution_hold).min(1.0);
-        if self.restitution >= 1.0 {
-            self.objective = Objective::Escape;
-            events.push(Event::RestitutionComplete);
-            let th = &mut self.threat;
-            th.set_state(ThreatState::Resolved);
-            th.exposure = 0.0;
-            th.movement = Movement::Still;
-            th.speed = 0.0;
-            th.presence = match th.presence {
-                Presence::Hidden => Presence::Hidden,
-                Presence::Sinking { t, .. } => Presence::Sinking { t, relocate: false },
-                Presence::Rising { t } => {
-                    let v = (t / tuning.rise_time).clamp(0.0, 1.0);
-                    Presence::Sinking {
-                        t: (1.0 - v) * tuning.sink_time,
-                        relocate: false,
-                    }
-                }
-                Presence::Present => Presence::Sinking {
-                    t: 0.0,
-                    relocate: false,
-                },
-            };
-            events.push(Event::ThreatResolved);
-        }
-        Ok(())
+        self.threat.cooldown = self.threat.cooldown.min(2.0);
+        self.threat.circling = true;
     }
 
-    /// Advance the encounter by one tick. Events are appended to `events`.
-    pub fn step(&mut self, layout: &Layout, tuning: &Tuning, input: TickInput, events: &mut Vec<Event>) {
-        if self.objective.is_over() {
-            self.restituting = false;
-            self.threat.speed = 0.0;
+    /// He backs off after a capture, or when his prey vanishes.
+    pub fn withdraw(&mut self) {
+        let th = &mut self.threat;
+        if th.state == ThreatState::Dormant {
             return;
         }
-        let dt = input.dt.clamp(0.0, tuning.max_step);
-        self.elapsed += dt;
-        self.restituting = false;
+        th.set_state(ThreatState::Stalking);
+        th.exposure = 0.0;
+        th.has_sight = false;
+        th.cooldown = 10.0;
+        th.movement = Movement::Still;
+        th.focus = None;
+        th.counting = 0.0;
+        th.presence = Presence::Sinking { t: 0.0, relocate: true };
+    }
 
-        // Client claims are re-validated inside; invalid claims change nothing.
-        if input.take_satchel {
-            let _ = self.take_satchel(layout, tuning, input.player, events);
-        }
-        if input.hold_offering {
-            let _ = self.hold_offering(layout, tuning, input.player, dt, events);
-        }
-
-        self.update_threat(layout, tuning, input.player, dt, events);
-        if self.objective.is_over() {
+    /// He hears a noise of audible `radius` at `pos` (already scaled for
+    /// weather by the caller). Only a calm, present Silbón is drawn to it.
+    pub fn hear(&mut self, tuning: &Tuning, pos: Vec2, radius: f32) {
+        let th = &mut self.threat;
+        if th.state != ThreatState::Stalking || !matches!(th.presence, Presence::Present) {
             return;
         }
-
-        if self.objective == Objective::Escape && layout.in_road_goal(input.player) {
-            self.objective = Objective::Won;
-            events.push(Event::Escaped);
+        let reach = radius * tuning.hearing_gain(self.pressure);
+        if th.pos.distance(pos) > reach {
+            return;
+        }
+        th.focus = Some(Focus {
+            pos,
+            ttl: tuning.noise_memory,
+        });
+        th.circling = false;
+        th.lurk_time = 0.0;
+        if matches!(th.movement, Movement::Search) {
+            th.search = tuning.search_time;
         }
     }
 
-    pub(crate) fn update_threat(
+    /// Advance the threat by one tick against his current `prey`.
+    /// `watchers` are the positions of every active player (safe relocation).
+    pub fn update_threat(
         &mut self,
         layout: &Layout,
-        tuning: &Tuning,
-        player: Vec2,
+        base: &Tuning,
+        prey: Option<Prey>,
+        watchers: &[Vec2],
         dt: f32,
         events: &mut Vec<Event>,
     ) {
-        let th = &mut self.threat;
-        th.speed = 0.0;
-        match th.presence {
-            Presence::Hidden => return,
-            Presence::Rising { t } => {
-                let t = t + dt;
-                th.facing = (player - th.pos).normalize_or(th.facing);
-                th.presence = if t >= tuning.rise_time {
-                    Presence::Present
-                } else {
-                    Presence::Rising { t }
-                };
-                th.has_sight = false;
-                th.cooldown = (th.cooldown - dt).max(0.0);
-                return;
-            }
-            Presence::Sinking { t, relocate } => {
-                let t = t + dt;
-                th.has_sight = false;
-                if t < tuning.sink_time {
-                    th.presence = Presence::Sinking { t, relocate };
-                } else if relocate && th.state != ThreatState::Resolved {
-                    let (anchor, _) = layout.farthest_anchor(player);
-                    th.pos = layout.ring[anchor];
-                    th.facing = (player - th.pos).normalize_or(th.facing);
-                    th.movement = Movement::AtAnchor(anchor);
-                    th.presence = Presence::Rising { t: 0.0 };
-                    events.push(Event::ThreatReturned);
-                } else {
-                    th.presence = Presence::Hidden;
+        let scaled = base.at_pressure(self.pressure);
+        let tuning = &scaled;
+        let toward = prey.map_or(Vec2::Y, |p| p.pos);
+        {
+            let th = &mut self.threat;
+            th.speed = 0.0;
+            match th.presence {
+                Presence::Hidden => return,
+                Presence::Rising { t } => {
+                    let t = t + dt;
+                    th.facing = (toward - th.pos).normalize_or(th.facing);
+                    th.presence = if t >= tuning.rise_time {
+                        Presence::Present
+                    } else {
+                        Presence::Rising { t }
+                    };
+                    th.has_sight = false;
+                    th.cooldown = (th.cooldown - dt).max(0.0);
+                    return;
                 }
+                Presence::Sinking { t, relocate } => {
+                    let t = t + dt;
+                    th.has_sight = false;
+                    if t < tuning.sink_time {
+                        th.presence = Presence::Sinking { t, relocate };
+                    } else if relocate {
+                        let (node, _) = layout.patrol.farthest_from(watchers);
+                        th.pos = layout.patrol.nodes[node];
+                        th.facing = (toward - th.pos).normalize_or(th.facing);
+                        th.movement = Movement::AtAnchor(node);
+                        th.prev = node;
+                        th.presence = Presence::Rising { t: 0.0 };
+                        events.push(Event::ThreatReturned);
+                    } else {
+                        th.presence = Presence::Hidden;
+                    }
+                    return;
+                }
+                Presence::Present => {}
+            }
+            if th.state == ThreatState::Dormant {
                 return;
             }
-            Presence::Present => {}
+            th.cooldown = (th.cooldown - dt).max(0.0);
+            th.state_time += dt;
+            if let Some(f) = &mut th.focus {
+                f.ttl -= dt;
+                if f.ttl <= 0.0 {
+                    th.focus = None;
+                }
+            }
         }
-        if th.state == ThreatState::Resolved || th.state == ThreatState::Dormant {
+
+        // Counting bones: he sees and hears nothing until he is done.
+        if self.threat.state == ThreatState::Counting {
+            let th = &mut self.threat;
+            th.has_sight = false;
+            th.movement = Movement::Still;
+            th.counting -= dt;
+            if th.counting <= 0.0 {
+                th.set_state(ThreatState::Stalking);
+                th.cooldown = tuning.recover_cooldown;
+                th.exposure = 0.0;
+                th.focus = None;
+                th.circling = false;
+                th.lurk_time = 0.0;
+                th.movement = Movement::Return {
+                    home: layout.patrol.nearest(th.pos),
+                };
+                self.stats.recoveries += 1;
+                events.push(Event::CountingEnded);
+            }
             return;
         }
 
-        let to_player = player - th.pos;
-        let dist = to_player.length();
-        th.has_sight = layout.line_of_sight(th.pos, player);
-        th.cooldown = (th.cooldown - dt).max(0.0);
-        th.state_time += dt;
+        let Some(prey) = prey else {
+            return;
+        };
+        let to_prey = prey.pos - self.threat.pos;
+        let dist = to_prey.length();
+        {
+            let th = &mut self.threat;
+            let los = layout.line_of_sight(th.pos, prey.pos);
+            th.has_sight = los && !(prey.concealed && dist > tuning.grass_sight);
+        }
+        let notice = tuning.warn_distance * prey.sight;
 
-        match th.state {
+        match self.threat.state {
             ThreatState::Stalking => {
-                stalk(th, layout, tuning, player, dt);
-                let dist = th.pos.distance(player);
-                if th.has_sight && dist <= tuning.warn_distance && th.cooldown <= 0.0 {
+                self.stalk(layout, tuning, prey, dt);
+                let th = &mut self.threat;
+                let dist = th.pos.distance(prey.pos);
+                if th.state == ThreatState::Stalking && th.has_sight && dist <= notice && th.cooldown <= 0.0 {
                     th.set_state(ThreatState::Warning);
                     th.movement = Movement::Still;
                     th.speed = 0.0;
+                    th.focus = None;
                     self.stats.warnings += 1;
                     events.push(Event::WarningBegan);
                 }
             }
             ThreatState::Warning => {
-                th.facing = to_player.normalize_or(th.facing);
+                let th = &mut self.threat;
+                th.facing = to_prey.normalize_or(th.facing);
                 if th.has_sight {
                     th.unseen = 0.0;
                 } else {
@@ -415,7 +708,7 @@ impl Encounter {
                     th.set_state(ThreatState::Stalking);
                     th.cooldown = tuning.warn_recover_cooldown;
                     th.movement = Movement::Return {
-                        home: layout.nearest_anchor(th.pos),
+                        home: layout.patrol.nearest(th.pos),
                     };
                     self.stats.recoveries += 1;
                     events.push(Event::WarningAverted);
@@ -427,25 +720,33 @@ impl Encounter {
                 }
             }
             ThreatState::Hunting => {
-                if th.has_sight {
-                    th.unseen = 0.0;
-                    th.facing = to_player.normalize_or(th.facing);
+                if self.threat.has_sight {
+                    self.threat.unseen = 0.0;
+                    self.threat.facing = to_prey.normalize_or(self.threat.facing);
                     let stop = tuning.catch_distance * 0.8;
                     if dist > stop {
                         let step = (tuning.hunt_speed * dt).min(dist - stop);
-                        th.pos += to_player / dist * step;
-                        th.speed = step / dt.max(1e-6);
+                        let before = self.threat.pos;
+                        self.step_toward(layout, prey.pos, step, tuning.counting_time);
+                        let th = &mut self.threat;
+                        th.speed = before.distance(th.pos) / dt.max(1e-6);
                     }
+                    if self.threat.state == ThreatState::Counting {
+                        events.push(Event::CountingBegan);
+                        return;
+                    }
+                    let th = &mut self.threat;
                     let near = 1.0 - (dist / tuning.warn_distance).clamp(0.0, 1.0);
                     th.exposure += dt / tuning.exposure_time * (1.0 + tuning.exposure_near_boost * near);
-                    let dist_now = th.pos.distance(player);
+                    let dist_now = th.pos.distance(prey.pos);
                     if th.exposure >= 1.0 || dist_now <= tuning.catch_distance {
                         th.exposure = th.exposure.min(1.0);
-                        th.movement = Movement::Still;
-                        self.objective = Objective::Failed;
-                        events.push(Event::Caught);
+                        self.stats.downs += 1;
+                        events.push(Event::Downed);
+                        self.withdraw();
                     }
                 } else {
+                    let th = &mut self.threat;
                     th.unseen += dt;
                     th.exposure = (th.exposure - tuning.exposure_decay * dt).max(0.0);
                     if th.unseen >= tuning.lose_track_time {
@@ -461,116 +762,221 @@ impl Encounter {
                     }
                 }
             }
-            ThreatState::Dormant | ThreatState::Resolved => {}
+            ThreatState::Dormant | ThreatState::Counting => {}
+        }
+        if self.threat.state == ThreatState::Counting {
+            events.push(Event::CountingBegan);
         }
     }
-}
 
-/// Move toward `target` by at most `max`; returns true once there.
-fn advance(pos: &mut Vec2, facing: &mut Vec2, target: Vec2, max: f32) -> (bool, f32) {
-    let d = target - *pos;
-    let len = d.length();
-    if len <= max || len < 1e-4 {
-        *pos = target;
-        return (true, len);
+    /// Move him up to `max` metres straight toward `target`, sliding along
+    /// blockers. Pepper wards stop him: the first touch makes him count for
+    /// `counting_time`, a spent ward is a wall he will not walk deeper into.
+    /// Returns true once there.
+    fn step_toward(&mut self, layout: &Layout, target: Vec2, max: f32, counting_time: f32) -> bool {
+        let th = &mut self.threat;
+        let d = target - th.pos;
+        let len = d.length();
+        if len < 1e-4 {
+            return true;
+        }
+        let dir = d / len;
+        th.facing = dir;
+        let want = layout.move_circle(th.pos, dir * max.min(len), 0.42);
+        for z in &mut self.zones {
+            let (now, next) = (th.pos.distance(z.pos), want.distance(z.pos));
+            if next < z.radius && next < now {
+                if !z.spent {
+                    z.spent = true;
+                    th.pos = want;
+                    th.facing = (z.pos - want).normalize_or(dir);
+                    th.counting = counting_time;
+                    th.set_state(ThreatState::Counting);
+                    th.movement = Movement::Still;
+                }
+                return false;
+            }
+        }
+        th.pos = want;
+        want.distance(target) < 0.05
     }
-    let dir = d / len;
-    *pos += dir * max;
-    *facing = dir;
-    (false, max)
-}
 
-/// Stalking: walk the ring to the anchor nearest the player, lurk there,
-/// creep straight in only while the player is visible, circle when bored.
-fn stalk(th: &mut Threat, layout: &Layout, tuning: &Tuning, player: Vec2, dt: f32) {
-    let target = layout.nearest_anchor(player);
-    let dist_player = th.pos.distance(player);
-    if th.has_sight {
-        th.lurk_time = 0.0;
-        th.circling = false;
-    }
-    let mut moved = 0.0;
-    th.movement = match th.movement {
-        Movement::Still => Movement::Return {
-            home: layout.nearest_anchor(th.pos),
-        },
-        Movement::AtAnchor(i) => {
-            if th.circling {
-                let n = layout.ring.len();
-                Movement::Ring {
-                    from: i,
-                    to: (i + 1) % n,
-                }
-            } else if i != target {
-                Movement::Ring {
-                    from: i,
-                    to: layout.ring_step_toward(i, target),
-                }
-            } else {
-                // Lurking at the right anchor.
-                th.facing = (player - th.pos).normalize_or(th.facing);
-                if th.has_sight && th.cooldown <= 0.0 && dist_player > tuning.warn_distance {
-                    Movement::Creep { home: i }
+    /// Stalking: walk the patrol toward what interests him, lurk at a
+    /// standoff from a player he cannot see, investigate noise, creep in on a
+    /// visible player, and roam when bored.
+    fn stalk(&mut self, layout: &Layout, tuning: &Tuning, prey: Prey, dt: f32) {
+        let patrol = &layout.patrol;
+        let noise = self.threat.focus.map(|f| f.pos);
+        let attention = noise.unwrap_or(prey.pos);
+        let target = if noise.is_some() {
+            patrol.nearest(attention)
+        } else {
+            patrol.lurk_node(attention, tuning.standoff)
+        };
+        let dist_prey = self.threat.pos.distance(prey.pos);
+        let notice = tuning.warn_distance * prey.sight;
+        if self.threat.has_sight {
+            self.threat.lurk_time = 0.0;
+            self.threat.circling = false;
+        }
+        let before = self.threat.pos;
+        let mut walked = false;
+        let movement = self.threat.movement;
+        let next = match movement {
+            Movement::Still => Movement::Return {
+                home: patrol.nearest(self.threat.pos),
+            },
+            Movement::AtAnchor(i) => {
+                let th = &mut self.threat;
+                if th.circling {
+                    let nbrs = patrol.neighbors(i);
+                    let choices: Vec<usize> = nbrs.iter().copied().filter(|&n| n != th.prev).collect();
+                    let pool = if choices.is_empty() { nbrs.to_vec() } else { choices };
+                    let to = pool[th.turns as usize % pool.len()];
+                    th.turns = th.turns.wrapping_add(1);
+                    Movement::Walk { from: i, to }
+                } else if i != target {
+                    Movement::Walk {
+                        from: i,
+                        to: patrol.next_hop(i, target),
+                    }
+                } else if noise.is_some() {
+                    if th.pos.distance(attention) > 3.0 {
+                        Movement::Investigate { home: i }
+                    } else {
+                        th.search = tuning.search_time;
+                        Movement::Search
+                    }
                 } else {
-                    if !th.has_sight {
-                        th.lurk_time += dt;
-                        if th.lurk_time >= tuning.patience {
-                            th.circling = true;
+                    // Lurking at the right node.
+                    th.facing = (prey.pos - th.pos).normalize_or(th.facing);
+                    if th.has_sight && th.cooldown <= 0.0 && dist_prey > notice {
+                        Movement::Creep { home: i }
+                    } else {
+                        if !th.has_sight {
+                            th.lurk_time += dt;
+                            if th.lurk_time >= tuning.patience {
+                                th.circling = true;
+                            }
+                        }
+                        Movement::AtAnchor(i)
+                    }
+                }
+            }
+            Movement::Walk { from, to } => {
+                // Turn around if the short way to the target now lies behind him.
+                let (from, to) = if !self.threat.circling && patrol.path_len(from, target) < patrol.path_len(to, target)
+                {
+                    (to, from)
+                } else {
+                    (from, to)
+                };
+                let arrived = self.step_toward(layout, patrol.nodes[to], tuning.stalk_speed * dt, tuning.counting_time);
+                walked = true;
+                if arrived {
+                    self.threat.prev = from;
+                    Movement::AtAnchor(to)
+                } else {
+                    Movement::Walk { from, to }
+                }
+            }
+            Movement::Creep { home } => {
+                let th = &self.threat;
+                if !th.has_sight || patrol.lurk_node(prey.pos, tuning.standoff) != home {
+                    Movement::Return { home }
+                } else {
+                    let stop = tuning.warn_distance * 0.5;
+                    if dist_prey > stop {
+                        self.step_toward(
+                            layout,
+                            prey.pos,
+                            (tuning.creep_speed * dt).min(dist_prey - stop),
+                            tuning.counting_time,
+                        );
+                        walked = true;
+                    }
+                    Movement::Creep { home }
+                }
+            }
+            Movement::Return { home } => {
+                let arrived = self.step_toward(
+                    layout,
+                    patrol.nodes[home],
+                    tuning.stalk_speed * dt,
+                    tuning.counting_time,
+                );
+                walked = true;
+                if arrived {
+                    self.threat.prev = home;
+                    Movement::AtAnchor(home)
+                } else {
+                    Movement::Return { home }
+                }
+            }
+            Movement::Investigate { home } => match noise {
+                None => Movement::Return { home },
+                Some(spot) => {
+                    if self.threat.pos.distance(spot) <= 3.0 {
+                        self.threat.search = tuning.search_time;
+                        Movement::Search
+                    } else {
+                        self.step_toward(layout, spot, tuning.stalk_speed * dt, tuning.counting_time);
+                        walked = true;
+                        // Stalled against something: give the noise up.
+                        let th = &mut self.threat;
+                        let progress = th.pos.distance(before);
+                        if progress < tuning.stalk_speed * dt * 0.25 {
+                            th.stall += dt;
+                        } else {
+                            th.stall = 0.0;
+                        }
+                        if th.stall > 1.5 {
+                            th.stall = 0.0;
+                            th.focus = None;
+                            Movement::Return { home }
+                        } else {
+                            Movement::Investigate { home }
                         }
                     }
-                    Movement::AtAnchor(i)
+                }
+            },
+            Movement::Search => {
+                let th = &mut self.threat;
+                match noise {
+                    Some(spot) => {
+                        th.facing = (spot - th.pos).normalize_or(th.facing);
+                        th.search -= dt;
+                        if th.search <= 0.0 {
+                            th.focus = None;
+                            Movement::Return {
+                                home: patrol.nearest(th.pos),
+                            }
+                        } else {
+                            Movement::Search
+                        }
+                    }
+                    None => Movement::Return {
+                        home: patrol.nearest(th.pos),
+                    },
                 }
             }
+        };
+        let th = &mut self.threat;
+        if th.state == ThreatState::Counting {
+            // A ward stopped him mid-step.
+            th.movement = Movement::Still;
+            th.speed = 0.0;
+            return;
         }
-        Movement::Ring { from, to } => {
-            // Turn around if the short way to the target now lies behind him.
-            let (from, to) = if !th.circling && layout.ring_hops(from, target) < layout.ring_hops(to, target) {
-                (to, from)
-            } else {
-                (from, to)
-            };
-            let (arrived, m) = advance(&mut th.pos, &mut th.facing, layout.ring[to], tuning.stalk_speed * dt);
-            moved = m;
-            if arrived {
-                if th.circling {
-                    // One anchor further each time; stop circling when he sees you.
-                    th.lurk_time = 0.0;
-                }
-                Movement::AtAnchor(to)
-            } else {
-                Movement::Ring { from, to }
-            }
+        th.movement = next;
+        th.speed = if walked {
+            th.pos.distance(before) / dt.max(1e-6)
+        } else {
+            0.0
+        };
+        if th.circling && th.has_sight {
+            th.circling = false;
         }
-        Movement::Creep { home } => {
-            if !th.has_sight || target != home {
-                Movement::Return { home }
-            } else {
-                let stop = tuning.warn_distance * 0.5;
-                if dist_player > stop {
-                    let (_, m) = advance(
-                        &mut th.pos,
-                        &mut th.facing,
-                        player,
-                        (tuning.creep_speed * dt).min(dist_player - stop),
-                    );
-                    moved = m;
-                }
-                Movement::Creep { home }
-            }
-        }
-        Movement::Return { home } => {
-            let (arrived, m) = advance(&mut th.pos, &mut th.facing, layout.ring[home], tuning.stalk_speed * dt);
-            moved = m;
-            if arrived {
-                Movement::AtAnchor(home)
-            } else {
-                Movement::Return { home }
-            }
-        }
-    };
-    th.speed = moved / dt.max(1e-6);
-    if th.circling && th.has_sight {
-        th.circling = false;
     }
 }
 
@@ -579,22 +985,14 @@ mod tests {
     use super::*;
 
     fn setup() -> (Layout, Tuning, Encounter, Vec<Event>) {
-        let layout = Layout::authored();
+        let layout = Layout::new();
         let enc = Encounter::new(&layout);
         (layout, Tuning::default(), enc, Vec::new())
     }
 
     fn tick(enc: &mut Encounter, l: &Layout, t: &Tuning, player: Vec2, ev: &mut Vec<Event>) {
-        enc.step(
-            l,
-            t,
-            TickInput {
-                dt: 1.0 / 60.0,
-                player,
-                ..Default::default()
-            },
-            ev,
-        );
+        enc.tick_world(t, 1.0 / 60.0);
+        enc.update_threat(l, t, Some(Prey::plain(player)), &[player], 1.0 / 60.0, ev);
     }
 
     fn run_for(enc: &mut Encounter, l: &Layout, t: &Tuning, player: Vec2, secs: f32, ev: &mut Vec<Event>) {
@@ -605,163 +1003,68 @@ mod tests {
 
     /// Put a present, stalking Silbón at `pos` with no cooldown.
     fn place_threat(enc: &mut Encounter, l: &Layout, pos: Vec2) {
-        enc.objective = Objective::ReturnBones;
         let th = &mut enc.threat;
         th.state = ThreatState::Stalking;
         th.presence = Presence::Present;
         th.pos = pos;
-        th.movement = Movement::AtAnchor(l.nearest_anchor(pos));
+        th.movement = Movement::AtAnchor(l.patrol.nearest(pos));
         th.cooldown = 0.0;
     }
 
+    /// Open ground in the ranch yard he can see across, and its patrol node.
+    const YARD: Vec2 = Vec2::new(0.0, 12.0);
+    const YARD_NODE: Vec2 = Vec2::new(16.0, 8.0);
+    /// Inside the house, out of line with door and windows.
+    const HIDDEN: Vec2 = Vec2::new(-3.8, -4.9);
+
     #[test]
-    fn objective_progresses_find_carry_restitute_escape_win() {
+    fn manifestation_keeps_clear_of_every_player() {
         let (l, t, mut enc, mut ev) = setup();
-        let at_table = Vec2::new(2.9, -3.3);
-        enc.take_satchel(&l, &t, at_table, &mut ev).unwrap();
-        assert_eq!(enc.objective, Objective::ReturnBones);
-        assert!(enc.carrying());
-        assert!(enc.player_speed(&t) < t.walk_speed);
+        let watchers = [Vec2::new(3.0, -3.0), Vec2::new(-20.0, 8.0)];
+        enc.manifest(&l, &t, &watchers, &mut ev);
         assert_eq!(enc.threat.state, ThreatState::Stalking);
-
-        let at_tree = ground(l.ceiba.offering) + Vec2::new(1.0, 1.0);
-        let mut held = 0.0;
-        while enc.objective == Objective::ReturnBones {
-            enc.hold_offering(&l, &t, at_tree, 0.1, &mut ev).unwrap();
-            held += 0.1;
-            assert!(held < t.restitution_hold + 0.2);
+        assert!(matches!(enc.threat.presence, Presence::Rising { .. }));
+        for w in watchers {
+            assert!(enc.threat.pos.distance(w) >= t.manifest_min_distance);
         }
-        assert_eq!(enc.objective, Objective::Escape);
-        assert_eq!(enc.threat.state, ThreatState::Resolved);
-        assert!(ev.contains(&Event::RestitutionComplete));
-        assert_eq!(enc.player_speed(&t), t.walk_speed);
-
-        // Not yet on the road: nothing happens.
-        run_for(&mut enc, &l, &t, Vec2::new(0.0, 10.0), 1.0, &mut ev);
-        assert_eq!(enc.objective, Objective::Escape);
-        tick(&mut enc, &l, &t, Vec2::new(0.0, 30.0), &mut ev);
-        assert_eq!(enc.objective, Objective::Won);
-        assert!(ev.contains(&Event::Escaped));
-    }
-
-    #[test]
-    fn invalid_transitions_are_rejected_and_change_nothing() {
-        let (l, t, mut enc, mut ev) = setup();
-        let before = enc.clone();
-        // Restitution before carrying anything.
-        let at_tree = ground(l.ceiba.offering) + Vec2::new(1.0, 1.0);
-        assert_eq!(
-            enc.hold_offering(&l, &t, at_tree, 1.0, &mut ev),
-            Err(ActionError::WrongObjective)
-        );
-        // Taking the satchel from the road.
-        assert_eq!(enc.take_satchel(&l, &t, l.spawn, &mut ev), Err(ActionError::OutOfReach));
-        assert_eq!(enc, before);
-        assert!(ev.is_empty());
-        // Reaching the road first does not win.
-        run_for(&mut enc, &l, &t, l.spawn, 0.5, &mut ev);
-        assert_eq!(enc.objective, Objective::FindSatchel);
-
-        enc.take_satchel(&l, &t, Vec2::new(2.9, -3.3), &mut ev).unwrap();
-        // Taking it twice.
-        assert_eq!(
-            enc.take_satchel(&l, &t, Vec2::new(2.9, -3.3), &mut ev),
-            Err(ActionError::WrongObjective)
-        );
-        // Holding far from the tree.
-        assert_eq!(
-            enc.hold_offering(&l, &t, Vec2::new(0.0, 0.0), 1.0, &mut ev),
-            Err(ActionError::OutOfReach)
-        );
-        assert_eq!(enc.restitution, 0.0);
-        // Road while carrying: no escape.
-        let mut far = enc.clone();
-        tick(&mut far, &l, &t, Vec2::new(0.0, 30.0), &mut ev);
-        assert_eq!(far.objective, Objective::ReturnBones);
-
-        // After the end nothing is accepted.
-        enc.objective = Objective::Failed;
-        assert_eq!(
-            enc.hold_offering(&l, &t, at_tree, 1.0, &mut ev),
-            Err(ActionError::Finished)
-        );
-        let frozen = enc.clone();
-        run_for(&mut enc, &l, &t, at_tree, 1.0, &mut ev);
-        assert_eq!(enc.elapsed, frozen.elapsed);
-    }
-
-    #[test]
-    fn restitution_pauses_when_interrupted_and_resumes() {
-        let (l, t, mut enc, mut ev) = setup();
-        enc.take_satchel(&l, &t, Vec2::new(2.9, -3.3), &mut ev).unwrap();
-        let at_tree = ground(l.ceiba.offering) + Vec2::new(1.0, 1.0);
-        enc.hold_offering(&l, &t, at_tree, 1.0, &mut ev).unwrap();
-        let partial = enc.restitution;
-        assert!(partial > 0.0 && partial < 1.0);
-        // Let go for a while: progress stays where it was.
-        run_for(&mut enc, &l, &t, at_tree, 2.0, &mut ev);
-        assert_eq!(enc.restitution, partial);
-        assert!(!enc.restituting);
-        enc.hold_offering(&l, &t, at_tree, t.restitution_hold, &mut ev).unwrap();
-        assert_eq!(enc.objective, Objective::Escape);
-    }
-
-    #[test]
-    fn manifestation_is_always_at_a_safe_distance() {
-        let l = Layout::authored();
-        let t = Tuning::default();
-        // Anywhere the player could stand when taking the satchel — and
-        // anywhere in the paddock when he re-manifests after losing track.
-        let mut x = l.bounds.min.x;
-        while x <= l.bounds.max.x {
-            let mut z = -56.0;
-            while z <= 22.0 {
-                let p = Vec2::new(x, z);
-                let (_, d) = l.farthest_anchor(p);
-                assert!(d >= t.manifest_min_distance, "unsafe manifestation {d} m from {p:?}");
-                z += 2.0;
-            }
-            x += 2.0;
-        }
-        let (l, t, mut enc, mut ev) = setup();
-        let at_table = Vec2::new(2.9, -3.3);
-        enc.take_satchel(&l, &t, at_table, &mut ev).unwrap();
-        assert!(enc.threat.pos.distance(at_table) >= t.manifest_min_distance);
+        assert!(ev.contains(&Event::ThreatManifested));
+        assert!(enc.threat.cooldown >= t.first_warn_delay);
     }
 
     #[test]
     fn warning_then_hunt_when_he_keeps_seeing_you() {
         let (l, t, mut enc, mut ev) = setup();
-        let player = Vec2::new(0.0, 9.0);
-        place_threat(&mut enc, &l, Vec2::new(14.0, 14.0));
-        tick(&mut enc, &l, &t, player, &mut ev);
+        assert!(l.line_of_sight(YARD_NODE, YARD));
+        place_threat(&mut enc, &l, YARD_NODE);
+        tick(&mut enc, &l, &t, YARD, &mut ev);
         assert_eq!(enc.threat.state, ThreatState::Warning);
         assert!(ev.contains(&Event::WarningBegan));
-        run_for(&mut enc, &l, &t, player, t.warn_time + 0.1, &mut ev);
+        run_for(&mut enc, &l, &t, YARD, t.warn_time + 0.5, &mut ev);
         assert_eq!(enc.threat.state, ThreatState::Hunting);
         assert!(ev.contains(&Event::HuntBegan));
-        // Standing in the open: exposure fills and the encounter fails.
+        // Standing in the open: exposure fills and the hunted player goes down.
         let mut guard = 0;
-        while enc.objective != Objective::Failed {
-            tick(&mut enc, &l, &t, player, &mut ev);
+        while !ev.contains(&Event::Downed) {
+            tick(&mut enc, &l, &t, YARD, &mut ev);
             guard += 1;
             assert!(guard < 60 * 30, "never caught while exposed");
         }
-        assert!(ev.contains(&Event::Caught));
         // Fair: the hunt lasted at least a few seconds before the catch.
-        assert!(guard as f32 / 60.0 > 2.0);
+        assert!(guard as f32 / 60.0 > 1.5);
+        // He withdraws after a catch instead of standing over the body.
+        assert_eq!(enc.threat.state, ThreatState::Stalking);
+        assert!(matches!(enc.threat.presence, Presence::Sinking { relocate: true, .. }));
+        assert_eq!(enc.stats.downs, 1);
     }
 
     #[test]
     fn breaking_sight_during_warning_averts_the_hunt() {
         let (l, t, mut enc, mut ev) = setup();
-        place_threat(&mut enc, &l, Vec2::new(14.0, 14.0));
-        tick(&mut enc, &l, &t, Vec2::new(0.0, 9.0), &mut ev);
+        place_threat(&mut enc, &l, YARD_NODE);
+        tick(&mut enc, &l, &t, YARD, &mut ev);
         assert_eq!(enc.threat.state, ThreatState::Warning);
-        // Duck inside the house, away from door and window lines.
-        let hidden = Vec2::new(-3.8, -4.9);
-        assert!(!l.line_of_sight(enc.threat.pos, hidden));
-        run_for(&mut enc, &l, &t, hidden, t.warn_break_time + 0.1, &mut ev);
+        assert!(!l.line_of_sight(enc.threat.pos, HIDDEN));
+        run_for(&mut enc, &l, &t, HIDDEN, t.warn_break_time + 0.2, &mut ev);
         assert_eq!(enc.threat.state, ThreatState::Stalking);
         assert!(ev.contains(&Event::WarningAverted));
         assert!(!ev.contains(&Event::HuntBegan));
@@ -771,16 +1074,23 @@ mod tests {
     #[test]
     fn breaking_sight_during_hunt_makes_him_lose_track_and_withdraw() {
         let (l, t, mut enc, mut ev) = setup();
-        place_threat(&mut enc, &l, Vec2::new(14.0, 14.0));
-        let exposed = Vec2::new(0.0, 9.0);
-        run_for(&mut enc, &l, &t, exposed, t.warn_time + 0.2, &mut ev);
+        place_threat(&mut enc, &l, YARD_NODE);
+        run_for(&mut enc, &l, &t, YARD, t.warn_time + 0.2, &mut ev);
         assert_eq!(enc.threat.state, ThreatState::Hunting);
-        run_for(&mut enc, &l, &t, exposed, 1.0, &mut ev);
+        run_for(&mut enc, &l, &t, YARD, 1.0, &mut ev);
         let exposure_seen = enc.threat.exposure;
         assert!(exposure_seen > 0.0);
-
-        let hidden = Vec2::new(-3.8, -4.9);
-        assert!(!l.line_of_sight(enc.threat.pos, hidden));
+        // Somewhere inside the house he cannot see from where he now stands.
+        let hidden = [
+            HIDDEN,
+            Vec2::new(-4.3, -2.0),
+            Vec2::new(4.2, -3.0),
+            Vec2::new(-2.0, -5.5),
+            Vec2::new(2.0, -5.6),
+        ]
+        .into_iter()
+        .find(|c| !l.line_of_sight(enc.threat.pos, *c))
+        .expect("some spot in the house is out of his sight");
         run_for(&mut enc, &l, &t, hidden, 1.0, &mut ev);
         // Still hunting, but no longer approaching and exposure recovering.
         assert_eq!(enc.threat.state, ThreatState::Hunting);
@@ -788,45 +1098,311 @@ mod tests {
         let held = enc.threat.pos;
         run_for(&mut enc, &l, &t, hidden, 0.2, &mut ev);
         assert_eq!(enc.threat.pos, held);
-
         run_for(&mut enc, &l, &t, hidden, t.lose_track_time, &mut ev);
         assert!(ev.contains(&Event::LostTrack));
         assert_eq!(enc.threat.state, ThreatState::Stalking);
-        assert_eq!(enc.threat.exposure, 0.0);
-        // He sinks and rises again far away, never on top of the player.
-        run_for(&mut enc, &l, &t, hidden, t.sink_time + t.rise_time + 0.2, &mut ev);
+        // He sinks and rises again far away, never on top of anyone.
+        run_for(&mut enc, &l, &t, hidden, t.sink_time + t.rise_time + 0.3, &mut ev);
         assert!(ev.contains(&Event::ThreatReturned));
         assert!(enc.threat.pos.distance(hidden) >= t.manifest_min_distance);
         assert_eq!(enc.threat.presence, Presence::Present);
-        assert_ne!(enc.objective, Objective::Failed);
+        assert!(!ev.contains(&Event::Downed));
     }
 
     #[test]
     fn he_never_approaches_through_walls() {
         let (l, t, mut enc, mut ev) = setup();
-        let hidden = Vec2::new(-3.8, -4.9);
-        place_threat(&mut enc, &l, Vec2::new(14.0, 14.0));
+        place_threat(&mut enc, &l, YARD_NODE);
         enc.threat.state = ThreatState::Hunting;
         let start = enc.threat.pos;
-        run_for(&mut enc, &l, &t, hidden, 1.5, &mut ev);
+        run_for(&mut enc, &l, &t, HIDDEN, 1.5, &mut ev);
         assert_eq!(enc.threat.pos, start);
         assert_eq!(enc.threat.exposure, 0.0);
+    }
+
+    #[test]
+    fn crouching_shrinks_his_notice_and_grass_hides_you_beyond_a_few_metres() {
+        let (l, t, mut enc, mut ev) = setup();
+        place_threat(&mut enc, &l, YARD_NODE);
+        // Visible and in range for a standing player, but a crouched one
+        // farther than 0.6 x the warning distance goes unnoticed.
+        let far = Vec2::new(-5.0, 14.0);
+        let d = YARD_NODE.distance(far);
+        assert!(
+            d < t.warn_distance && d > t.warn_distance * t.sight_crouch,
+            "test geometry: {d}"
+        );
+        assert!(l.line_of_sight(YARD_NODE, far));
+        let sneaky = Prey {
+            pos: far,
+            sight: t.sight_crouch,
+            concealed: false,
+        };
+        for _ in 0..30 {
+            enc.tick_world(&t, 1.0 / 60.0);
+            enc.update_threat(&l, &t, Some(sneaky), &[far], 1.0 / 60.0, &mut ev);
+        }
+        assert_ne!(
+            enc.threat.state,
+            ThreatState::Warning,
+            "a crouched player should slip by"
+        );
+        // A concealed player in grass is not even seen at the same range.
+        place_threat(&mut enc, &l, YARD_NODE);
+        let hidden = Prey {
+            pos: far,
+            sight: 1.0,
+            concealed: true,
+        };
+        for _ in 0..30 {
+            enc.tick_world(&t, 1.0 / 60.0);
+            enc.update_threat(&l, &t, Some(hidden), &[far], 1.0 / 60.0, &mut ev);
+        }
+        assert!(!enc.threat.has_sight);
+        assert_ne!(enc.threat.state, ThreatState::Warning);
+        // The same player standing is noticed at once.
+        place_threat(&mut enc, &l, YARD_NODE);
+        enc.update_threat(&l, &t, Some(Prey::plain(far)), &[far], 1.0 / 60.0, &mut ev);
+        assert_eq!(enc.threat.state, ThreatState::Warning);
+    }
+
+    #[test]
+    fn a_noise_draws_him_to_search_the_spot_then_he_gives_up() {
+        let (l, t, mut enc, mut ev) = setup();
+        // He stands at a far node; the player is elsewhere and out of sight.
+        let node = Vec2::new(35.0, 2.0);
+        place_threat(&mut enc, &l, node);
+        let player = Vec2::new(-30.0, 0.0);
+        let noise = Vec2::new(24.0, 14.0);
+        // Out of earshot: ignored.
+        enc.hear(&t, noise + Vec2::new(0.0, 70.0), 8.0);
+        assert!(enc.threat.focus.is_none());
+        // Within earshot: he takes an interest.
+        enc.hear(&t, noise, 20.0);
+        assert!(enc.threat.focus.is_some());
+        let mut closest = f32::MAX;
+        let mut searched = false;
+        for _ in 0..(40 * 60) {
+            tick(&mut enc, &l, &t, player, &mut ev);
+            closest = closest.min(enc.threat.pos.distance(noise));
+            searched |= matches!(enc.threat.movement, Movement::Search);
+        }
+        assert!(closest <= 3.5, "he never went to look: closest {closest}");
+        assert!(searched, "he should stop and listen at the spot");
+        assert!(enc.threat.focus.is_none(), "he must eventually give the noise up");
+        assert_ne!(enc.threat.state, ThreatState::Dormant);
+    }
+
+    #[test]
+    fn a_calm_present_threat_only_hears_and_a_busy_one_ignores() {
+        let (l, t, mut enc, _) = setup();
+        // Not manifested: deaf.
+        enc.hear(&t, enc.threat.pos, 50.0);
+        assert!(enc.threat.focus.is_none());
+        place_threat(&mut enc, &l, Vec2::new(35.0, 2.0));
+        enc.threat.state = ThreatState::Hunting;
+        enc.hear(&t, Vec2::new(36.0, 3.0), 50.0);
+        assert!(enc.threat.focus.is_none(), "a hunting threat is not distracted");
+        enc.threat.state = ThreatState::Stalking;
+        enc.pressure = 1.0;
+        let calm_reach = 10.0;
+        // The night lets him hear farther than the same noise by day.
+        let at = Vec2::new(35.0 + calm_reach * 1.4, 2.0);
+        enc.hear(&t, at, calm_reach);
+        assert!(enc.threat.focus.is_some());
+        enc.threat.focus = None;
+        enc.pressure = 0.0;
+        enc.hear(&t, at, calm_reach);
+        assert!(enc.threat.focus.is_none());
+    }
+
+    #[test]
+    fn pepper_ward_stops_a_hunt_makes_him_count_and_blocks_the_way() {
+        let (l, t, mut enc, mut ev) = setup();
+        place_threat(&mut enc, &l, YARD_NODE);
+        run_for(&mut enc, &l, &t, YARD, t.warn_time + 0.3, &mut ev);
+        assert_eq!(enc.threat.state, ThreatState::Hunting);
+        // The player scatters pepper between them.
+        let between = YARD + (YARD_NODE - YARD).normalize() * 4.0;
+        enc.place_aji(&t, between, &mut ev);
+        assert!(ev.contains(&Event::AjiUsed));
+        let mut guard = 0;
+        while enc.threat.state == ThreatState::Hunting {
+            tick(&mut enc, &l, &t, YARD, &mut ev);
+            guard += 1;
+            assert!(guard < 60 * 20, "he walked through the pepper");
+        }
+        assert_eq!(enc.threat.state, ThreatState::Counting);
+        assert!(ev.contains(&Event::CountingBegan));
+        assert!(!ev.contains(&Event::Downed));
+        assert!(enc.threat.pos.distance(YARD) > 2.0, "he must stop short of the player");
+        // While he counts he neither sees nor warns nor moves.
+        let held = enc.threat.pos;
+        run_for(&mut enc, &l, &t, YARD, t.counting_time - 0.5, &mut ev);
+        assert_eq!(enc.threat.state, ThreatState::Counting);
+        assert_eq!(enc.threat.pos, held);
+        assert!(!enc.threat.has_sight);
+        // Then he leaves, shaken, with a long cooldown and no exposure.
+        run_for(&mut enc, &l, &t, YARD, 1.0, &mut ev);
+        assert_eq!(enc.threat.state, ThreatState::Stalking);
+        assert!(ev.contains(&Event::CountingEnded));
+        assert!(enc.threat.cooldown > 5.0 && enc.threat.exposure == 0.0);
+        // The spent ward is a wall for as long as it lasts.
+        assert!(enc.zones.iter().any(|z| z.spent));
+        let z = enc.zones[0];
+        enc.threat.state = ThreatState::Hunting;
+        enc.threat.cooldown = 0.0;
+        run_for(&mut enc, &l, &t, YARD, 2.0, &mut ev);
+        assert!(enc.threat.pos.distance(z.pos) >= z.radius - 0.6, "crossed a spent ward");
+        // Wards fade.
+        run_for(&mut enc, &l, &t, HIDDEN, t.aji_zone_life, &mut ev);
+        assert!(enc.zones.is_empty());
+    }
+
+    #[test]
+    fn roaming_never_doubles_back_needlessly_and_visits_the_whole_map() {
+        let (l, t, mut enc, mut ev) = setup();
+        place_threat(&mut enc, &l, Vec2::new(0.0, 10.0));
+        enc.threat.circling = true;
+        // Crouched in tall grass far away: he never sees his prey, so he
+        // never stops roaming to lurk.
+        let unseen = Prey {
+            pos: HIDDEN,
+            sight: 1.0,
+            concealed: true,
+        };
+        let mut visited = std::collections::HashSet::new();
+        for _ in 0..(600 * 60) {
+            enc.threat.cooldown = 99.0;
+            enc.tick_world(&t, 1.0 / 60.0);
+            enc.update_threat(&l, &t, Some(unseen), &[HIDDEN], 1.0 / 60.0, &mut ev);
+            enc.threat.circling = true;
+            visited.insert(l.patrol.nearest(enc.threat.pos));
+        }
+        assert!(
+            visited.len() * 2 > l.patrol.len(),
+            "roaming covered only {} of {} nodes",
+            visited.len(),
+            l.patrol.len()
+        );
+    }
+
+    #[test]
+    fn bones_are_taken_dropped_and_delivered_with_ownership_rules() {
+        let (l, t, mut enc, mut ev) = setup();
+        let n = enc.progress.relics.len();
+        assert!(n >= 5);
+        assert!(enc.take_relic(0, 7, &mut ev));
+        assert!(!enc.take_relic(0, 8, &mut ev), "already carried");
+        assert_eq!(enc.progress.carried_by(7), 1);
+        assert!(enc.drop_relic(7, Vec3::new(1.0, 0.0, 2.0), &mut ev));
+        assert!(!enc.drop_relic(7, Vec3::ZERO, &mut ev));
+        assert!(matches!(enc.progress.relics[0], Relic::Ground(p) if (p.y - 0.35).abs() < 1e-6));
+        assert!(enc.take_relic(0, 8, &mut ev));
+        assert!(!enc.deliver_relic(7, &mut ev), "only the carrier can deliver");
+        assert!(enc.deliver_relic(8, &mut ev));
+        assert_eq!(enc.progress.delivered(), 1);
+        // Capture drops everything the player carried, apart on the ground.
+        for i in 1..4 {
+            assert!(enc.take_relic(i, 8, &mut ev));
+        }
+        enc.release_all(8, Vec3::new(4.0, 0.0, 4.0));
+        assert_eq!(enc.progress.carried_total(), 0);
+        let grounded: Vec<Vec3> = enc
+            .progress
+            .relics
+            .iter()
+            .filter_map(|r| if let Relic::Ground(p) = r { Some(*p) } else { None })
+            .collect();
+        assert!(grounded.len() >= 3);
+        // Delivering all of them completes the bones exactly once.
+        for i in 1..n {
+            enc.progress.relics[i] = Relic::Carried(8);
+        }
+        while enc.progress.carried_by(8) > 0 {
+            enc.deliver_relic(8, &mut ev);
+        }
+        assert!(enc.progress.bones_home());
+        assert_eq!(ev.iter().filter(|e| **e == Event::AllBonesHome).count(), 1);
+        let _ = (&l, &t);
+    }
+
+    #[test]
+    fn the_truck_only_starts_with_the_bones_home_and_the_power_on() {
+        let (_, t, mut enc, mut ev) = setup();
+        assert!(!enc.work_truck(&t, 1.0, &mut ev), "no power, no bones");
+        for _ in 0..(t.pump_hold as usize + 2) {
+            enc.work_pump(&t, 1.0, &mut ev);
+        }
+        assert!(enc.progress.power_on());
+        assert_eq!(ev.iter().filter(|e| **e == Event::PowerRestored).count(), 1);
+        assert!(!enc.work_truck(&t, 1.0, &mut ev), "bones still missing");
+        enc.progress.relics.fill(Relic::Delivered);
+        for _ in 0..(t.truck_hold as usize + 2) {
+            enc.work_truck(&t, 1.0, &mut ev);
+        }
+        assert!(enc.progress.truck_running());
+        assert_eq!(ev.iter().filter(|e| **e == Event::TruckStarted).count(), 1);
+        enc.tick_world(&t, 0.016);
+        assert_eq!(enc.pressure, 1.0, "the engine is the finale");
+    }
+
+    #[test]
+    fn pressure_rises_with_the_night_and_load_and_eases_as_bones_go_home() {
+        let (_, t, mut enc, mut ev) = setup();
+        enc.tick_world(&t, 0.016);
+        let early = enc.pressure;
+        enc.elapsed = t.night_length * 0.8;
+        enc.tick_world(&t, 0.016);
+        let late = enc.pressure;
+        assert!(late > early);
+        enc.take_relic(0, 1, &mut ev);
+        enc.take_relic(1, 1, &mut ev);
+        enc.tick_world(&t, 0.016);
+        let burdened = enc.pressure;
+        assert!(burdened > late);
+        enc.deliver_relic(1, &mut ev);
+        enc.deliver_relic(1, &mut ev);
+        enc.tick_world(&t, 0.016);
+        assert!(enc.pressure < burdened, "laying bones to rest calms the night");
+        assert!(enc.pressure <= t.pressure_max);
+    }
+
+    #[test]
+    fn beacon_burns_then_cools_and_cannot_be_relit_early() {
+        let (_, t, mut enc, mut ev) = setup();
+        assert!(enc.light_beacon(&t, &mut ev));
+        assert!(!enc.light_beacon(&t, &mut ev));
+        enc.tick_world(&t, t.beacon_burn + 0.1);
+        assert_eq!(enc.progress.beacon, 0.0);
+        assert!(!enc.light_beacon(&t, &mut ev), "still cooling");
+        enc.tick_world(&t, t.beacon_cooldown + 0.1);
+        assert!(enc.light_beacon(&t, &mut ev));
     }
 
     #[test]
     fn restart_resets_all_truth_and_timers() {
         let (l, t, mut enc, mut ev) = setup();
         let pristine = enc.clone();
-        enc.take_satchel(&l, &t, Vec2::new(2.9, -3.3), &mut ev).unwrap();
-        run_for(&mut enc, &l, &t, Vec2::new(0.0, 9.0), 60.0, &mut ev);
-        let at_tree = ground(l.ceiba.offering) + Vec2::new(1.0, 1.0);
-        let _ = enc.hold_offering(&l, &t, at_tree, 1.0, &mut ev);
+        enc.manifest(&l, &t, &[Vec2::new(0.0, 10.0)], &mut ev);
+        enc.take_relic(0, 3, &mut ev);
+        enc.place_aji(&t, Vec2::ZERO, &mut ev);
+        run_for(&mut enc, &l, &t, YARD, 30.0, &mut ev);
+        enc.progress.power = 0.5;
         assert_ne!(enc, pristine);
         enc.reset(&l);
         assert_eq!(enc, pristine);
         assert_eq!(enc.elapsed, 0.0);
-        assert_eq!(enc.threat.exposure, 0.0);
-        assert_eq!(enc.threat.cooldown, 0.0);
         assert_eq!(enc.stats, Stats::default());
+        assert!(enc.zones.is_empty() && enc.threat.focus.is_none());
+    }
+
+    #[test]
+    fn event_codes_round_trip() {
+        for (i, e) in Event::ALL.iter().enumerate() {
+            assert_eq!(*e as u8 as usize, i);
+            assert_eq!(Event::from_code(i as u8), Some(*e));
+        }
+        assert_eq!(Event::from_code(200), None);
     }
 }

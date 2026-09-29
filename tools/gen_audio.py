@@ -443,6 +443,445 @@ def make_dawn(rng):
     return normalize(fade(out, 0.05, 0.8), 0.5)
 
 
+# --------------------------------------------------------------------------
+# Mechanics: weather, footsteps, machines, the herd and the party
+# --------------------------------------------------------------------------
+
+def loop_crossfade(out, loop, xfade):
+    """Fold the extra tail of `out` into its head so the result repeats seamlessly."""
+    L = int(loop * SR)
+    X = int(xfade * SR)
+    looped = out[:L]
+    for i in range(X):
+        u = i / X
+        looped[i] = out[i] * u + out[L + i] * (1.0 - u)
+    return looped
+
+
+def damped(out, start, freq, decay, gain, phase=0.0, length=None):
+    """Add one exponentially decaying sine partial."""
+    i0 = int(start * SR)
+    length = length if length is not None else decay * 7.0
+    for k in range(min(int(length * SR), len(out) - i0)):
+        t = k / SR
+        out[i0 + k] += math.sin(phase + TAU * freq * t) * math.exp(-t / decay) * gain
+
+
+def make_rain(rng):
+    loop, xfade = 8.0, 1.5
+    n = int((loop + xfade) * SR)
+    sheet = one_pole_lowpass(one_pole_highpass(noise(rng, n), 700.0), 9000.0)
+    sheet = one_pole_lowpass(sheet, 7000.0)
+    earth = one_pole_lowpass(noise(rng, n), 260.0)
+    out = [0.0] * n
+    for i in range(n):
+        t = i / SR
+        swell = 0.85 + 0.15 * math.sin(TAU * t / 3.1 + 0.4) + 0.06 * math.sin(TAU * t / 1.3)
+        out[i] = sheet[i] * 0.55 * swell + earth[i] * 1.4
+    # Drops on leaves and tin: sparse bright ticks.
+    t = 0.0
+    while t < loop + xfade:
+        t += rng.expovariate(90.0)
+        i0 = int(t * SR)
+        f = rng.uniform(2500.0, 6500.0)
+        g = rng.uniform(0.02, 0.1)
+        ph = rng.uniform(0.0, TAU)
+        for k in range(int(0.012 * SR)):
+            i = i0 + k
+            if i >= n:
+                break
+            out[i] += math.sin(ph + TAU * f * k / SR) * math.exp(-k / (0.003 * SR)) * g
+    return normalize(loop_crossfade(out, loop, xfade), 0.55)
+
+
+def make_thunder(rng, length, rolls):
+    n = int(length * SR)
+    out = [0.0] * n
+    crack = one_pole_highpass(noise(rng, n), 1200.0)
+    for i in range(int(0.6 * SR)):
+        out[i] += crack[i] * math.exp(-(i / SR) / 0.05)
+    raw = noise(rng, n)
+    lo1 = one_pole_lowpass(raw, 240.0)
+    lo2 = one_pole_lowpass(raw, 90.0)
+    # The sky rolls: irregular swells, each a sub-strike further away.
+    swells = [(0.0, 1.0, 0.3)]
+    for _ in range(rolls):
+        swells.append((rng.uniform(0.3, length * 0.55), rng.uniform(0.25, 0.7), rng.uniform(0.25, 0.7)))
+    for i in range(n):
+        t = i / SR
+        env = 0.0
+        for t0, g, dec in swells:
+            if t >= t0:
+                d = t - t0
+                env += g * (1.0 - math.exp(-d / 0.06)) * math.exp(-d / (dec + 0.8))
+        out[i] += (lo1[i] * 5.0 + lo2[i] * 12.0) * env
+        out[i] += math.sin(TAU * 46.0 * t) * math.exp(-t / 2.2) * 0.25
+    wet = reverb(out, size=1.6, damp=0.6, feedback=0.85)
+    out = [d * 0.7 + w * 0.3 for d, w in zip(out, wet)]
+    return normalize(fade(out, 0.002, 1.2), 0.85)
+
+
+def make_heartbeat(rng):
+    n = int(0.9 * SR)
+    out = [0.0] * n
+
+    def thump(t0, f0, level):
+        i0 = int(t0 * SR)
+        ph = 0.0
+        click = one_pole_lowpass(noise(rng, int(0.05 * SR)), 500.0)
+        for k in range(min(int(0.24 * SR), n - i0)):
+            t = k / SR
+            f = f0 * (1.0 - 0.35 * min(1.0, t / 0.12))
+            ph += TAU * f / SR
+            v = math.sin(ph) * math.exp(-t / 0.07) * level
+            if k < len(click):
+                v += click[k] * math.exp(-t / 0.02) * level * 4.0
+            out[i0 + k] += v
+
+    thump(0.0, 62.0, 1.0)
+    thump(0.23, 54.0, 0.6)
+    return normalize(fade(out, 0.002, 0.05), 0.9)
+
+
+def make_step(rng, kind):
+    n = int(0.34 * SR)
+    out = [0.0] * n
+    if kind == "dirt":
+        body = one_pole_lowpass(noise(rng, n), 900.0)
+        grit = biquad_bandpass(noise(rng, n), 2200.0, 0.7)
+        for i in range(n):
+            t = i / SR
+            out[i] += body[i] * math.exp(-t / 0.09) * 6.0 + grit[i] * math.exp(-t / 0.05) * 0.9
+        damped(out, 0.0, rng.uniform(80.0, 110.0), 0.05, 0.8)
+    elif kind == "grass":
+        swish = biquad_bandpass(noise(rng, n), rng.uniform(3300.0, 4400.0), 0.6)
+        for i in range(n):
+            t = i / SR
+            env = min(1.0, t / 0.04) * math.exp(-t / 0.12)
+            out[i] += swish[i] * env * 1.6
+        damped(out, 0.0, 70.0, 0.03, 0.5)
+    elif kind == "wood":
+        tick = one_pole_highpass(noise(rng, n), 1800.0)
+        damped(out, 0.0, rng.uniform(170.0, 230.0), 0.07, 0.7)
+        damped(out, 0.0, rng.uniform(380.0, 520.0), 0.04, 0.5)
+        damped(out, 0.0, rng.uniform(900.0, 1300.0), 0.02, 0.2)
+        for i in range(n):
+            t = i / SR
+            out[i] += tick[i] * math.exp(-t / 0.008) * 0.5
+        # A little creak as the plank gives.
+        ph = 0.0
+        f0 = rng.uniform(210.0, 300.0)
+        for i in range(int(0.2 * SR)):
+            t = i / SR
+            ph += TAU * (f0 + 90.0 * t) / SR
+            out[i] += math.sin(ph) * math.sin(math.pi * t / 0.2) * 0.12 * (1.0 + 0.6 * math.sin(TAU * 60.0 * t))
+    else:  # water
+        splash = biquad_bandpass(noise(rng, n), 1300.0, 0.7)
+        for i in range(n):
+            t = i / SR
+            out[i] += splash[i] * math.exp(-t / 0.11) * 2.4
+        for _ in range(3):
+            t0 = rng.uniform(0.03, 0.2)
+            ph = 0.0
+            i0 = int(t0 * SR)
+            for k in range(int(0.05 * SR)):
+                t = k / SR
+                if i0 + k >= n:
+                    break
+                ph += TAU * (400.0 + 14000.0 * t) / SR
+                out[i0 + k] += math.sin(ph) * math.sin(math.pi * t / 0.05) * 0.2
+    return normalize(fade(out, 0.001, 0.06), 0.7)
+
+
+def make_cattle(rng):
+    dur = 2.7
+    n = int(dur * SR)
+    src = [0.0] * n
+    ph = 0.0
+    for i in range(n):
+        t = i / SR
+        u = t / dur
+        f = 96.0 * (0.9 + 0.25 * math.sin(math.pi * min(1.0, u * 1.15)) - 0.12 * u * u)
+        f *= 1.0 + 0.012 * math.sin(TAU * 5.5 * t) + 0.02 * math.sin(TAU * 0.8 * t)
+        ph += TAU * f / SR
+        s = 0.0
+        for k in range(1, 22):
+            s += math.sin(k * ph) / (k ** 1.05)
+        src[i] = s
+    a = biquad_bandpass(src, 520.0, 3.0)
+    b = biquad_bandpass(src, 980.0, 4.0)
+    c = biquad_bandpass(src, 190.0, 1.5)
+    breath = one_pole_lowpass(noise(rng, n), 900.0)
+    out = [0.0] * n
+    for i in range(n):
+        t = i / SR
+        env = min(1.0, t / 0.35) ** 1.5 * min(1.0, (dur - t) / 0.9)
+        open_mouth = min(1.0, t / 1.2)  # "oo" opens toward "aw"
+        out[i] = (c[i] * 1.0 + a[i] * (0.4 + 0.5 * open_mouth) + b[i] * 0.5 * open_mouth + src[i] * 0.08
+                  + breath[i] * 0.9) * env
+    out = one_pole_lowpass(out, 2500.0)
+    return normalize(fade(out, 0.02, 0.4), 0.75)
+
+
+def make_engine_loop(rng):
+    dur, extra = 2.0, 0.2
+    n = int((dur + extra) * SR)
+    fire = 22.0  # firings per second: 44 in the loop, so every partial repeats exactly
+    clat = one_pole_highpass(one_pole_lowpass(noise(rng, n), 3500.0), 900.0)
+    out = [0.0] * n
+    for i in range(n):
+        t = i / SR
+        wob = 1.0 + 0.06 * math.sin(TAU * 1.0 * t) + 0.03 * math.sin(TAU * 3.0 * t + 1.0)
+        s = 0.0
+        for k in range(1, 14):
+            s += math.sin(TAU * fire * k * t) * (0.9 / k)
+        s += 0.45 * math.sin(TAU * (fire / 2.0) * t + 0.3) + 0.2 * math.sin(TAU * (fire / 4.0) * t)
+        gate = max(0.0, math.sin(TAU * fire * t)) ** 6
+        out[i] = s * wob + clat[i] * gate * 0.5
+    out = [0.7 * a + 0.3 * b for a, b in zip(one_pole_lowpass(out, 600.0), out)]
+    return normalize(loop_crossfade(out, dur, extra), 0.6)
+
+
+def make_engine_start(rng):
+    dur = 3.4
+    n = int(dur * SR)
+    out = [0.0] * n
+    cough = one_pole_lowpass(noise(rng, n), 600.0)
+    body = one_pole_lowpass(noise(rng, n), 380.0)
+    crank_ph = whine_ph = idle_ph = 0.0
+    for i in range(n):
+        t = i / SR
+        if t < 1.6:
+            rate = 5.0 + 4.0 * min(1.0, t / 1.5)
+            crank_ph += rate / SR
+            pulse = max(0.0, math.sin(TAU * crank_ph)) ** 3
+            whine_ph += TAU * (180.0 + 90.0 * t) / SR
+            out[i] += body[i] * pulse * 5.0 + math.sin(whine_ph) * 0.06 * min(1.0, t / 0.2)
+    for t0, g in ((1.55, 1.0), (1.78, 0.7)):
+        i0 = int(t0 * SR)
+        for k in range(int(0.3 * SR)):
+            if i0 + k < n:
+                out[i0 + k] += cough[i0 + k] * math.exp(-(k / SR) / 0.09) * 9.0 * g
+    for i in range(int(1.7 * SR), n):
+        t = i / SR
+        rate = 22.0 + 12.0 * math.exp(-(t - 1.9) / 0.35) if t > 1.9 else 30.0
+        idle_ph += TAU * rate / SR
+        env = min(1.0, (t - 1.7) / 0.25) * min(1.0, (dur - t) / 0.8)
+        s = 0.0
+        for k in range(1, 9):
+            s += math.sin(k * idle_ph) * (0.9 / k)
+        out[i] += s * env * 0.5
+    out = [0.6 * a + 0.4 * b for a, b in zip(one_pole_lowpass(out, 900.0), out)]
+    return normalize(fade(out, 0.01, 0.5), 0.75)
+
+
+def make_crank(rng):
+    dur = 1.2
+    n = int(dur * SR)
+    out = [0.0] * n
+    # Rusty creak: a sweeping, scratchy squeal as the wheel turns.
+    ph = 0.0
+    for i in range(int(0.62 * SR)):
+        t = i / SR
+        u = t / 0.62
+        ph += TAU * (520.0 + 260.0 * u + 30.0 * math.sin(TAU * 13.0 * t)) / SR
+        out[i + int(0.03 * SR)] += (math.sin(ph) + 0.4 * math.sin(2.0 * ph)) * math.sin(math.pi * u) ** 2 * (
+            0.10 * (1.0 + 0.7 * math.sin(TAU * 57.0 * t)))
+    # The pawl clanks over at the top of each turn.
+    for f, decay, g in ((392.0, 0.09, 0.6), (1040.0, 0.05, 0.3), (1730.0, 0.03, 0.15)):
+        damped(out, 0.66, f, decay, g)
+    tick = one_pole_highpass(noise(rng, int(0.03 * SR)), 2000.0)
+    for start in (0.0, 0.66):
+        i0 = int(start * SR)
+        for k, v in enumerate(tick):
+            out[i0 + k] += v * math.exp(-(k / SR) / 0.006) * 0.9
+    return normalize(fade(out, 0.001, 0.02), 0.7)
+
+
+def make_power_on(rng):
+    n = int(2.6 * SR)
+    out = [0.0] * n
+    damped(out, 0.0, 70.0, 0.1, 1.0)
+    click = one_pole_highpass(noise(rng, n), 1500.0)
+    zap = one_pole_highpass(noise(rng, n), 3000.0)
+    for i in range(int(0.05 * SR)):
+        out[i] += click[i] * math.exp(-(i / SR) / 0.006) * 0.8
+    for t0 in (0.28, 0.44):
+        i0 = int(t0 * SR)
+        for k in range(int(0.05 * SR)):
+            out[i0 + k] += zap[i0 + k] * math.exp(-(k / SR) / 0.01) * 0.6
+    for i in range(n):
+        t = i / SR
+        env = min(1.0, max(0.0, t - 0.3) / 0.6) * math.exp(-max(0.0, t - 1.0) / 0.9)
+        hum = math.sin(TAU * 60.0 * t) + 0.6 * math.sin(TAU * 120.0 * t) + 0.3 * math.sin(TAU * 180.0 * t)
+        buzz = 0.0
+        if 0.35 < t < 1.4:
+            buzz = math.sin(TAU * 3600.0 * t) * (0.5 + 0.5 * math.sin(TAU * 120.0 * t)) * 0.03 * math.sin(
+                math.pi * (t - 0.35) / 1.05)
+        out[i] += hum * env * 0.22 + buzz
+    return normalize(fade(out, 0.001, 0.5), 0.7)
+
+
+def make_susto(rng):
+    n = int(1.7 * SR)
+    out = [0.0] * n
+    gasp = biquad_bandpass(noise(rng, n), 1700.0, 1.2)
+    for i in range(int(0.3 * SR)):
+        out[i] += gasp[i] * (i / SR / 0.28) ** 2 * 1.6
+    for f, g in ((1975.5, 0.3), (2093.0, 0.28), (987.8, 0.18)):
+        damped(out, 0.28, f, 0.4, g, length=1.3)
+    damped(out, 0.28, 55.0, 0.25, 0.9, length=1.2)
+    wet = reverb(out, size=1.2, damp=0.5, feedback=0.8)
+    out = [d * 0.7 + w * 0.3 for d, w in zip(out, wet)]
+    return normalize(fade(out, 0.002, 0.4), 0.8)
+
+
+def make_revive(rng):
+    n = int(2.6 * SR)
+    out = [0.0] * n
+    for f, g, t0 in ((220.0, 0.2, 0.0), (329.6, 0.16, 0.1), (440.0, 0.14, 0.2), (554.4, 0.1, 0.3), (659.3, 0.07, 0.45)):
+        i0 = int(t0 * SR)
+        for k in range(n - i0):
+            t = k / SR
+            env = min(1.0, t / 0.7) * math.exp(-max(0.0, t - 0.9) / 0.8)
+            out[i0 + k] += (math.sin(TAU * f * t) + 0.25 * math.sin(TAU * 2.0 * f * t)) * env * g
+    br = biquad_bandpass(noise(rng, n), 1100.0, 0.9)
+    for i in range(int(1.4 * SR)):
+        out[i] += br[i] * math.sin(math.pi * i / (1.4 * SR)) ** 2 * 0.18
+    damped(out, 0.9, 1318.5, 1.0, 0.06)
+    wet = reverb(out, size=1.1, damp=0.45, feedback=0.78)
+    out = [d * 0.75 + w * 0.25 for d, w in zip(out, wet)]
+    return normalize(fade(out, 0.01, 0.9), 0.6)
+
+
+def make_pray(rng):
+    n = int(3.0 * SR)
+    src = [0.0] * n
+    ph1 = ph2 = 0.0
+    for i in range(n):
+        t = i / SR
+        vib = 1.0 + 0.008 * math.sin(TAU * 5.0 * t)
+        ph1 += TAU * 147.0 * vib / SR
+        ph2 += TAU * 196.0 * vib / SR
+        s = 0.0
+        for k in range(1, 11):
+            s += (math.sin(k * ph1) + 0.8 * math.sin(k * ph2)) / k
+        src[i] = s
+    a = biquad_bandpass(src, 420.0, 2.0)
+    b = biquad_bandpass(src, 780.0, 3.0)
+    out = [0.0] * n
+    for i in range(n):
+        t = i / SR
+        env = math.sin(math.pi * min(1.0, t / 2.6)) ** 2
+        out[i] = (a[i] + 0.6 * b[i]) * env * 0.35
+    for t0, f in ((0.2, 880.0), (1.1, 1174.7)):
+        for ratio, decay, g in ((1.0, 1.6, 0.12), (2.76, 0.8, 0.05), (5.4, 0.4, 0.025)):
+            damped(out, t0, f * ratio, decay, g)
+    wet = reverb(out, size=1.5, damp=0.5, feedback=0.86)
+    out = [d * 0.55 + w * 0.45 for d, w in zip(out, wet)]
+    return normalize(fade(out, 0.05, 0.9), 0.55)
+
+
+def make_aji(rng):
+    n = int(1.0 * SR)
+    out = [0.0] * n
+    swish = biquad_bandpass(noise(rng, n), 3200.0, 0.7)
+    for i in range(int(0.4 * SR)):
+        t = i / SR
+        out[i] += swish[i] * min(1.0, t / 0.05) * math.exp(-t / 0.18) * 1.4
+    for _ in range(70):
+        t0 = rng.uniform(0.05, 0.55)
+        damped(out, t0, rng.uniform(2000.0, 5000.0), 0.003, rng.uniform(0.05, 0.3), phase=rng.uniform(0, TAU),
+               length=0.02)
+    sizzle = one_pole_highpass(noise(rng, n), 5500.0)
+    for i in range(int(0.7 * SR)):
+        t = i / SR
+        out[i + int(0.1 * SR)] += sizzle[i] * math.exp(-t / 0.35) * 0.25
+    return normalize(fade(out, 0.001, 0.15), 0.6)
+
+
+def make_beacon(rng):
+    n = int(2.4 * SR)
+    out = [0.0] * n
+    ph = 0.0
+    for i in range(int(0.9 * SR)):
+        t = i / SR
+        ph += TAU * (55.0 - 20.0 * t) / SR
+        out[i] += math.sin(ph) * math.exp(-t / 0.3)
+    lo = biquad_bandpass(noise(rng, n), 500.0, 1.0)
+    hi = biquad_bandpass(noise(rng, n), 1800.0, 1.0)
+    for i in range(n):
+        t = i / SR
+        env = (1.0 - math.exp(-t / 0.25)) * math.exp(-max(0.0, t - 0.5) / 0.9)
+        out[i] += (lo[i] * 1.3 + hi[i] * 0.9) * env
+    tick = one_pole_highpass(noise(rng, n), 2500.0)
+    t = 0.05
+    while t < 2.2:
+        t += rng.expovariate(45.0 * math.exp(-t / 1.2) + 4.0)
+        i0 = int(t * SR)
+        for k in range(int(0.004 * SR)):
+            if i0 + k < n:
+                out[i0 + k] += tick[i0 + k] * math.exp(-(k / SR) / 0.001) * rng.uniform(0.2, 0.7)
+    return normalize(fade(out, 0.002, 0.5), 0.7)
+
+
+def make_counting(rng):
+    out = silence(2.8)
+    t = 0.05
+    for _ in range(6):
+        for k in range(rng.randint(2, 4)):
+            mix(out, clack(rng, 0.07), int((t + k * rng.uniform(0.07, 0.11)) * SR), rng.uniform(0.25, 0.6))
+        t += rng.uniform(0.32, 0.5)
+    return normalize(fade(out, 0.002, 0.1), 0.55)
+
+
+def make_ping(rng):
+    n = int(0.45 * SR)
+    out = [0.0] * n
+    for f, t0, g in ((988.0, 0.0, 1.0), (1318.5, 0.09, 0.8)):
+        i0 = int(t0 * SR)
+        for k in range(n - i0):
+            t = k / SR
+            out[i0 + k] += (math.sin(TAU * f * t) + 0.3 * math.sin(TAU * 2.0 * f * t)) * math.exp(-t / 0.11) * g
+    return normalize(fade(out, 0.001, 0.05), 0.5)
+
+
+def make_bones_set(rng):
+    out = silence(0.7)
+    t = 0.0
+    for k in range(6):
+        mix(out, clack(rng, 0.08), int(t * SR), 0.6 * (0.7 ** k))
+        t += rng.uniform(0.03, 0.07) * (1.0 + 0.4 * k)
+    damped(out, 0.0, 90.0, 0.06, 0.5)
+    return normalize(fade(out, 0.001, 0.1), 0.55)
+
+
+def make_mechanics(rng):
+    files = {
+        "rain_loop.wav": make_rain(rng),
+        "thunder_a.wav": make_thunder(rng, 6.0, 4),
+        "thunder_b.wav": make_thunder(rng, 7.2, 6),
+        "heartbeat.wav": make_heartbeat(rng),
+    }
+    for kind in ("dirt", "grass", "wood", "water"):
+        for v in range(3):
+            files[f"step_{kind}_{v}.wav"] = make_step(rng, kind)
+    files["cattle.wav"] = make_cattle(rng)
+    files["engine_loop.wav"] = make_engine_loop(rng)
+    files["engine_start.wav"] = make_engine_start(rng)
+    files["pump_crank.wav"] = make_crank(rng)
+    files["power_on.wav"] = make_power_on(rng)
+    files["susto.wav"] = make_susto(rng)
+    files["revive.wav"] = make_revive(rng)
+    files["pray.wav"] = make_pray(rng)
+    files["aji_scatter.wav"] = make_aji(rng)
+    files["beacon_flare.wav"] = make_beacon(rng)
+    files["counting.wav"] = make_counting(rng)
+    files["ping.wav"] = make_ping(rng)
+    files["bones_set.wav"] = make_bones_set(rng)
+    return files
+
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -458,6 +897,8 @@ def main():
     files["restitution.wav"] = make_restitution(rng)
     files["caught.wav"] = make_caught(rng)
     files["dawn.wav"] = make_dawn(rng)
+    # A second, independent stream: adding sounds never changes the older files.
+    files.update(make_mechanics(random.Random(SEED + 1)))
 
     for name, samples in files.items():
         path = os.path.join(args.out, name)

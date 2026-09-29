@@ -1,14 +1,18 @@
-//! Authored layout of the encounter and the shared spatial queries.
+//! Authored layout of the district and the shared spatial queries.
 //!
 //! This is the single source of truth for WHERE things are. Collision, line of
-//! sight, interaction reach, the threat's anchor route, the debug route and
-//! every visual builder (house boards, fence posts, ceiba roots, props) read
-//! the same numbers from [`Layout`]. Nothing here depends on the ECS.
+//! sight, interaction reach, the Silbón's patrol graph, the debug route and
+//! every visual builder (house boards, fences, ceiba roots, props) read the
+//! same numbers from [`Layout`]. Nothing here depends on the ECS.
 //!
 //! Coordinates: world X east, world Z south, Y up. Ground-plane queries use
-//! `Vec2(x, z)`. The ground is flat (y = 0) everywhere the player can walk.
+//! `Vec2(x, z)`. Movement is planar; the terrain is gently rolling and
+//! authored decks, ramps and bridges lift the walk surface (`surface_height`).
 
 use bevy::math::{Vec2, Vec3};
+
+pub mod district;
+use district::{District, Lamp, Route};
 
 /// Longest single sub-step of a collision move. Far below the thinnest
 /// blocker half-thickness plus the player radius, so nothing can tunnel.
@@ -173,6 +177,7 @@ pub enum BlockerKind {
     Post,
     Trunk,
     Root,
+    Bank,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -283,47 +288,6 @@ impl House {
     }
 }
 
-/// A straight fence run with gaps (gates), axis-aligned.
-#[derive(Clone, Debug, PartialEq)]
-pub struct FenceRun {
-    pub a: Vec2,
-    pub b: Vec2,
-    /// Gaps as (from, to) distances along the run.
-    pub gaps: Vec<(f32, f32)>,
-}
-
-impl FenceRun {
-    pub fn length(&self) -> f32 {
-        self.a.distance(self.b)
-    }
-
-    pub fn at(&self, s: f32) -> Vec2 {
-        self.a + (self.b - self.a).normalize_or_zero() * s
-    }
-
-    pub fn in_gap(&self, s: f32) -> bool {
-        self.gaps.iter().any(|&(f, t)| s > f && s < t)
-    }
-
-    /// Solid spans between gaps.
-    pub fn spans(&self) -> Vec<(f32, f32)> {
-        let mut spans = Vec::new();
-        let mut start = 0.0;
-        let mut gaps = self.gaps.clone();
-        gaps.sort_by(|a, b| a.0.total_cmp(&b.0));
-        for (f, t) in gaps {
-            if f > start {
-                spans.push((start, f));
-            }
-            start = t;
-        }
-        if start < self.length() {
-            spans.push((start, self.length()));
-        }
-        spans
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ceiba {
     pub center: Vec2,
@@ -350,50 +314,271 @@ pub struct Furniture {
     pub height: f32,
 }
 
+/// Uniform grid over the blockers so movement queries touch a handful of
+/// shapes instead of the whole map.
+#[derive(Clone, Debug, PartialEq, Default)]
+struct BlockerGrid {
+    origin: Vec2,
+    w: usize,
+    h: usize,
+    cells: Vec<Vec<u32>>,
+}
+
+impl BlockerGrid {
+    const CELL: f32 = 6.0;
+
+    fn build(bounds: Rect2, blockers: &[Blocker]) -> Self {
+        let origin = bounds.min - Vec2::splat(8.0);
+        let size = bounds.max - bounds.min + Vec2::splat(16.0);
+        let w = (size.x / Self::CELL).ceil() as usize + 1;
+        let h = (size.y / Self::CELL).ceil() as usize + 1;
+        let mut grid = Self {
+            origin,
+            w,
+            h,
+            cells: vec![Vec::new(); w * h],
+        };
+        for (i, b) in blockers.iter().enumerate() {
+            let (min, max) = match b.shape {
+                Shape::Rect(r) => (r.min, r.max),
+                Shape::Circle { center, radius } => (center - Vec2::splat(radius), center + Vec2::splat(radius)),
+            };
+            let (x0, z0) = grid.cell_of(min);
+            let (x1, z1) = grid.cell_of(max);
+            for z in z0..=z1 {
+                for x in x0..=x1 {
+                    grid.cells[z * w + x].push(i as u32);
+                }
+            }
+        }
+        grid
+    }
+
+    fn cell_of(&self, p: Vec2) -> (usize, usize) {
+        let x = ((p.x - self.origin.x) / Self::CELL)
+            .floor()
+            .clamp(0.0, (self.w - 1) as f32);
+        let z = ((p.y - self.origin.y) / Self::CELL)
+            .floor()
+            .clamp(0.0, (self.h - 1) as f32);
+        (x as usize, z as usize)
+    }
+
+    /// Indices of every blocker whose cells overlap the box (duplicates are harmless).
+    fn near(&self, min: Vec2, max: Vec2) -> impl Iterator<Item = u32> + '_ {
+        let (x0, z0) = self.cell_of(min);
+        let (x1, z1) = self.cell_of(max);
+        (z0..=z1).flat_map(move |z| (x0..=x1).flat_map(move |x| self.cells[z * self.w + x].iter().copied()))
+    }
+}
+
+/// The Silbón's patrol graph. Nodes are route vertices and edges are the
+/// straight route segments between them, so anything he can walk a player
+/// can walk too: the patrol never invents a second network.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Patrol {
+    pub nodes: Vec<Vec2>,
+    pub edges: Vec<(usize, usize)>,
+    adjacency: Vec<Vec<usize>>,
+    next: Vec<Vec<u8>>,
+    dist: Vec<Vec<f32>>,
+    hops: Vec<Vec<u8>>,
+}
+
+impl Patrol {
+    pub fn from_routes(routes: &[Route]) -> Self {
+        let mut nodes: Vec<Vec2> = Vec::new();
+        let mut edges: Vec<(usize, usize)> = Vec::new();
+        let node = |nodes: &mut Vec<Vec2>, p: Vec2| -> usize {
+            if let Some(i) = nodes.iter().position(|n| n.distance(p) < 0.75) {
+                i
+            } else {
+                nodes.push(p);
+                nodes.len() - 1
+            }
+        };
+        for r in routes.iter().filter(|r| r.patrol) {
+            let mut prev = None;
+            for &pt in &r.points {
+                let i = node(&mut nodes, pt);
+                if let Some(j) = prev
+                    && i != j
+                    && !edges.contains(&(i.min(j), i.max(j)))
+                {
+                    edges.push((i.min(j), i.max(j)));
+                }
+                prev = Some(i);
+            }
+        }
+        let n = nodes.len();
+        assert!(n < 250, "patrol graph too large for u8 hops");
+        let mut adjacency = vec![Vec::new(); n];
+        let mut dist = vec![vec![f32::INFINITY; n]; n];
+        let mut hops = vec![vec![0u8; n]; n];
+        let mut next = vec![vec![u8::MAX; n]; n];
+        for i in 0..n {
+            dist[i][i] = 0.0;
+            next[i][i] = i as u8;
+        }
+        for &(a, b) in &edges {
+            adjacency[a].push(b);
+            adjacency[b].push(a);
+            let d = nodes[a].distance(nodes[b]);
+            dist[a][b] = d;
+            dist[b][a] = d;
+            hops[a][b] = 1;
+            hops[b][a] = 1;
+            next[a][b] = b as u8;
+            next[b][a] = a as u8;
+        }
+        for k in 0..n {
+            for i in 0..n {
+                for j in 0..n {
+                    let alt = dist[i][k] + dist[k][j];
+                    if alt < dist[i][j] {
+                        dist[i][j] = alt;
+                        next[i][j] = next[i][k];
+                        hops[i][j] = hops[i][k].saturating_add(hops[k][j]);
+                    }
+                }
+            }
+        }
+        Self {
+            nodes,
+            edges,
+            adjacency,
+            next,
+            dist,
+            hops,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    pub fn neighbors(&self, i: usize) -> &[usize] {
+        &self.adjacency[i]
+    }
+
+    /// Every node can reach every other along authored segments.
+    pub fn connected(&self) -> bool {
+        self.dist.iter().all(|row| row.iter().all(|d| d.is_finite()))
+    }
+
+    pub fn nearest(&self, p: Vec2) -> usize {
+        (0..self.len())
+            .min_by(|&a, &b| {
+                self.nodes[a]
+                    .distance_squared(p)
+                    .total_cmp(&self.nodes[b].distance_squared(p))
+            })
+            .unwrap_or(0)
+    }
+
+    /// The node farthest from every one of `points` (the largest minimum
+    /// distance), with that distance. He rises here, never near anyone.
+    pub fn farthest_from(&self, points: &[Vec2]) -> (usize, f32) {
+        let clearance = |i: usize| {
+            points
+                .iter()
+                .map(|q| self.nodes[i].distance(*q))
+                .fold(f32::INFINITY, f32::min)
+        };
+        let mut best = (0, -1.0);
+        for i in 0..self.len() {
+            let c = clearance(i);
+            if c > best.1 {
+                best = (i, c);
+            }
+        }
+        best
+    }
+
+    /// Where he waits while he cannot see anyone: the closest node that is
+    /// at least `standoff` from `p` (the farthest one if all are nearer), so
+    /// waiting never puts him on top of the player.
+    pub fn lurk_node(&self, p: Vec2, standoff: f32) -> usize {
+        let mut best: Option<(usize, f32)> = None;
+        for i in 0..self.len() {
+            let d = self.nodes[i].distance(p);
+            if d >= standoff && best.is_none_or(|(_, bd)| d < bd) {
+                best = Some((i, d));
+            }
+        }
+        best.map_or_else(|| self.farthest_from(&[p]).0, |(i, _)| i)
+    }
+
+    /// Neighbour of `from` on a shortest path to `to`.
+    pub fn next_hop(&self, from: usize, to: usize) -> usize {
+        match self.next[from][to] {
+            u8::MAX => from,
+            n => n as usize,
+        }
+    }
+
+    /// The corners of a walk along the network from the node nearest
+    /// `from` to the one nearest `to`, both included.
+    pub fn walk(&self, from: Vec2, to: Vec2) -> Vec<Vec2> {
+        let (mut at, goal) = (self.nearest(from), self.nearest(to));
+        let mut out = vec![self.nodes[at]];
+        while at != goal {
+            let next = self.next_hop(at, goal);
+            if next == at {
+                break; // disconnected: stop rather than loop
+            }
+            at = next;
+            out.push(self.nodes[at]);
+        }
+        out
+    }
+
+    pub fn hops(&self, a: usize, b: usize) -> usize {
+        self.hops[a][b] as usize
+    }
+
+    /// Length of the shortest walk between two nodes.
+    pub fn path_len(&self, a: usize, b: usize) -> f32 {
+        self.dist[a][b]
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Layout {
-    /// Hard walk limits (the road runs past, fog hides the ends).
+    pub district: District,
+    /// Hard walk limits (fences, water and trees make them visible).
     pub bounds: Rect2,
     /// Visible dirt road.
     pub road: Rect2,
-    /// Standing at z ≥ this (on the road shoulder) with the bones returned wins.
-    pub road_goal_z: f32,
     pub spawn: Vec2,
     pub spawn_yaw: f32,
     pub house: House,
-    pub fences: Vec<FenceRun>,
-    pub fence_height: f32,
     pub ceiba: Ceiba,
     pub table: Rect2,
     pub table_height: f32,
-    pub satchel: Vec3,
-    pub satchel_radius: f32,
-    pub note: Vec3,
-    pub note_radius: f32,
     pub lantern: Vec3,
     pub porch_lamp: Vec3,
     pub furniture: Vec<Furniture>,
     /// Hammock hooks (inside the house).
     pub hammock: (Vec3, Vec3),
-    /// Sign by the gate.
-    pub sign: Vec2,
-    /// The Silbón's authored route: a closed loop of anchors.
-    pub ring: Vec<Vec2>,
-    /// Worn mud trails (visual; also where the debug route walks).
-    pub trails: Vec<Vec<Vec2>>,
+    /// The Silbón's patrol graph, derived from the routes.
+    pub patrol: Patrol,
+    /// Every practical light, house lamps included.
+    pub light_sources: Vec<Lamp>,
     /// Derived collision/sight blockers.
     pub blockers: Vec<Blocker>,
-}
-
-impl Default for Layout {
-    fn default() -> Self {
-        Self::authored()
-    }
+    grid: BlockerGrid,
+    sight: Vec<u32>,
 }
 
 impl Layout {
-    /// The one authored encounter space.
-    pub fn authored() -> Self {
+    /// Build the layout around an authored district: the ranch house, the
+    /// ceiba at the shrine, blockers and the patrol graph.
+    pub(crate) fn assemble(district: District) -> Self {
         let wall_thickness = 0.14;
         let footprint = Rect2::new(Vec2::new(-5.0, -6.0), Vec2::new(5.0, 1.0));
         let win = |from: f32, to: f32| Opening {
@@ -456,7 +641,7 @@ impl Layout {
             walls,
         };
 
-        let tree_center = Vec2::new(-19.0, -24.0);
+        let tree_center = district.landmark(district::LandmarkId::Shrine).center;
         let to_house = (footprint.center() - tree_center).normalize();
         let offering_angle = to_house.y.atan2(to_house.x);
         // Buttress roots fan around the trunk, leaving a hollow facing the house.
@@ -532,134 +717,49 @@ impl Layout {
                 },
                 height: 0.95,
             },
-            Furniture {
-                name: "sign",
-                shape: Shape::Rect(Rect2::new(Vec2::new(3.0, 23.6), Vec2::new(5.4, 23.9))),
-                height: 1.9,
-            },
-            // Termite mounds out in the paddock.
-            Furniture {
-                name: "mound",
-                shape: Shape::Circle {
-                    center: Vec2::new(14.0, -22.0),
-                    radius: 0.8,
-                },
-                height: 1.3,
-            },
-            Furniture {
-                name: "mound",
-                shape: Shape::Circle {
-                    center: Vec2::new(-26.0, -8.0),
-                    radius: 0.7,
-                },
-                height: 1.0,
-            },
-            Furniture {
-                name: "mound",
-                shape: Shape::Circle {
-                    center: Vec2::new(26.0, 10.0),
-                    radius: 0.9,
-                },
-                height: 1.5,
-            },
-            Furniture {
-                name: "mound",
-                shape: Shape::Circle {
-                    center: Vec2::new(-8.0, -38.0),
-                    radius: 0.6,
-                },
-                height: 0.9,
-            },
-        ];
-
-        let fences = vec![
-            // Road side, with the gate.
-            FenceRun {
-                a: Vec2::new(-40.0, 22.0),
-                b: Vec2::new(40.0, 22.0),
-                gaps: vec![(38.4, 41.6)],
-            },
-            FenceRun {
-                a: Vec2::new(-40.0, -56.0),
-                b: Vec2::new(-40.0, 22.0),
-                gaps: vec![],
-            },
-            FenceRun {
-                a: Vec2::new(40.0, -56.0),
-                b: Vec2::new(40.0, 22.0),
-                gaps: vec![],
-            },
-            FenceRun {
-                a: Vec2::new(-40.0, -56.0),
-                b: Vec2::new(40.0, -56.0),
-                gaps: vec![],
-            },
-        ];
-
-        let ring = vec![
-            Vec2::new(28.0, -44.0),
-            Vec2::new(2.0, -48.0),
-            Vec2::new(-24.0, -48.0),
-            Vec2::new(-34.0, -30.0),
-            Vec2::new(-34.0, -4.0),
-            Vec2::new(-24.0, 14.0),
-            Vec2::new(14.0, 14.0),
-            Vec2::new(30.0, -8.0),
-        ];
-
-        let trails = vec![
-            vec![
-                Vec2::new(0.0, 29.0),
-                Vec2::new(0.2, 22.0),
-                Vec2::new(-0.3, 14.0),
-                Vec2::new(0.4, 7.0),
-                Vec2::new(0.0, 3.3),
-            ],
-            vec![
-                Vec2::new(-3.0, -6.2),
-                Vec2::new(-5.2, -9.5),
-                Vec2::new(-9.5, -14.0),
-                Vec2::new(-13.5, -18.2),
-                Vec2::new(
-                    offering_ground.x + to_house.x * 1.3,
-                    offering_ground.y + to_house.y * 1.3,
-                ),
-            ],
-            vec![
-                Vec2::new(5.4, 2.0),
-                Vec2::new(7.0, -2.0),
-                Vec2::new(6.4, -7.0),
-                Vec2::new(0.0, -8.4),
-                Vec2::new(-3.0, -6.2),
-            ],
         ];
 
         let mut layout = Self {
-            bounds: Rect2::new(Vec2::new(-44.0, -60.0), Vec2::new(44.0, 35.2)),
+            bounds: Rect2::new(Vec2::new(-76.0, -108.0), Vec2::new(90.0, 35.2)),
             road: Rect2::new(Vec2::new(-160.0, 27.5), Vec2::new(160.0, 35.0)),
-            road_goal_z: 27.0,
             spawn: Vec2::new(0.0, 31.2),
             spawn_yaw: 0.0,
             house,
-            fences,
-            fence_height: 1.35,
             ceiba,
             table,
             table_height,
-            satchel: Vec3::new(3.25, table_height + 0.15, -4.6),
-            satchel_radius: 0.32,
-            note: Vec3::new(2.75, table_height + 0.01, -4.3),
-            note_radius: 0.22,
             lantern: Vec3::new(2.45, table_height, -4.5),
             porch_lamp: Vec3::new(-1.1, 2.2, 2.9),
             furniture,
             hammock: (Vec3::new(-4.86, 1.75, -1.0), Vec3::new(-1.9, 1.75, -1.0)),
-            sign: Vec2::new(4.2, 23.75),
-            ring,
-            trails,
+            patrol: Patrol::from_routes(&district.routes),
+            light_sources: Vec::new(),
             blockers: Vec::new(),
+            grid: BlockerGrid::default(),
+            sight: Vec::new(),
+            district,
         };
         layout.blockers = layout.derive_blockers();
+        let mut district_blockers = Vec::new();
+        layout.district.blockers(&mut district_blockers);
+        layout.blockers.extend(district_blockers);
+        layout.light_sources = [layout.lantern, layout.porch_lamp]
+            .into_iter()
+            .map(|pos| Lamp {
+                pos,
+                radius: 6.0,
+                powered: false,
+            })
+            .chain(layout.district.lamps.iter().copied())
+            .collect();
+        layout.grid = BlockerGrid::build(layout.bounds, &layout.blockers);
+        layout.sight = layout
+            .blockers
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.sight == Sight::Blocks)
+            .map(|(i, _)| i as u32)
+            .collect();
         layout
     }
 
@@ -729,19 +829,7 @@ impl Layout {
                 kind: BlockerKind::Furniture,
             });
         }
-        for run in &self.fences {
-            let dir = (run.b - run.a).normalize_or_zero();
-            for (from, to) in run.spans() {
-                let p0 = run.at(from);
-                let p1 = run.at(to);
-                let pad = Vec2::splat(0.08) * perp_abs(dir);
-                out.push(Blocker {
-                    shape: Shape::Rect(Rect2::new(p0.min(p1) - pad, p0.max(p1) + pad)),
-                    sight: Sight::Clear,
-                    kind: BlockerKind::Fence,
-                });
-            }
-        }
+        // (fences are district rails now)
         let c = &self.ceiba;
         out.push(Blocker {
             shape: Shape::Circle {
@@ -791,8 +879,8 @@ impl Layout {
     pub fn resolve(&self, mut p: Vec2, radius: f32) -> Vec2 {
         for _ in 0..4 {
             let mut moved = false;
-            for b in &self.blockers {
-                if let Some(push) = b.shape.circle_push(p, radius) {
+            for i in self.grid.near(p - Vec2::splat(radius), p + Vec2::splat(radius)) {
+                if let Some(push) = self.blockers[i as usize].shape.circle_push(p, radius) {
                     p += push;
                     moved = true;
                 }
@@ -810,17 +898,19 @@ impl Layout {
 
     /// True if a circle of `radius` at `p` overlaps no blocker.
     pub fn is_free(&self, p: Vec2, radius: f32) -> bool {
-        self.blockers.iter().all(|b| b.shape.circle_push(p, radius).is_none())
+        self.grid
+            .near(p - Vec2::splat(radius), p + Vec2::splat(radius))
+            .all(|i| self.blockers[i as usize].shape.circle_push(p, radius).is_none())
     }
 
     /// Ground-plane line of sight: blocked only by sight-blocking shapes
-    /// (solid wall pieces and the ceiba trunk). Windows, doors, fences and
-    /// furniture do not hide anyone.
+    /// (solid walls, trunks, chunky props). Windows, doors, fences, cattle
+    /// and low furniture do not hide anyone.
     pub fn line_of_sight(&self, a: Vec2, b: Vec2) -> bool {
         !self
-            .blockers
+            .sight
             .iter()
-            .any(|bl| bl.sight == Sight::Blocks && bl.shape.hits_segment(a, b))
+            .any(|&i| self.blockers[i as usize].shape.hits_segment(a, b))
     }
 
     /// Checks an interaction ray from the eye against a spherical target.
@@ -839,56 +929,35 @@ impl Layout {
         }
     }
 
-    pub fn in_road_goal(&self, p: Vec2) -> bool {
-        p.y >= self.road_goal_z
-    }
-
-    pub fn nearest_anchor(&self, p: Vec2) -> usize {
-        let mut best = 0;
-        let mut best_d = f32::MAX;
-        for (i, a) in self.ring.iter().enumerate() {
-            let d = a.distance_squared(p);
-            if d < best_d {
-                best_d = d;
-                best = i;
+    /// Where a view ray meets the walkable ground (for marking a spot), or
+    /// the ground `max` metres out if it never does.
+    pub fn ray_ground(&self, eye: Vec3, dir: Vec3, max: f32) -> Vec3 {
+        let dir = dir.normalize_or(Vec3::NEG_Z);
+        let mut t = 0.4;
+        while t <= max {
+            let p = eye + dir * t;
+            let g = self.surface_height(Vec2::new(p.x, p.z));
+            if p.y <= g + 0.05 {
+                return Vec3::new(p.x, g, p.z);
             }
+            t += 0.4;
         }
-        best
+        let flat = Vec2::new(dir.x, dir.z).normalize_or(Vec2::NEG_Y) * max.min(60.0);
+        let p = (Vec2::new(eye.x, eye.z) + flat).clamp(self.bounds.min, self.bounds.max);
+        Vec3::new(p.x, self.surface_height(p), p.y)
     }
 
-    /// The anchor farthest from `p`, with its distance.
-    pub fn farthest_anchor(&self, p: Vec2) -> (usize, f32) {
-        let mut best = 0;
-        let mut best_d = -1.0;
-        for (i, a) in self.ring.iter().enumerate() {
-            let d = a.distance(p);
-            if d > best_d {
-                best_d = d;
-                best = i;
-            }
-        }
-        (best, best_d)
+    /// Is `p` inside the glow of a burning lamp? Powered lamps burn only
+    /// once the windmill pump runs.
+    pub fn is_lit(&self, p: Vec2, power: bool) -> bool {
+        self.light_sources
+            .iter()
+            .any(|l| (!l.powered || power) && ground(l.pos).distance(p) <= l.radius)
     }
 
-    /// Next anchor index when walking from `from` toward `to` the short way.
-    pub fn ring_step_toward(&self, from: usize, to: usize) -> usize {
-        let n = self.ring.len();
-        if from == to {
-            return from;
-        }
-        let forward = (to + n - from) % n;
-        if forward <= n / 2 {
-            (from + 1) % n
-        } else {
-            (from + n - 1) % n
-        }
-    }
-
-    /// Number of ring hops between two anchors the short way.
-    pub fn ring_hops(&self, a: usize, b: usize) -> usize {
-        let n = self.ring.len();
-        let d = (a + n - b) % n;
-        d.min(n - d)
+    /// Walkable water: slow, splashing footsteps.
+    pub fn wading(&self, p: Vec2) -> bool {
+        self.district.shallow_at(p)
     }
 }
 
@@ -938,7 +1007,7 @@ mod tests {
     use super::*;
 
     fn layout() -> Layout {
-        Layout::authored()
+        Layout::new()
     }
 
     #[test]
@@ -958,11 +1027,13 @@ mod tests {
         // Window sills block movement too.
         let sill = l.move_circle(Vec2::new(3.0, 3.0), Vec2::new(0.0, -5.0), r);
         assert!(sill.y > 1.0, "climbed through a window: {sill:?}");
-        // The fence stops you except at the gate.
+        // The property fence stops you except at the gates.
         let fence = l.move_circle(Vec2::new(10.0, 25.0), Vec2::new(0.0, -8.0), r);
         assert!(fence.y > 22.0);
         let gate = l.move_circle(Vec2::new(0.0, 25.0), Vec2::new(0.0, -8.0), r);
         assert!(gate.y < 18.0);
+        let east_gate = l.move_circle(Vec2::new(55.0, 25.0), Vec2::new(0.0, -8.0), r);
+        assert!(east_gate.y < 18.0);
     }
 
     #[test]
@@ -975,9 +1046,10 @@ mod tests {
         assert!(l.line_of_sight(Vec2::new(-3.0, 12.0), inside));
         // Through the open doorway.
         assert!(l.line_of_sight(Vec2::new(0.0, 12.0), Vec2::new(0.0, -3.0)));
-        // Fences never hide anyone.
-        assert!(l.line_of_sight(Vec2::new(10.0, 30.0), Vec2::new(10.0, 10.0)));
-        // The ceiba trunk does.
+        // A fence rail stops movement but hides no one.
+        assert!(!l.is_free(Vec2::new(10.0, 22.0), 0.3));
+        assert!(l.line_of_sight(Vec2::new(10.0, 23.0), Vec2::new(10.0, 21.0)));
+        // The ceiba trunk does hide.
         let c = l.ceiba.center;
         assert!(!l.line_of_sight(c + Vec2::new(-8.0, 0.0), c + Vec2::new(8.0, 0.0)));
     }
@@ -985,32 +1057,48 @@ mod tests {
     #[test]
     fn aiming_respects_reach_and_occlusion() {
         let l = layout();
-        let t = l.satchel;
+        let t = l.district.relics[0];
+        let radius = district::RELIC_RADIUS;
         let eye_near = Vec3::new(2.9, 1.62, -3.3);
         let dir = (t - eye_near).normalize();
-        assert!(matches!(
-            l.aim(eye_near, dir, t, l.satchel_radius, 2.4),
-            AimStatus::Ready { .. }
-        ));
+        assert!(matches!(l.aim(eye_near, dir, t, radius, 2.4), AimStatus::Ready { .. }));
         // Looking away.
-        assert_eq!(l.aim(eye_near, -dir, t, l.satchel_radius, 2.4), AimStatus::NotAimed);
+        assert_eq!(l.aim(eye_near, -dir, t, radius, 2.4), AimStatus::NotAimed);
         // Clearly visible inside the room, but too far to reach.
         let eye_far = Vec3::new(-2.0, 1.62, -1.5);
         let dir_far = (t - eye_far).normalize();
-        let far = l.aim(eye_far, dir_far, t, l.satchel_radius, 2.4);
+        let far = l.aim(eye_far, dir_far, t, radius, 2.4);
         assert!(matches!(far, AimStatus::OutOfReach { .. }), "{far:?}");
         // Behind the east wall (outside, south of the east window).
         let eye_wall = Vec3::new(5.6, 1.62, -5.2);
         let dir_wall = (t - eye_wall).normalize();
-        assert_eq!(l.aim(eye_wall, dir_wall, t, l.satchel_radius, 9.0), AimStatus::Occluded);
+        assert_eq!(l.aim(eye_wall, dir_wall, t, radius, 9.0), AimStatus::Occluded);
     }
 
     #[test]
     fn every_authored_standing_spot_is_reachable_space() {
         let l = layout();
         assert!(l.is_free(l.spawn, 0.3));
-        for anchor in &l.ring {
-            assert!(l.is_free(*anchor, 0.5), "anchor inside a blocker: {anchor:?}");
+        assert!(l.patrol.connected(), "patrol graph must be one connected network");
+        for node in &l.patrol.nodes {
+            assert!(l.is_free(*node, 0.45), "patrol node inside a blocker: {node:?}");
+        }
+    }
+
+    #[test]
+    fn lurking_keeps_a_standoff_and_manifestation_keeps_clearance() {
+        let l = layout();
+        for spot in [
+            l.spawn,
+            Vec2::new(0.0, -2.5),
+            Vec2::new(35.0, -12.0),
+            Vec2::new(-46.0, -25.0),
+        ] {
+            let i = l.patrol.lurk_node(spot, 12.0);
+            assert!(l.patrol.nodes[i].distance(spot) >= 12.0 - 1e-3);
+            let (far, d) = l.patrol.farthest_from(&[spot]);
+            assert!(d >= 30.0, "no manifestation point 30 m from {spot:?}: best {d}");
+            assert!(l.patrol.nodes[far].distance(spot) >= 30.0);
         }
     }
 }

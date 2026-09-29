@@ -3,11 +3,10 @@
 //! hat on a nail, a 1998 calendar and the porch lamp. Their footprints are the
 //! layout's furniture blockers.
 
-use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 
 use super::mesh::{MeshBuilder, Ring, WHITE, mix_rgb, scale_rgb, srgb};
-use super::{Flicker, SatchelAsset, SpawnCtx, TableSatchel, TreeSatchel, noise2};
+use super::{Flicker, SatchelAsset, SpawnCtx, noise2};
 use crate::geometry::{Furniture, Rect2, Shape};
 
 /// Luminous power of the table lantern (lumens).
@@ -422,7 +421,7 @@ pub fn spawn(ctx: &mut SpawnCtx) -> SatchelAsset {
 
     // --- The note, slightly curled, beside the satchel.
     {
-        let n = layout.note;
+        let n = layout.district.notes[0].pos;
         let rot = Quat::from_rotation_y(0.35);
         let (hx, hz) = (0.1, 0.13);
         let mut note = MeshBuilder::new();
@@ -550,40 +549,9 @@ pub fn spawn(ctx: &mut SpawnCtx) -> SatchelAsset {
         ctx.static_mesh(name, mb, &mat);
     }
 
-    // --- The bone satchel: one mesh pair, three placements.
-    let asset = satchel_asset(ctx);
-    let sack_mat = ctx.palette.burlap.clone();
-    let bone_mat = ctx.palette.bone.clone();
-    ctx.commands.spawn((
-        Name::new("satchel on the table"),
-        TableSatchel,
-        Mesh3d(asset.sack.clone()),
-        MeshMaterial3d(sack_mat.clone()),
-        Transform::from_translation(layout.satchel).with_rotation(Quat::from_rotation_y(0.6)),
-        Visibility::Visible,
-        children![(
-            Mesh3d(asset.bones.clone()),
-            MeshMaterial3d(bone_mat.clone()),
-            Transform::IDENTITY
-        )],
-    ));
-    let off = layout.ceiba.offering;
-    ctx.commands.spawn((
-        Name::new("satchel returned to the ceiba"),
-        TreeSatchel,
-        Mesh3d(asset.sack.clone()),
-        MeshMaterial3d(sack_mat),
-        Transform::from_translation(Vec3::new(off.x, 0.17, off.z))
-            .with_rotation(Quat::from_rotation_y(-0.8) * Quat::from_rotation_z(0.25)),
-        Visibility::Hidden,
-        NotShadowCaster,
-        children![(
-            Mesh3d(asset.bones.clone()),
-            MeshMaterial3d(bone_mat),
-            Transform::IDENTITY
-        )],
-    ));
-    asset
+    // The bone bundles are dynamic (`world::dynamic`); only the shared
+    // meshes are built here.
+    satchel_asset(ctx)
 }
 
 /// Burlap sack with a tied neck and bones jutting out, centred on its middle.

@@ -2,13 +2,21 @@
 //! house, the ceiba, props, sky and the Silbón model. Everything is placed
 //! from [`crate::geometry::Layout`], so what you see is what collides.
 
+pub mod avatar;
 pub mod ceiba;
+pub mod district;
+pub mod dynamic;
+pub mod flora;
+pub mod herd;
 pub mod house;
 pub mod land;
 pub mod mesh;
 pub mod props;
 pub mod silbon;
 pub mod texture;
+pub mod vehicles;
+pub mod weather;
+pub mod wet;
 
 use bevy::prelude::*;
 
@@ -31,7 +39,7 @@ pub struct Palette {
     pub hammock: Handle<StandardMaterial>,
     pub bone: Handle<StandardMaterial>,
     pub cloth: Handle<StandardMaterial>,
-    /// The Silbón's pale, moon-catching shirt.
+    /// The Silbón's worn, lighter shirt cloth.
     pub shirt: Handle<StandardMaterial>,
     pub skin: Handle<StandardMaterial>,
     pub straw: Handle<StandardMaterial>,
@@ -51,15 +59,10 @@ pub struct Palette {
     pub moon: Handle<StandardMaterial>,
     pub halo: Handle<StandardMaterial>,
     pub stars: Handle<StandardMaterial>,
+    /// Rain-stirred standing water: the floods and the ford, and puddles.
+    pub water: Handle<StandardMaterial>,
+    pub puddle: Handle<StandardMaterial>,
 }
-
-/// Satchel on the table (visible until taken).
-#[derive(Component)]
-pub struct TableSatchel;
-
-/// Satchel resting in the ceiba's hollow (visible once returned).
-#[derive(Component)]
-pub struct TreeSatchel;
 
 /// Satchel carried in the lower left of the view.
 #[derive(Component)]
@@ -83,9 +86,34 @@ pub struct WorldPlugin;
 
 impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_world).add_systems(
+        app.add_plugins((
+            MaterialPlugin::<weather::RainMaterial>::default(),
+            flora::FloraPlugin,
+            wet::WetPlugin,
+        ))
+        .add_systems(
+            Startup,
+            (spawn_world, dynamic::spawn, weather::spawn_rain, avatar::setup).chain(),
+        )
+        .add_systems(
             Update,
-            (flicker_lights, silbon::animate_silbon).in_set(crate::app::GameSet::Present),
+            (
+                flicker_lights,
+                silbon::animate_silbon,
+                herd::animate,
+                dynamic::bundles,
+                dynamic::peppers,
+                dynamic::wards,
+                dynamic::pings,
+                dynamic::lamp_lights,
+                dynamic::power_look,
+                dynamic::beacon_fire,
+                dynamic::truck_engine,
+                dynamic::carried_view,
+                weather::rain_swell,
+                weather::lightning,
+            )
+                .in_set(crate::app::GameSet::Present),
         );
     }
 }
@@ -97,6 +125,8 @@ pub fn spawn_world(
     mut images: ResMut<Assets<Image>>,
     layout: Res<LayoutRes>,
     tuning: Res<TuningRes>,
+    mut wet_materials: ResMut<Assets<wet::WetMaterial>>,
+    mut grass_materials: ResMut<Assets<flora::GrassMaterial>>,
 ) {
     let layout = &layout.0;
     let seed = tuning.0.seed;
@@ -115,6 +145,11 @@ pub fn spawn_world(
     ceiba::spawn(&mut ctx);
     let satchel = props::spawn(&mut ctx);
     silbon::spawn(&mut ctx);
+    district::spawn(&mut ctx, &mut materials, &mut images);
+    wet::spawn(&mut ctx, &materials, &mut wet_materials);
+    flora::spawn(&mut ctx, &mut materials, &mut grass_materials, &mut images);
+    herd::spawn(&mut ctx, &mut materials);
+    vehicles::spawn(&mut ctx, &mut materials);
 
     commands.insert_resource(satchel);
     commands.insert_resource(palette);
@@ -191,29 +226,86 @@ fn make_palette(materials: &mut Assets<StandardMaterial>, tex: &texture::Texture
     };
 
     Palette {
-        ground: textured(materials, &tex.ground, 0.96),
-        road: textured(materials, &tex.road, 0.92),
-        wood: textured(materials, &tex.wood, 0.9),
-        wood_dark: textured(materials, &tex.wood_dark, 0.78),
+        ground: materials.add(StandardMaterial {
+            base_color_texture: Some(tex.ground.clone()),
+            normal_map_texture: Some(tex.ground_n.clone()),
+            metallic_roughness_texture: Some(tex.ground_mr.clone()),
+            perceptual_roughness: 1.0,
+            metallic: 1.0,
+            reflectance: 0.55,
+            ..default()
+        }),
+        road: materials.add(StandardMaterial {
+            base_color_texture: Some(tex.road.clone()),
+            normal_map_texture: Some(tex.road_n.clone()),
+            metallic_roughness_texture: Some(tex.road_mr.clone()),
+            perceptual_roughness: 1.0,
+            metallic: 1.0,
+            reflectance: 0.55,
+            ..default()
+        }),
+        wood: materials.add(StandardMaterial {
+            base_color_texture: Some(tex.wood.clone()),
+            normal_map_texture: Some(tex.wood_n.clone()),
+            metallic_roughness_texture: Some(tex.wood_mr.clone()),
+            perceptual_roughness: 1.0,
+            reflectance: 0.4,
+            ..default()
+        }),
+        wood_dark: materials.add(StandardMaterial {
+            base_color_texture: Some(tex.wood_dark.clone()),
+            normal_map_texture: Some(tex.wood_dark_n.clone()),
+            metallic_roughness_texture: Some(tex.wood_dark_mr.clone()),
+            perceptual_roughness: 1.0,
+            reflectance: 0.3,
+            ..default()
+        }),
         zinc: materials.add(StandardMaterial {
+            normal_map_texture: Some(tex.zinc_n.clone()),
             base_color_texture: Some(tex.zinc.clone()),
-            perceptual_roughness: 0.62,
-            metallic: 0.35,
+            metallic_roughness_texture: Some(tex.zinc_mr.clone()),
+            perceptual_roughness: 1.0,
+            metallic: 1.0,
             reflectance: 0.4,
             double_sided: true,
             cull_mode: None,
             ..default()
         }),
-        bark: textured(materials, &tex.bark, 0.88),
+        bark: materials.add(StandardMaterial {
+            base_color_texture: Some(tex.bark.clone()),
+            normal_map_texture: Some(tex.bark_n.clone()),
+            metallic_roughness_texture: Some(tex.bark_mr.clone()),
+            perceptual_roughness: 1.0,
+            reflectance: 0.35,
+            ..default()
+        }),
         leaves: textured(materials, &tex.leaves, 0.85),
         fronds: two_sided(materials, Some(&tex.leaves), Color::srgb(0.8, 0.9, 0.75), 0.8),
         grass: two_sided(materials, None, Color::WHITE, 0.9),
-        burlap: textured(materials, &tex.burlap, 0.95),
-        hammock: two_sided(materials, Some(&tex.burlap), Color::WHITE, 0.95),
+        burlap: materials.add(StandardMaterial {
+            base_color_texture: Some(tex.burlap.clone()),
+            normal_map_texture: Some(tex.burlap_n.clone()),
+            metallic_roughness_texture: Some(tex.burlap_mr.clone()),
+            perceptual_roughness: 1.0,
+            reflectance: 0.3,
+            ..default()
+        }),
+        hammock: materials.add(StandardMaterial {
+            base_color_texture: Some(tex.burlap.clone()),
+            normal_map_texture: Some(tex.burlap_n.clone()),
+            metallic_roughness_texture: Some(tex.burlap_mr.clone()),
+            perceptual_roughness: 1.0,
+            reflectance: 0.25,
+            double_sided: true,
+            cull_mode: None,
+            ..default()
+        }),
         bone: plain(materials, Color::srgb(0.8, 0.76, 0.64), 0.7),
         cloth: materials.add(StandardMaterial {
             base_color_texture: Some(tex.cloth.clone()),
-            perceptual_roughness: 0.97,
+            normal_map_texture: Some(tex.cloth_n.clone()),
+            metallic_roughness_texture: Some(tex.cloth_mr.clone()),
+            perceptual_roughness: 1.0,
             reflectance: 0.2,
             double_sided: true,
             cull_mode: None,
@@ -221,14 +313,25 @@ fn make_palette(materials: &mut Assets<StandardMaterial>, tex: &texture::Texture
         }),
         shirt: materials.add(StandardMaterial {
             base_color_texture: Some(tex.cloth_pale.clone()),
-            perceptual_roughness: 0.9,
-            reflectance: 0.35,
+            normal_map_texture: Some(tex.cloth_pale_n.clone()),
+            metallic_roughness_texture: Some(tex.cloth_pale_mr.clone()),
+            perceptual_roughness: 1.0,
+            reflectance: 0.3,
             double_sided: true,
             cull_mode: None,
             ..default()
         }),
         skin: plain(materials, Color::srgb(0.46, 0.45, 0.43), 0.75),
-        straw: two_sided(materials, Some(&tex.straw), Color::WHITE, 0.92),
+        straw: materials.add(StandardMaterial {
+            base_color_texture: Some(tex.straw.clone()),
+            normal_map_texture: Some(tex.straw_n.clone()),
+            metallic_roughness_texture: Some(tex.straw_mr.clone()),
+            perceptual_roughness: 1.0,
+            reflectance: 0.25,
+            double_sided: true,
+            cull_mode: None,
+            ..default()
+        }),
         clay: textured(materials, &tex.clay, 0.85),
         glass: materials.add(StandardMaterial {
             base_color: Color::srgba(0.55, 0.62, 0.58, 0.35),
@@ -245,6 +348,7 @@ fn make_palette(materials: &mut Assets<StandardMaterial>, tex: &texture::Texture
         }),
         rust_metal: materials.add(StandardMaterial {
             base_color_texture: Some(tex.zinc.clone()),
+            normal_map_texture: Some(tex.zinc_n.clone()),
             base_color: Color::srgb(0.75, 0.55, 0.45),
             perceptual_roughness: 0.75,
             metallic: 0.3,
@@ -277,6 +381,24 @@ fn make_palette(materials: &mut Assets<StandardMaterial>, tex: &texture::Texture
             Some(&tex.halo),
         ),
         stars: unlit(materials, Color::WHITE, AlphaMode::Opaque, None),
+        water: materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            normal_map_texture: Some(tex.water_n.clone()),
+            perceptual_roughness: 0.07,
+            reflectance: 0.75,
+            alpha_mode: AlphaMode::Blend,
+            double_sided: true,
+            cull_mode: None,
+            ..default()
+        }),
+        puddle: materials.add(StandardMaterial {
+            base_color: Color::srgba(0.035, 0.05, 0.065, 0.92),
+            normal_map_texture: Some(tex.ripples.clone()),
+            perceptual_roughness: 0.05,
+            reflectance: 0.8,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        }),
     }
 }
 
@@ -297,33 +419,4 @@ fn flicker_lights(time: Res<Time>, mut lights: Query<(&Flicker, &mut PointLight)
 // Shared world-space helpers for builders
 // ----------------------------------------------------------------------------
 
-fn hash(ix: i32, iz: i32, seed: u32) -> f32 {
-    let mut h =
-        (ix as u32).wrapping_mul(0x27D4_EB2D) ^ (iz as u32).wrapping_mul(0x1656_67B1) ^ seed.wrapping_mul(0x9E37_79B9);
-    h ^= h >> 15;
-    h = h.wrapping_mul(0x85EB_CA6B);
-    h ^= h >> 13;
-    (h & 0x00FF_FFFF) as f32 / 16_777_215.0
-}
-
-/// Smooth world-space value noise in 0..1.
-pub fn noise2(x: f32, z: f32, seed: u32) -> f32 {
-    let xi = x.floor() as i32;
-    let zi = z.floor() as i32;
-    let fx = x - xi as f32;
-    let fz = z - zi as f32;
-    let s = |t: f32| t * t * (3.0 - 2.0 * t);
-    let (sx, sz) = (s(fx), s(fz));
-    let a = hash(xi, zi, seed);
-    let b = hash(xi + 1, zi, seed);
-    let c = hash(xi, zi + 1, seed);
-    let d = hash(xi + 1, zi + 1, seed);
-    let ab = a + (b - a) * sx;
-    let cd = c + (d - c) * sx;
-    ab + (cd - ab) * sz
-}
-
-/// Two-octave world noise.
-pub fn fbm2(x: f32, z: f32, seed: u32) -> f32 {
-    noise2(x, z, seed) * 0.65 + noise2(x * 2.1, z * 2.1, seed ^ 0x5151) * 0.35
-}
+pub use crate::noise::{fbm2, noise2};

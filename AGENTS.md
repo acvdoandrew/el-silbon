@@ -2,15 +2,18 @@
 
 ## Ownership and workflow
 
-- Current multiplayer milestone: Astra implements directly, with no subagents,
-  advisors, model routing changes or billing/authentication changes. The user
-  explicitly superseded the earlier Opus-only implementation ownership.
-  Preserve the existing art and offline mode. Commit and push only when the
-  user explicitly requests it; keep the GitHub repository private.
+- Current milestone: one connected rural horror district with the nine reference
+  landmarks plus extraction, playable solo or with up to four players.
+  Proximity voice and unrelated networking work are postponed.
+- Read the current handoff at the top of `docs/PROGRESS.md` before editing.
+  Preserve the unfinished verification work; do not treat older historical
+  success reports as proof of the current working tree.
+- Preserve the existing art, offline mode and working multiplayer. Commit and
+  push only when explicitly requested; keep the GitHub repository private.
 
-- One writer at a time edits gameplay code, geometry, materials, audio and
-  asset scripts; an integrator owns builds, runtime verification and
-  screenshots. Do not edit files another agent is changing.
+- One writer per explicitly assigned file set; disjoint coding and art slices
+  may run concurrently. One integrator owns builds, runtime checks and screenshots.
+  Do not edit files another writer is changing.
 - Mid-change, do not run formatters or project-wide builds; the integrator
   runs the gate once a change set is stable.
 - Record decisions, verified vs unverified status and next steps in
@@ -35,9 +38,9 @@ an API — do not mix older Bevy idioms.
 
 ## Architecture conventions
 
-- **Pure truth, no ECS**: `tuning`, `geometry`, `sim`, `perception`,
-  `control`, `script`, `rng` depend only on `bevy::math`. Keep them headless
-  and unit-tested. ECS modules (`app`, `player`, `encounter`, `audio`, `ui`,
+- **Pure truth, no ECS**: `tuning`, `geometry`, `sim`, `perception`, `control`,
+  `script`, `rng`, `noise`, `body` and `storm` stay headless and unit-tested.
+  ECS modules (`app`, `player`, `encounter`, `audio`, `ui`,
   `world`, `debug`) adapt them.
 - **One layout**: every coordinate (walls, openings, fences, ceiba, props,
   route anchors, trails) comes from `geometry::Layout`. Collision, line of
@@ -45,8 +48,8 @@ an API — do not mix older Bevy idioms.
 - **Perception boundary**: only `perception` turns the Silbón's true distance
   into a cue, inverted. Audio and captions consume `WhistlePhrase` only; never
   read threat position/distance there, never spatialize the whistle.
-- **Truth validates claims**: offline `sim` checks objective/reach; multiplayer
-  `net::session` owns movement, aim/occlusion, ownership, one threat and outcomes.
+- **Truth validates claims**: `net::session` is authoritative in both solo and
+  multiplayer for movement, aim/occlusion, ownership, one threat and outcomes.
   `net::protocol` carries stable player IDs, run epochs and sequence numbers,
   never Bevy entity IDs or hidden AI state. `net::transport` is independent of
   rendering; `net::mod` adapts snapshots to local presentation.
@@ -57,8 +60,8 @@ an API — do not mix older Bevy idioms.
   `--net-smoke --headless` for real UDP, or `--net-smoke` for rendered census
   and screenshots. These are in-game drivers, not Omarchy input automation.
   Keep unit, same-machine, physical-LAN and internet evidence distinct.
-- **Determinism**: all randomness is `rng::Rng` from the seed. The smoke route
-  uses fixed simulated time.
+- **Determinism**: all randomness is `rng::Rng` from the seed. The solo smoke
+  uses fixed simulated time; two-process network smoke uses real-time endpoints.
 - **Tests** cover behaviour: objective progression and invalid transitions,
   whistle inversion, warning/hunt/line-of-sight recovery, restart reset,
   collision/sight/aim, and the full scripted route. Do not add tests that pin

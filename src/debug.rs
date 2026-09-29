@@ -4,6 +4,11 @@
 //!   (`script.rs`) through the same intent → motion → targeting → truth path
 //!   as a player, saves screenshots at fixed beats, checks that restarts do
 //!   not accumulate entities, logs a summary and exits (code 0 = route passed).
+//! - `--photos` places the camera at searched, unobstructed viewpoints (see
+//!   `photos.rs`), captures the world, the real map/note/downed UI and
+//!   time-separated pairs, labels every frame with what the driver altered
+//!   (presentation review, never gameplay proof) and writes a manifest. It
+//!   exits non-zero, listing what is missing, if a capture never completes.
 //!
 //! Screenshots are honest: the route only starts once the renderer reports no
 //! pipelines left to compile (plus a real-time warm-up), and every capture
@@ -20,10 +25,12 @@ use bevy::render::render_resource::PipelineCache;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use bevy::render::{Render, RenderApp, RenderSystems};
 use bevy::text::FontSource;
+use bevy::window::PrimaryWindow;
 
-use crate::app::{Flow, GameSet, Launch, LayoutRes, RestartRequest, Truth, TuningRes};
+use crate::app::{Flow, GameSet, Launch, LayoutRes, Truth, TuningRes};
 use crate::audio::AmbienceLoop;
 use crate::encounter::CurrentTarget;
+use crate::net::{NetControl, Network};
 use crate::player::{CurrentIntent, Player};
 use crate::script::{Observation, RouteScript};
 use crate::world::silbon::SilbonRoot;
@@ -44,14 +51,10 @@ pub struct DebugPlugin;
 impl Plugin for DebugPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ShotCounter>().add_systems(Update, f12_screenshot);
-        let smoke = app.world().get_resource::<Launch>().is_some_and(|l| l.smoke);
-        if smoke {
-            let script = {
-                let world = app.world();
-                let layout = &world.resource::<LayoutRes>().0;
-                let tuning = &world.resource::<TuningRes>().0;
-                RouteScript::full(layout, tuning)
-            };
+        let launch = app.world().get_resource::<Launch>().cloned();
+        let smoke = launch.as_ref().is_some_and(|l| l.smoke);
+        let photos = launch.as_ref().is_some_and(|l| l.photos);
+        if smoke || photos {
             // The render world reports how many pipelines are still compiling.
             let probe = PipelineProbe(Arc::new(AtomicUsize::new(usize::MAX)));
             if let Some(render) = app.get_sub_app_mut(RenderApp) {
@@ -59,29 +62,89 @@ impl Plugin for DebugPlugin {
                     .insert_resource(probe.clone())
                     .add_systems(Render, probe_pipelines.in_set(RenderSystems::Cleanup));
             }
-            app.insert_resource(probe)
-                .insert_resource(Smoke {
-                    script,
-                    frames: 0,
-                    result: None,
-                    exit_in: None,
-                    baseline: None,
-                    census_in: None,
-                    restarts_checked: 0,
-                    shots: Vec::new(),
-                    started: Instant::now(),
-                    idle_frames: 0,
-                    ready: false,
-                    pending: None,
-                })
-                .add_systems(
-                    Update,
-                    (
-                        smoke_drive.in_set(GameSet::Control).after(crate::app::apply_restart),
-                        smoke_census.in_set(GameSet::Present),
-                        smoke_exit.in_set(GameSet::Present).after(smoke_census),
-                    ),
-                );
+            app.insert_resource(probe);
+        }
+        if smoke {
+            let script = {
+                let world = app.world();
+                let layout = &world.resource::<LayoutRes>().0;
+                let tuning = &world.resource::<TuningRes>().0;
+                if world.resource::<Launch>().tour {
+                    RouteScript::tour(layout, tuning)
+                } else {
+                    RouteScript::full(layout, tuning)
+                }
+            };
+            app.insert_resource(Smoke {
+                script,
+                frames: 0,
+                result: None,
+                exit_in: None,
+                baseline: None,
+                census_in: None,
+                restarts_checked: 0,
+                shots: Vec::new(),
+                started: Instant::now(),
+                idle_frames: 0,
+                ready: false,
+                pending: None,
+                frame_at: Instant::now(),
+                frame_ms: Vec::new(),
+            })
+            .add_systems(
+                Update,
+                (
+                    smoke_drive.in_set(GameSet::Control).after(crate::player::reset_player),
+                    smoke_census.in_set(GameSet::Present),
+                    smoke_exit.in_set(GameSet::Present).after(smoke_census),
+                    smoke_overview.in_set(GameSet::Present),
+                ),
+            );
+        }
+        if photos {
+            let (mut shots, calm, requested) = {
+                let world = app.world();
+                let seed = world.resource::<TuningRes>().0.seed;
+                (
+                    crate::photos::shots(&world.resource::<LayoutRes>().0, &world.resource::<TuningRes>().0),
+                    calm_time(seed),
+                    world.resource::<Launch>().size,
+                )
+            };
+            let play_fog = crate::world::land::fog_visibility(&app.world().resource::<LayoutRes>().0);
+            for shot in shots.iter_mut().filter(|s| widens_fog(&s.name)) {
+                // Written on the image and in the manifest's `altered` column.
+                shot.label.push_str(&format!(
+                    "; FOG RANGE WIDENED to {OVERVIEW_FOG_VISIBILITY:.0} m visibility (play: {play_fog:.0} m) so the \
+                     150 m-high map view is not all fog; topology only, not ground readability"
+                ));
+            }
+            app.insert_resource(Photos {
+                shots,
+                calm,
+                index: 0,
+                take: 0,
+                settle: 0,
+                idle: 0,
+                frames: 0,
+                started: Instant::now(),
+                view_since: Instant::now(),
+                saving: None,
+                last_spawn_sim: 0.0,
+                taken: Vec::new(),
+                exit_in: None,
+                exited: false,
+                failure: None,
+                requested,
+            })
+            .add_systems(Startup, spawn_photo_caption)
+            .add_systems(
+                Update,
+                (
+                    photo_drive.in_set(GameSet::Weather).after(crate::app::advance_storm),
+                    photo_caption.in_set(GameSet::Present),
+                ),
+            );
         }
     }
 }
@@ -165,6 +228,8 @@ struct Smoke {
     /// The renderer finished warming up; the route is running.
     ready: bool,
     pending: Option<PendingShot>,
+    frame_at: Instant,
+    frame_ms: Vec<f64>,
 }
 
 fn smoke_drive(
@@ -178,15 +243,21 @@ fn smoke_drive(
     target: Res<CurrentTarget>,
     player: Single<&Player>,
     launch: Res<Launch>,
+    (layout, tuning, net): (Res<LayoutRes>, Res<TuningRes>, Res<Network>),
     probe: Res<PipelineProbe>,
-    fonts: Res<Assets<Font>>,
-    text_fonts: Query<&TextFont>,
+    (fonts, text_fonts): (Res<Assets<Font>>, Query<&TextFont>),
     screenshots: Query<(), With<Screenshot>>,
     mut intent: ResMut<CurrentIntent>,
-    mut restart: MessageWriter<RestartRequest>,
+    mut control: MessageWriter<NetControl>,
 ) {
     // Plain `&mut Smoke` so the pending shot and counters borrow disjointly.
     let smoke = &mut *smoke;
+    let now = Instant::now();
+    let wall_ms = now.duration_since(smoke.frame_at).as_secs_f64() * 1000.0;
+    smoke.frame_at = now;
+    if smoke.ready && smoke.pending.is_none() && smoke.result.is_none() {
+        smoke.frame_ms.push(wall_ms);
+    }
     smoke.frames += 1;
     let fonts_loaded = text_fonts.iter().all(|t| match &t.font {
         FontSource::Handle(h) => fonts.contains(h.id()),
@@ -263,14 +334,18 @@ fn smoke_drive(
     }
 
     let obs = Observation {
+        layout: &layout.0,
+        tuning: &tuning.0,
+        me: net.id().unwrap_or(crate::net::protocol::HOST),
         pose: player.pose,
         encounter: &truth.encounter,
+        snapshot: net.snapshot(),
         target: target.0,
         dt: time.delta_secs(),
     };
     let frame = smoke.script.tick(&obs);
     intent.0 = frame.intent;
-    if let Some(msg) = frame.log {
+    if let Some(msg) = &frame.log {
         info!("smoke: {msg} (t={:.1}s)", smoke.script.elapsed());
     }
     if let Some(name) = frame.capture {
@@ -284,8 +359,12 @@ fn smoke_drive(
         });
         virtual_time.pause();
     }
+    // The route's explicit session command (restart, start, mark) reaches
+    // the endpoint after this frame's input, as a key press does.
+    if let Some(action) = frame.command() {
+        control.write(NetControl::Action(action));
+    }
     if frame.restart {
-        restart.write(RestartRequest);
         smoke.census_in = Some(20);
     }
     if smoke.script.elapsed() > 20.0 * 60.0 {
@@ -371,6 +450,18 @@ fn smoke_exit(
         return;
     }
     let s = truth.encounter.stats;
+    if !smoke.frame_ms.is_empty() {
+        smoke.frame_ms.sort_by(f64::total_cmp);
+        let n = smoke.frame_ms.len();
+        let mean = smoke.frame_ms.iter().sum::<f64>() / n as f64;
+        info!(
+            "SMOKE FRAME TIMING (wall update intervals, no-vsync, excludes warmup/capture): n={} mean={:.3}ms p50={:.3}ms p95={:.3}ms",
+            n,
+            mean,
+            smoke.frame_ms[n / 2],
+            smoke.frame_ms[(n * 95 / 100).min(n - 1)]
+        );
+    }
     match &smoke.result {
         Some(Ok(())) => {
             info!(
@@ -391,4 +482,512 @@ fn smoke_exit(
         None => {}
     }
     smoke.exit_in = None;
+}
+
+/// One explicitly labelled topology capture. Player pose is never teleported;
+/// all landmark views and the tour use the real movement path at eye height.
+fn smoke_overview(
+    smoke: Res<Smoke>,
+    layout: Res<LayoutRes>,
+    camera: Single<(&mut Transform, &mut DistanceFog, &mut Projection), With<Player>>,
+) {
+    let (mut transform, mut fog, mut projection) = camera.into_inner();
+    let overview = smoke
+        .pending
+        .as_ref()
+        .is_some_and(|shot| shot.path.file_stem().is_some_and(|s| s == "00_overview"));
+    if overview {
+        *transform = Transform::from_xyz(25.0, 120.0, 55.0).looking_at(Vec3::new(0.0, 0.0, -35.0), Vec3::Y);
+        fog.falloff = FogFalloff::from_visibility_squared(OVERVIEW_FOG_VISIBILITY);
+    } else {
+        fog.falloff = FogFalloff::from_visibility_squared(crate::world::land::fog_visibility(&layout.0));
+    }
+    if let Projection::Perspective(p) = &mut *projection {
+        p.fov = if overview { 48.0_f32 } else { 68.0_f32 }.to_radians();
+    }
+}
+
+/// The whole `--photos` run is abandoned after this long (real time).
+const PHOTOS_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+/// The two `00_overview*` photos stand 150 m above the ground, farther from
+/// the map's corners (~260 m) than play's fog lets anything be seen. They and
+/// the `--smoke` topology capture alone widen the fog to this visibility
+/// (metres); the captions and manifest say so. Fog colour (lightning) is
+/// untouched, and no light or material is changed.
+const OVERVIEW_FOG_VISIBILITY: f32 = 800.0;
+
+/// This photo is a topology overview that takes the widened fog range.
+fn widens_fog(name: &str) -> bool {
+    name.starts_with("00_overview")
+}
+
+/// A view whose pipelines never settle is captured anyway, flagged, after this.
+const SHOT_TIMEOUT: Duration = Duration::from_secs(45);
+/// A screenshot that is never written fails the run after this.
+const SAVE_TIMEOUT: Duration = Duration::from_secs(30);
+const PHOTO_IDLE_FRAMES: u32 = 6;
+const PHOTO_SETTLE_FRAMES: u32 = 24;
+/// UI frames wait longer: the downed wash and the fear vignette ease in.
+const PHOTO_UI_SETTLE_FRAMES: u32 = 72;
+
+/// One saved frame, for the manifest.
+struct Taken {
+    path: PathBuf,
+    shot: usize,
+    take: u8,
+    sim_t: f32,
+    storm_t: f32,
+    window: (u32, u32),
+    fov_deg: f32,
+    /// Pipelines were idle and any pair gap had elapsed when it was taken.
+    settled: bool,
+}
+
+/// `--photos`: the whole tour of viewpoints, no gameplay. Everything it
+/// alters is presentation (camera, pinned storm clock, the snapshot mirror,
+/// UI open flags) and is written on each image and in `MANIFEST.tsv`.
+#[derive(Resource)]
+struct Photos {
+    shots: Vec<crate::photos::Shot>,
+    /// A storm moment with heavy rain and no lightning through a pair gap.
+    calm: f32,
+    index: usize,
+    /// 0 the shot's first frame, 1 its time-separated twin (`_t1`).
+    take: u8,
+    /// Frames the current view has been held.
+    settle: u32,
+    /// Consecutive frames with no pipeline compiling and all fonts loaded.
+    idle: u32,
+    frames: u64,
+    started: Instant,
+    /// When the current view was first held.
+    view_since: Instant,
+    /// A screenshot is in flight since this instant.
+    saving: Option<Instant>,
+    /// Simulated seconds when the last screenshot was requested.
+    last_spawn_sim: f32,
+    taken: Vec<Taken>,
+    exit_in: Option<u32>,
+    exited: bool,
+    failure: Option<String>,
+    requested: (u32, u32),
+}
+
+/// Small label on every photo: what it is and what was altered.
+#[derive(Component)]
+struct PhotoCaption;
+
+/// A moment in the storm with heavy rain and no lightning, through the gap
+/// between a pair's frames (photos are calm unless a frame asks otherwise).
+fn calm_time(seed: u64) -> f32 {
+    let span = crate::photos::PAIR_GAP_SECS + 1.5;
+    (60..2000)
+        .map(|s| s as f32 * 0.5)
+        .find(|&t| {
+            crate::storm::rain(seed, t) > 0.82
+                && crate::storm::rain(seed, t + crate::photos::PAIR_GAP_SECS) > 0.82
+                && (0..=(span / 0.25) as u32).all(|k| crate::storm::flash(seed, t + k as f32 * 0.25) == 0.0)
+        })
+        .unwrap_or(100.0)
+}
+
+/// The vertical field of view that keeps a shot's horizontal frame on a
+/// window narrower than the 16:9 the shots are composed for (tiling window
+/// managers hand out portrait windows). Capped so it never turns to fisheye.
+fn view_fov(fov_deg: f32, aspect: f32) -> f32 {
+    use crate::photos::REF_ASPECT;
+    if aspect >= REF_ASPECT {
+        return fov_deg;
+    }
+    let half_width = (fov_deg.to_radians() * 0.5).tan() * REF_ASPECT;
+    (2.0 * (half_width / aspect).atan())
+        .to_degrees()
+        .min(fov_deg * 1.5)
+        .min(95.0)
+}
+
+fn spawn_photo_caption(mut commands: Commands, assets: Res<AssetServer>) {
+    commands.spawn((
+        PhotoCaption,
+        Text::new(""),
+        TextFont {
+            font: assets.load::<Font>("fonts/NotoSans-Regular.ttf").into(),
+            font_size: bevy::text::FontSize::Px(12.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.85, 0.9, 0.95)),
+        Node {
+            position_type: PositionType::Absolute,
+            bottom: px(4),
+            left: px(4),
+            max_width: percent(96),
+            padding: UiRect::axes(px(6), px(2)),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+        GlobalZIndex(200),
+    ));
+}
+
+/// Keeps the caption on the frame being held. Built once per frame change.
+fn photo_caption(
+    photos: Res<Photos>,
+    window: Single<&Window, With<PrimaryWindow>>,
+    mut caption: Single<&mut Text, With<PhotoCaption>>,
+    mut shown: Local<Option<(usize, u8)>>,
+) {
+    let now = (photos.index, photos.take);
+    if *shown == Some(now) {
+        return;
+    }
+    *shown = Some(now);
+    let text = match photos.shots.get(photos.index) {
+        Some(shot) => format!(
+            "{}{}  |  PHOTO REVIEW, NOT GAMEPLAY PROOF  |  {}  |  window {}x{} (asked {}x{})",
+            shot.name,
+            if photos.take == 1 { "_t1" } else { "" },
+            shot.label,
+            window.physical_width(),
+            window.physical_height(),
+            photos.requested.0,
+            photos.requested.1,
+        ),
+        None => String::new(),
+    };
+    set_caption(&mut caption, &text);
+}
+
+fn set_caption(text: &mut Text, s: &str) {
+    if text.0 != s {
+        text.0 = s.to_string();
+    }
+}
+
+fn file_written(path: &std::path::Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.len() > 0)
+}
+
+/// Write `MANIFEST.tsv`, log the outcome and choose the exit code.
+fn finish_photos(photos: &mut Photos, launch: &Launch, window: &Window) -> AppExit {
+    let dir = launch.shots_dir.join("photos");
+    for t in &photos.taken {
+        if photos.failure.is_none() && !file_written(&t.path) {
+            photos.failure = Some(format!("screenshot was not written: {}", t.path.display()));
+        }
+    }
+    let missing: Vec<String> = photos
+        .shots
+        .iter()
+        .enumerate()
+        .flat_map(|(i, s)| (0..1 + s.pair as u8).map(move |k| (i, k, s.name.as_str())))
+        .filter(|&(i, k, _)| !photos.taken.iter().any(|t| t.shot == i && t.take == k))
+        .map(|(_, k, name)| format!("{name}{}", if k == 1 { "_t1" } else { "" }))
+        .collect();
+    if photos.failure.is_none() && !missing.is_empty() {
+        photos.failure = Some(format!("{} frames never captured", missing.len()));
+    }
+
+    let mut manifest = String::new();
+    manifest.push_str("# El Silbon --photos manifest. PRESENTATION REVIEW ONLY: no frame here is gameplay proof.\n");
+    manifest.push_str(&format!(
+        "# window asked {}x{}, actual {}x{} at exit; shots are composed for 16:9 and the vertical fov is widened on narrower windows.\n",
+        photos.requested.0,
+        photos.requested.1,
+        window.physical_width(),
+        window.physical_height()
+    ));
+    manifest.push_str(&format!(
+        "# pairs: `_t1` is the same view with the storm clock and simulated time {:.1}s later (rain and grass motion); storm base t={:.1}s.\n",
+        crate::photos::PAIR_GAP_SECS,
+        photos.calm
+    ));
+    manifest.push_str("file\tsurface\twindow\tfov_v\tstorm_t\tsim_t\tsettled\tcam\ttarget\taltered\n");
+    for t in &photos.taken {
+        let s = &photos.shots[t.shot];
+        manifest.push_str(&format!(
+            "{}\t{:?}\t{}x{}\t{:.1}\t{:.1}\t{:.2}\t{}\t({:.1},{:.1},{:.1})\t({:.1},{:.1},{:.1})\t{}\n",
+            t.path
+                .file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+            s.surface,
+            t.window.0,
+            t.window.1,
+            t.fov_deg,
+            t.storm_t,
+            t.sim_t,
+            t.settled,
+            s.pos.x,
+            s.pos.y,
+            s.pos.z,
+            s.target.x,
+            s.target.y,
+            s.target.z,
+            s.label
+        ));
+    }
+    if let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(dir.join("MANIFEST.tsv"), manifest)) {
+        warn!("cannot write photo manifest in {}: {e}", dir.display());
+    }
+    let unsettled = photos.taken.iter().filter(|t| !t.settled).count();
+    let unclear = photos
+        .shots
+        .iter()
+        .filter(|s| !s.clear)
+        .map(|s| s.name.as_str())
+        .collect::<Vec<_>>();
+    if !unclear.is_empty() {
+        warn!("PHOTOS: no clear camera found for {}", unclear.join(", "));
+    }
+    match &photos.failure {
+        None => {
+            info!(
+                "PHOTOS DONE: {} frames in {} ({unsettled} captured before pipelines settled); manifest {}",
+                photos.taken.len(),
+                dir.display(),
+                dir.join("MANIFEST.tsv").display()
+            );
+            AppExit::Success
+        }
+        Some(reason) => {
+            error!(
+                "PHOTOS FAILED: {reason}; {} frames saved to {}; missing: [{}]",
+                photos.taken.len(),
+                dir.display(),
+                missing.join(", ")
+            );
+            AppExit::error()
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn photo_drive(
+    mut commands: Commands,
+    mut photos: ResMut<Photos>,
+    launch: Res<Launch>,
+    (state, mut next): (Res<State<Flow>>, ResMut<NextState<Flow>>),
+    probe: Res<PipelineProbe>,
+    screenshots: Query<(), With<Screenshot>>,
+    (fonts, text_fonts): (Res<Assets<Font>>, Query<&TextFont>),
+    mut hud: Query<&mut Visibility, With<crate::ui::HudRoot>>,
+    mut camera: Single<(&mut Transform, &mut Projection, &mut DistanceFog), With<Player>>,
+    window: Single<&Window, With<PrimaryWindow>>,
+    (mut clock, mut net, mut truth): (ResMut<crate::app::StormClock>, ResMut<Network>, ResMut<Truth>),
+    (mut map, mut note): (ResMut<crate::ui::MapOpen>, ResMut<crate::encounter::NoteOpen>),
+    virtual_time: Res<Time<Virtual>>,
+    layout: Res<LayoutRes>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    use crate::photos::{PAIR_GAP_SECS, PHOTO_PLAYER_BASE, Surface};
+    let photos = &mut *photos;
+    if photos.exited {
+        return;
+    }
+    photos.frames += 1;
+    if *state.get() == Flow::Briefing {
+        next.set(Flow::Playing);
+    }
+
+    // Leaving: wait for the last screenshot, then report and exit.
+    if let Some(n) = photos.exit_in {
+        let stuck = photos.saving.is_some_and(|t| t.elapsed() > SAVE_TIMEOUT);
+        if n == 0 && (screenshots.is_empty() || stuck) {
+            let code = finish_photos(photos, &launch, &window);
+            exit.write(code);
+            photos.exited = true;
+        } else {
+            photos.exit_in = Some(n.saturating_sub(1));
+        }
+        return;
+    }
+    if photos.started.elapsed() > PHOTOS_TIMEOUT {
+        photos.failure = Some(format!(
+            "gave up after {}s (frame {} of {})",
+            PHOTOS_TIMEOUT.as_secs(),
+            photos.index,
+            photos.shots.len()
+        ));
+        photos.exit_in = Some(5);
+        return;
+    }
+
+    let fonts_loaded = text_fonts.iter().all(|t| match &t.font {
+        FontSource::Handle(h) => fonts.contains(h.id()),
+        _ => true,
+    });
+    if probe.0.load(Ordering::Relaxed) == 0 && fonts_loaded {
+        photos.idle += 1;
+    } else {
+        photos.idle = 0;
+    }
+    let Some(shot) = photos.shots.get(photos.index) else {
+        photos.exit_in = Some(30);
+        return;
+    };
+
+    // Frame it: camera, sky, UI flags and the mirrored world state. The
+    // snapshot is rebuilt from the session every frame, so none of this
+    // reaches the authority or survives the frame.
+    let want_hud = if shot.surface.is_ui() {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut hud {
+        if *v != want_hud {
+            *v = want_hud;
+        }
+    }
+    let want_map = shot.surface == Surface::Map;
+    if map.0 != want_map {
+        map.0 = want_map;
+    }
+    let want_note = match shot.surface {
+        Surface::Note(id) => Some(id),
+        _ => None,
+    };
+    if note.0 != want_note {
+        note.0 = want_note;
+    }
+    let aspect = window.physical_width() as f32 / window.physical_height().max(1) as f32;
+    let fov_deg = view_fov(shot.fov_deg, aspect);
+    let (tf, projection, fog) = &mut *camera;
+    **tf = Transform::from_translation(shot.pos).looking_at(shot.target, Vec3::Y);
+    // Only the labelled topology overviews get the widened range; every other
+    // frame restores play's, so nothing carries into gameplay-like views.
+    fog.falloff = FogFalloff::from_visibility_squared(if widens_fog(&shot.name) {
+        OVERVIEW_FOG_VISIBILITY
+    } else {
+        crate::world::land::fog_visibility(&layout.0)
+    });
+    if let Projection::Perspective(p) = &mut **projection {
+        p.fov = fov_deg.to_radians();
+    }
+    // The storm stands still at the calm moment (plus the pair gap for the
+    // twin frame); `prev` follows so no onset falls in `(prev, t]`.
+    let storm_t = photos.calm + photos.take as f32 * PAIR_GAP_SECS;
+    clock.t = storm_t;
+    clock.prev = storm_t;
+    if let Some(endpoint) = net.endpoint.as_mut() {
+        let me = endpoint.id;
+        if let Some(s) = endpoint.snapshot.as_mut() {
+            if shot.powered {
+                s.world.power = 1.0;
+                s.world.truck = 1.0;
+                s.world.warm = 0.35;
+                s.world.beacon = 20.0;
+            }
+            s.danger = 0;
+            // Photo-only teammates: they exist in this mirror alone.
+            s.players.retain(|p| p.id < PHOTO_PLAYER_BASE);
+            for (i, c) in shot.party.iter().enumerate() {
+                s.players.push(crate::net::protocol::PlayerView {
+                    id: PHOTO_PLAYER_BASE + i as u64,
+                    position: c.pos.to_array(),
+                    yaw: c.yaw,
+                    pitch: 0.0,
+                    status: 0,
+                    crouch: c.crouch,
+                    sprint: false,
+                    light: true,
+                    carrying: c.carrying as u8,
+                    revive: 0.0,
+                    bleed: 0.0,
+                });
+            }
+            if shot.surface == Surface::Downed
+                && let Some(p) = s.players.iter_mut().find(|p| Some(p.id) == me)
+            {
+                p.status = 1;
+                p.bleed = 38.0;
+            }
+        }
+    }
+    if let Some((at, facing)) = shot.silbon {
+        let th = &mut truth.encounter.threat;
+        th.pos = at;
+        th.facing = facing;
+        th.presence = crate::sim::Presence::Present;
+        th.state = crate::sim::ThreatState::Stalking;
+    }
+
+    // Hold each view until the renderer has settled on it.
+    if photos.frames <= 90 || photos.started.elapsed() < READY_MIN_WALL {
+        return;
+    }
+    match photos.saving {
+        None => {
+            photos.settle += 1;
+            let need = if shot.surface.is_ui() {
+                PHOTO_UI_SETTLE_FRAMES
+            } else {
+                PHOTO_SETTLE_FRAMES
+            };
+            let sim = virtual_time.elapsed_secs();
+            let gap_ok = photos.take == 0 || sim - photos.last_spawn_sim >= PAIR_GAP_SECS;
+            let settled = gap_ok && photos.idle >= PHOTO_IDLE_FRAMES;
+            let timed_out = photos.view_since.elapsed() > SHOT_TIMEOUT;
+            if photos.settle >= need && (settled || timed_out) {
+                if !settled {
+                    warn!(
+                        "photos: capturing {} after {}s without settling (idle frames {}, pair gap ok {gap_ok})",
+                        shot.name,
+                        SHOT_TIMEOUT.as_secs(),
+                        photos.idle
+                    );
+                }
+                let file = if photos.take == 0 {
+                    format!("{}.png", shot.name)
+                } else {
+                    format!("{}_t1.png", shot.name)
+                };
+                let path = launch.shots_dir.join("photos").join(file);
+                let taken = Taken {
+                    path: path.clone(),
+                    shot: photos.index,
+                    take: photos.take,
+                    sim_t: sim,
+                    storm_t,
+                    window: (window.physical_width(), window.physical_height()),
+                    fov_deg,
+                    settled,
+                };
+                photos.taken.push(taken);
+                capture(&mut commands, path);
+                photos.saving = Some(Instant::now());
+                photos.last_spawn_sim = sim;
+            }
+        }
+        Some(since) => {
+            if screenshots.is_empty() {
+                let written = photos.taken.last().is_some_and(|t| file_written(&t.path));
+                if !written {
+                    let path = photos
+                        .taken
+                        .last()
+                        .map(|t| t.path.display().to_string())
+                        .unwrap_or_default();
+                    photos.failure = Some(format!("screenshot was not written: {path}"));
+                    photos.exit_in = Some(5);
+                    return;
+                }
+                photos.saving = None;
+                photos.settle = 0;
+                photos.view_since = Instant::now();
+                if shot.pair && photos.take == 0 {
+                    photos.take = 1;
+                } else {
+                    photos.index += 1;
+                    photos.take = 0;
+                }
+            } else if since.elapsed() > SAVE_TIMEOUT {
+                photos.failure = Some(format!(
+                    "screenshot request for {} was never completed within {}s",
+                    shot.name,
+                    SAVE_TIMEOUT.as_secs()
+                ));
+                photos.exit_in = Some(5);
+            }
+        }
+    }
 }

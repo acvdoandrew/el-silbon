@@ -1,32 +1,76 @@
-//! Sound: the night ambience loop, non-spatial whistle phrases chosen by the
-//! perception layer, and a few one-shot effects. Every voice is mono and
-//! plays without panning or distance attenuation; gains are gentle and follow
-//! the master volume. Nothing here reads the Silbón's position.
+//! Sound: the night ambience, rain and thunder, the non-spatial whistle
+//! phrases chosen by the perception layer, footsteps, machines and party
+//! cues. Every voice is mono and plays without panning or distance
+//! attenuation; gains are gentle and follow the master volume. Nothing here
+//! reads the Silbón's position — only this player's own body, the shared
+//! world state and this frame's events.
+
+use std::collections::BTreeMap;
 
 use bevy::audio::Volume;
 use bevy::prelude::*;
 
-use crate::app::{EncounterMsg, Flow, GameSet, RestartRequest, Settings, Truth, TuningRes, WhistleMsg};
+use crate::app::{
+    EncounterMsg, Flow, GameSet, LayoutRes, RunReset, Settings, StormClock, Truth, TuningRes, WhistleMsg,
+};
+use crate::net::Network;
 use crate::perception::WhistleVariant;
+use crate::player::Player;
 use crate::sim::{Event, ThreatState};
+use crate::storm;
+
+/// Ground the footfalls land on, in the order of `Sounds::steps`.
+#[derive(Clone, Copy)]
+enum Surface {
+    Dirt,
+    Grass,
+    Wood,
+    Water,
+}
 
 #[derive(Resource)]
 struct Sounds {
-    whistle_loud: Handle<AudioSource>,
-    whistle_mid: Handle<AudioSource>,
-    whistle_faint: Handle<AudioSource>,
+    whistles: [Handle<AudioSource>; 3],
+    thunder: [Handle<AudioSource>; 2],
+    steps: [[Handle<AudioSource>; 3]; 4],
     ambience: Handle<AudioSource>,
+    rain: Handle<AudioSource>,
+    heartbeat: Handle<AudioSource>,
+    engine: Handle<AudioSource>,
+    crank: Handle<AudioSource>,
     bones: Handle<AudioSource>,
+    bones_set: Handle<AudioSource>,
     restitution: Handle<AudioSource>,
     caught: Handle<AudioSource>,
     dawn: Handle<AudioSource>,
+    cattle: Handle<AudioSource>,
+    engine_start: Handle<AudioSource>,
+    power_on: Handle<AudioSource>,
+    susto: Handle<AudioSource>,
+    revive: Handle<AudioSource>,
+    pray: Handle<AudioSource>,
+    aji: Handle<AudioSource>,
+    beacon: Handle<AudioSource>,
+    counting: Handle<AudioSource>,
+    ping: Handle<AudioSource>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VoiceKind {
+    /// The always-running loops, mixed by `mix`.
     Ambience,
+    Rain,
+    Heartbeat,
+    Engine,
+    Crank,
     Whistle,
     Effect,
+}
+
+impl VoiceKind {
+    fn is_loop(self) -> bool {
+        !matches!(self, Self::Whistle | Self::Effect)
+    }
 }
 
 /// A playing sound and its base gain before master volume.
@@ -54,7 +98,9 @@ impl Plugin for SoundPlugin {
                 Update,
                 (
                     stop_voices_on_restart.in_set(GameSet::Control),
-                    (play_whistles, play_effects, mix).chain().in_set(GameSet::Present),
+                    (play_whistles, play_effects, play_pings, footsteps, thunder, mix)
+                        .chain()
+                        .in_set(GameSet::Present),
                 ),
             )
             .add_systems(OnEnter(Flow::Paused), pause_all)
@@ -63,27 +109,96 @@ impl Plugin for SoundPlugin {
 }
 
 fn load_sounds(mut commands: Commands, assets: Res<AssetServer>, tuning: Res<TuningRes>, settings: Res<Settings>) {
-    let sounds = Sounds {
-        whistle_loud: assets.load("audio/whistle_loud.wav"),
-        whistle_mid: assets.load("audio/whistle_mid.wav"),
-        whistle_faint: assets.load("audio/whistle_faint.wav"),
-        ambience: assets.load("audio/ambience_llano.wav"),
-        bones: assets.load("audio/bones_rattle.wav"),
-        restitution: assets.load("audio/restitution.wav"),
-        caught: assets.load("audio/caught.wav"),
-        dawn: assets.load("audio/dawn.wav"),
+    let a = |name: &str| assets.load::<AudioSource>(format!("audio/{name}.wav"));
+    let steps = |kind: &str| {
+        [
+            a(&format!("step_{kind}_0")),
+            a(&format!("step_{kind}_1")),
+            a(&format!("step_{kind}_2")),
+        ]
     };
-    let gain = tuning.0.ambience_gain;
-    commands.spawn((
-        Name::new("ambience loop"),
-        AmbienceLoop,
-        AudioPlayer::new(sounds.ambience.clone()),
-        PlaybackSettings::LOOP.with_volume(Volume::Linear(gain * settings.volume)),
-        Voice {
-            gain,
-            kind: VoiceKind::Ambience,
-        },
-    ));
+    let sounds = Sounds {
+        whistles: [a("whistle_loud"), a("whistle_mid"), a("whistle_faint")],
+        thunder: [a("thunder_a"), a("thunder_b")],
+        steps: [steps("dirt"), steps("grass"), steps("wood"), steps("water")],
+        ambience: a("ambience_llano"),
+        rain: a("rain_loop"),
+        heartbeat: a("heartbeat"),
+        engine: a("engine_loop"),
+        crank: a("pump_crank"),
+        bones: a("bones_rattle"),
+        bones_set: a("bones_set"),
+        restitution: a("restitution"),
+        caught: a("caught"),
+        dawn: a("dawn"),
+        cattle: a("cattle"),
+        engine_start: a("engine_start"),
+        power_on: a("power_on"),
+        susto: a("susto"),
+        revive: a("revive"),
+        pray: a("pray"),
+        aji: a("aji_scatter"),
+        beacon: a("beacon_flare"),
+        counting: a("counting"),
+        ping: a("ping"),
+    };
+    let t = &tuning.0;
+    let spawn_loop = |commands: &mut Commands,
+                      name: &'static str,
+                      clip: &Handle<AudioSource>,
+                      gain: f32,
+                      kind: VoiceKind,
+                      on: bool| {
+        let mut e = commands.spawn((
+            Name::new(name),
+            AudioPlayer::new(clip.clone()),
+            PlaybackSettings::LOOP.with_volume(Volume::Linear(if on { gain * settings.volume } else { 0.0 })),
+            Voice { gain, kind },
+        ));
+        if kind == VoiceKind::Ambience {
+            e.insert(AmbienceLoop);
+        }
+    };
+    spawn_loop(
+        &mut commands,
+        "ambience loop",
+        &sounds.ambience,
+        t.ambience_gain,
+        VoiceKind::Ambience,
+        true,
+    );
+    spawn_loop(
+        &mut commands,
+        "rain loop",
+        &sounds.rain,
+        t.rain_gain,
+        VoiceKind::Rain,
+        true,
+    );
+    spawn_loop(
+        &mut commands,
+        "heartbeat loop",
+        &sounds.heartbeat,
+        t.sfx_gain * 1.4,
+        VoiceKind::Heartbeat,
+        false,
+    );
+    spawn_loop(
+        &mut commands,
+        "engine loop",
+        &sounds.engine,
+        t.sfx_gain * 0.9,
+        VoiceKind::Engine,
+        false,
+    );
+    spawn_loop(
+        &mut commands,
+        "pump crank loop",
+        &sounds.crank,
+        t.sfx_gain * 0.85,
+        VoiceKind::Crank,
+        false,
+    );
     commands.insert_resource(sounds);
 }
 
@@ -103,17 +218,18 @@ fn play_whistles(
     sounds: Res<Sounds>,
     settings: Res<Settings>,
     state: Res<State<Flow>>,
-    net: Res<crate::net::Network>,
+    net: Res<Network>,
 ) {
-    if *state.get() != Flow::Playing || (net.enabled && net.caught()) {
+    // The dead hear no more of him; the paused hear nothing at all.
+    if *state.get() != Flow::Playing || net.status() == 2 {
         phrases.clear();
         return;
     }
     for WhistleMsg(p) in phrases.read() {
         let clip = match p.variant {
-            WhistleVariant::Loud => &sounds.whistle_loud,
-            WhistleVariant::Middling => &sounds.whistle_mid,
-            WhistleVariant::Faint => &sounds.whistle_faint,
+            WhistleVariant::Loud => &sounds.whistles[0],
+            WhistleVariant::Middling => &sounds.whistles[1],
+            WhistleVariant::Faint => &sounds.whistles[2],
         };
         one_shot(
             &mut commands,
@@ -135,49 +251,213 @@ fn play_effects(
 ) {
     let g = tuning.0.sfx_gain;
     for EncounterMsg(e) in events.read() {
-        let clip = match e {
-            Event::SatchelTaken => Some((&sounds.bones, g)),
-            Event::RestitutionComplete => Some((&sounds.restitution, g)),
-            Event::Caught => Some((&sounds.caught, g)),
-            Event::Escaped => Some((&sounds.dawn, g * 0.9)),
-            _ => None,
+        let (clip, gain, speed) = match e {
+            Event::RelicTaken => (&sounds.bones, g, 1.0),
+            Event::RelicDropped => (&sounds.bones_set, g * 0.8, 1.0),
+            Event::RelicDelivered => (&sounds.bones_set, g * 0.9, 0.85),
+            Event::AllBonesHome => (&sounds.restitution, g, 1.0),
+            Event::PowerRestored => (&sounds.power_on, g, 1.0),
+            Event::TruckStarted => (&sounds.engine_start, g, 1.0),
+            Event::AjiTaken => (&sounds.aji, g * 0.45, 1.35),
+            Event::AjiUsed => (&sounds.aji, g, 1.0),
+            Event::CountingBegan => (&sounds.counting, g * 0.8, 1.0),
+            Event::Susto => (&sounds.susto, g, 1.0),
+            Event::Revived => (&sounds.revive, g, 1.0),
+            Event::Downed => (&sounds.caught, g * 0.8, 1.2),
+            Event::Died => (&sounds.caught, g, 0.85),
+            Event::CattleSpooked => (&sounds.cattle, g, 1.0),
+            Event::BeaconLit => (&sounds.beacon, g, 1.0),
+            Event::Prayed => (&sounds.pray, g * 0.8, 1.0),
+            Event::Escaped => (&sounds.dawn, g * 0.9, 1.0),
+            _ => continue,
         };
-        if let Some((clip, gain)) = clip {
-            one_shot(&mut commands, clip, gain, 1.0, VoiceKind::Effect, settings.volume);
+        one_shot(&mut commands, clip, gain, speed, VoiceKind::Effect, settings.volume);
+    }
+}
+
+/// A tick when anyone marks a spot.
+fn play_pings(
+    mut commands: Commands,
+    net: Res<Network>,
+    sounds: Res<Sounds>,
+    settings: Res<Settings>,
+    tuning: Res<TuningRes>,
+    mut seen: Local<BTreeMap<u64, f32>>,
+) {
+    let pings = net.snapshot().map_or(&[][..], |s| s.pings.as_slice());
+    seen.retain(|by, _| pings.iter().any(|p| p.by == *by));
+    for p in pings {
+        let fresh = seen.get(&p.by).is_none_or(|left| p.left > *left);
+        seen.insert(p.by, p.left);
+        if fresh {
+            one_shot(
+                &mut commands,
+                &sounds.ping,
+                tuning.0.sfx_gain * 0.7,
+                1.0,
+                VoiceKind::Effect,
+                settings.volume,
+            );
         }
     }
 }
 
-/// Apply master volume and the ambience hush to every live sink.
+/// Footfalls follow the ground this player really covers, on the surface
+/// underfoot, with the same stride the body model uses for noise.
+#[allow(clippy::too_many_arguments)]
+fn footsteps(
+    mut commands: Commands,
+    layout: Res<LayoutRes>,
+    tuning: Res<TuningRes>,
+    settings: Res<Settings>,
+    sounds: Res<Sounds>,
+    net: Res<Network>,
+    state: Res<State<Flow>>,
+    player: Single<&Player>,
+    mut last: Local<Option<Vec2>>,
+    mut carried: Local<f32>,
+    mut count: Local<usize>,
+) {
+    let pos = player.pose.pos;
+    let moved = last.map_or(0.0, |p| p.distance(pos));
+    *last = Some(pos);
+    if *state.get() != Flow::Playing || !net.active() || net.stunned() || moved > 2.0 {
+        return;
+    }
+    *carried += moved;
+    let stride = tuning.0.stride;
+    if *carried < stride {
+        return;
+    }
+    *carried %= stride;
+    let (crouch, sprint) = net.me().map_or((false, false), |p| (p.crouch, p.sprint));
+    let d = &layout.0.district;
+    let surface = if layout.0.wading(pos) {
+        Surface::Water
+    } else if d.surface_at(pos).is_some() {
+        Surface::Wood
+    } else if d.grass.iter().any(|r| r.contains(pos)) {
+        Surface::Grass
+    } else {
+        Surface::Dirt
+    };
+    let gait = if sprint {
+        1.0
+    } else if crouch {
+        0.3
+    } else {
+        0.62
+    };
+    let load = 1.0 + 0.12 * net.carrying() as f32;
+    *count += 1;
+    const PITCH: [f32; 5] = [0.96, 1.04, 1.0, 0.92, 1.08];
+    let clip = &sounds.steps[surface as usize][*count % 3];
+    one_shot(
+        &mut commands,
+        clip,
+        tuning.0.sfx_gain * gait * load * 0.8,
+        PITCH[*count % PITCH.len()],
+        VoiceKind::Effect,
+        settings.volume,
+    );
+}
+
+/// Thunder rolls in after each flash, late by the storm's own distance.
+fn thunder(
+    mut commands: Commands,
+    clock: Res<StormClock>,
+    tuning: Res<TuningRes>,
+    settings: Res<Settings>,
+    sounds: Res<Sounds>,
+) {
+    if clock.t <= clock.prev || clock.t - clock.prev > 1.0 {
+        return;
+    }
+    if let Some(power) = storm::thunder_onset(tuning.0.seed, clock.prev, clock.t) {
+        let variant = ((clock.t * 7.0) as usize) % 2;
+        one_shot(
+            &mut commands,
+            &sounds.thunder[variant],
+            tuning.0.sfx_gain * (0.55 + 0.75 * power.clamp(0.0, 1.0)),
+            1.0,
+            VoiceKind::Effect,
+            settings.volume,
+        );
+    }
+}
+
+/// Apply master volume and every loop's dynamic level to each live sink.
+#[allow(clippy::too_many_arguments)]
 fn mix(
     time: Res<Time<Real>>,
     truth: Res<Truth>,
     settings: Res<Settings>,
     tuning: Res<TuningRes>,
+    clock: Res<StormClock>,
     mut hush: ResMut<Hush>,
     mut sinks: Query<(&Voice, &mut AudioSink)>,
     state: Res<State<Flow>>,
-    net: Res<crate::net::Network>,
+    net: Res<Network>,
 ) {
     let tense = matches!(
         truth.encounter.threat.state,
         ThreatState::Warning | ThreatState::Hunting
     );
     let target = if tense { tuning.0.ambience_hush } else { 1.0 };
-    let k = (time.delta_secs() * 0.8).min(1.0);
-    hush.0 += (target - hush.0) * k;
+    let dt = time.delta_secs();
+    hush.0 += (target - hush.0) * (dt * 0.8).min(1.0);
+
+    let snap = net.snapshot();
+    let me = snap.map(|s| s.me).unwrap_or_default();
+    let world = snap.map(|s| s.world).unwrap_or_default();
+    let dazed = net.status() == 1 || me.stun > 0.0;
+    let rain = storm::rain(tuning.0.seed, clock.t);
+    let over = truth.encounter.outcome.is_over();
+
+    // Fear you can hear: quiet under a threshold, then a drum that speeds up.
+    let heart_level = if net.status() == 1 {
+        1.0
+    } else {
+        ((me.fear - 0.3) / 0.55).clamp(0.0, 1.0)
+    };
+    let heart_speed = if net.status() == 1 {
+        0.7
+    } else {
+        0.85 + 0.85 * me.fear.clamp(0.0, 1.0)
+    };
+    let engine_on = world.truck >= 1.0 && !over;
+    let crank_on = me.hold_kind == 3;
+
     for (voice, mut sink) in &mut sinks {
         if *state.get() == Flow::Paused {
             sink.pause();
         }
         let mut v = voice.gain * settings.volume;
-        if net.enabled && net.caught() && voice.kind == VoiceKind::Whistle {
-            v = 0.0;
+        match voice.kind {
+            VoiceKind::Ambience => {
+                v *= hush.0 * if dazed { 0.5 } else { 1.0 } * (1.0 - 0.25 * (rain - 0.6) / 0.4);
+            }
+            VoiceKind::Rain => v *= rain * if dazed { 0.65 } else { 1.0 },
+            VoiceKind::Heartbeat => {
+                v *= heart_level * heart_level;
+                sink.set_speed(heart_speed);
+            }
+            VoiceKind::Engine => {
+                v *= if engine_on { 0.6 + 0.4 * world.warm } else { 0.0 };
+                sink.set_speed(0.92 + 0.16 * world.warm);
+            }
+            VoiceKind::Crank => v *= if crank_on { 1.0 } else { 0.0 },
+            VoiceKind::Whistle if net.status() == 2 => v = 0.0,
+            VoiceKind::Whistle | VoiceKind::Effect => {}
         }
-        if voice.kind == VoiceKind::Ambience {
-            v *= hush.0;
-        }
-        if (sink.volume().to_linear() - v).abs() > 0.002 {
+        let now = sink.volume().to_linear();
+        // Loops glide to their level; one-shots keep theirs.
+        let v = if voice.kind.is_loop() {
+            now + (v - now) * (dt * 5.0).min(1.0)
+        } else {
+            v
+        };
+        if (now - v).abs() > 0.002 || (v == 0.0 && now != 0.0) {
             sink.set_volume(Volume::Linear(v));
         }
     }
@@ -195,10 +475,10 @@ fn resume_all(sinks: Query<&AudioSink>) {
     }
 }
 
-/// Restart: stop every whistle and effect; the ambience loop stays (one).
+/// A new run: stop every whistle and effect; the loops stay (one each).
 fn stop_voices_on_restart(
     mut commands: Commands,
-    mut requests: MessageReader<RestartRequest>,
+    mut requests: MessageReader<RunReset>,
     voices: Query<(Entity, &Voice)>,
     mut hush: ResMut<Hush>,
 ) {
@@ -206,7 +486,7 @@ fn stop_voices_on_restart(
         return;
     }
     for (entity, voice) in &voices {
-        if voice.kind != VoiceKind::Ambience {
+        if !voice.kind.is_loop() {
             commands.entity(entity).despawn();
         }
     }

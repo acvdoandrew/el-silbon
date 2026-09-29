@@ -1,71 +1,128 @@
 //! Explicit development automation, using real endpoints and ordinary inputs.
 //! No position teleports, objective setters, fake transport, or desktop input.
-use super::{protocol::*, session::target, transport::Endpoint};
+//!
+//! Both processes run the shared route engine (`script::RouteScript`) with a
+//! role each: walking with look/move deltas, aiming the real crosshair, and
+//! sending the same commands a human's frames would. The story, seen from
+//! either side:
+//!
+//! run 1 — the host lays the table bundle at the ceiba while the partner
+//! watches it land in her own snapshot, marks the altar, and only when one
+//! snapshot holds both her mark and the host's does she acknowledge (by
+//! crouching, which the host sees); she holds the crouch until the host has
+//! taken the next bundle. The host then carries the other four bundles home,
+//! cranks the pump and starts the truck while the partner waits in the lit
+//! porch, and once the lamps are on she walks to the truck's boarding zone.
+//! Both wait there through the engine's warm-up (reflexes play the threat,
+//! hiding near the truck if he comes) and stand in the zone once it is warm:
+//! the shared WIN. Once the outcome is decided the authority takes no more
+//! body input, so there is no acknowledgement: the host lingers a bounded
+//! 2.5 s so the partner's snapshot shows the win, then restarts, and the
+//! partner waits (bounded) for the new epoch.
+//! run 2 — the bundle wakes him; both stand in the open until he has caught
+//! them both. Both must see the shared failure before the host restarts.
+//! run 3 — the partner takes the table bundle and disconnects carrying it;
+//! the host sees the party shrink and the load fall to the ground, walks to it,
+//! picks it up and lays it at the altar.
+//!
+//! Both processes run on the wall clock at 60 Hz, as the game does, and build
+//! every frame by the game's own rules (`super::Wire`, `controls_live`,
+//! `follow_body`): the body trails its snapshot row, the head turns unless
+//! dead, the crosshair is the HUD's own (a frame old), and the controls carry
+//! nothing while the player is frozen or dead or the run is over. A full
+//! route therefore takes real minutes.
+//!
+//! An unexpected run epoch, a restart that does not reset everything, being
+//! caught where the route does not intend it, or a timeout fails the smoke
+//! with a diagnostic naming the step and the state; nothing here treats a
+//! surprise as success.
+use super::{
+    Wire, controls_live, follow_body, mirror,
+    protocol::*,
+    status_of,
+    transport::{Endpoint, Mode},
+};
 use crate::{
     app::Launch,
-    control::{Intent, Pose, wrap_angle},
+    control::{Intent, Pose, Target},
     geometry::Layout,
-    script::{Observation, RouteScript},
-    sim::{Encounter, Objective, Presence, Stats, ThreatState},
+    script::{Observation, RouteScript, crosshair},
+    sim::Encounter,
     tuning::Tuning,
 };
-use bevy::math::{Vec2, Vec3};
+use std::time::{Duration, Instant};
+
+/// Seconds the whole route may take (the clock is the wall clock).
+const TIMEOUT: f32 = 2400.0;
+
+/// One frame of a 60 Hz client.
+const FRAME: Duration = Duration::from_micros(16_667);
 
 pub struct Driver {
-    run: u64,
-    script: RouteScript,
+    /// Chosen on the first snapshot, once the role (host or partner) is known.
+    script: Option<RouteScript>,
+    /// The listener's mirror of the run, filled from snapshots as the client
+    /// adapter does, for the route's diagnostics.
+    mirror: Encounter,
     elapsed: f32,
-    outcome_time: f32,
-    waypoint: usize,
-    saw_win: bool,
-    saw_failure: bool,
-    saw_capture: bool,
-    start_sent: bool,
-    take_sent: bool,
+    seen_run: u64,
     pub done: bool,
     pub error: Option<String>,
 }
+
 pub struct Frame {
     pub intent: Intent,
+    /// Start, restart or mark. Presses (pick up, pepper) travel in the
+    /// intent, as for a human; see `super::Wire`.
     pub action: Option<Action>,
     pub leave: bool,
 }
+
 impl Driver {
-    pub fn new(layout: &Layout, tuning: &Tuning) -> Self {
+    pub fn new(layout: &Layout, _tuning: &Tuning) -> Self {
         Self {
-            run: 0,
-            script: RouteScript::full(layout, tuning),
+            script: None,
+            mirror: Encounter::new(layout),
             elapsed: 0.0,
-            outcome_time: 0.0,
-            waypoint: 0,
-            saw_win: false,
-            saw_failure: false,
-            saw_capture: false,
-            start_sent: false,
-            take_sent: false,
+            seen_run: 0,
             done: false,
             error: None,
         }
     }
-    pub fn tick(&mut self, endpoint: &Endpoint, pose: Pose, dt: f32, layout: &Layout, tuning: &Tuning) -> Frame {
+
+    fn step(&self) -> String {
+        self.script
+            .as_ref()
+            .map_or_else(|| "connecting".into(), RouteScript::step_name)
+    }
+
+    /// One route frame. `target` is what the HUD's crosshair showed as the
+    /// last frame ended, as a human sees it: the route is never given a
+    /// fresher view than the game gives.
+    pub fn tick(
+        &mut self,
+        endpoint: &Endpoint,
+        pose: Pose,
+        target: Option<Target>,
+        dt: f32,
+        layout: &Layout,
+        tuning: &Tuning,
+    ) -> Frame {
         let mut frame = Frame {
             intent: Intent::default(),
             action: None,
             leave: false,
         };
         self.elapsed += dt;
-        if self.elapsed > 360.0 {
-            self.error = Some(format!(
-                "smoke timed out, run {} step {}",
-                self.run,
-                self.script.step_name()
-            ));
-        }
         if self.error.is_some() || self.done {
             return frame;
         }
+        if self.elapsed > TIMEOUT {
+            self.error = Some(format!("smoke timed out after {TIMEOUT:.0}s at {}", self.step()));
+            return frame;
+        }
         if endpoint.closed {
-            self.error = Some(endpoint.status.clone());
+            self.error = Some(format!("{} (at {})", endpoint.status, self.step()));
             return frame;
         }
         // Let the endpoint diagnose connection loss; do not misreport stale
@@ -73,221 +130,123 @@ impl Driver {
         if endpoint.snapshot.is_some() && endpoint.snapshot_age() > 0.25 {
             return frame;
         }
-        let Some(s) = &endpoint.snapshot else {
+        let (Some(snap), Some(id)) = (&endpoint.snapshot, endpoint.id) else {
             return frame;
         };
-        let Some(id) = endpoint.id else {
-            return frame;
-        };
-        if self.run != s.run {
-            if self.run > 0 && s.run != self.run + 1 {
-                self.error = Some("nonconsecutive restart epoch".into());
-            }
-            self.run = s.run;
-            self.waypoint = 0;
-            self.take_sent = false;
-            self.outcome_time = 0.0;
-            self.script = RouteScript::full(layout, tuning);
-            eprintln!("NET SMOKE player={id} observing run={}", s.run);
-            if s.players.iter().any(|p| p.caught) || objective(s.objective) != Objective::FindSatchel {
-                self.error = Some("restart did not reset players/objective".into());
-            }
+        if snap.run != self.seen_run {
+            self.seen_run = snap.run;
+            eprintln!("NET SMOKE player={id} observing run={}", snap.run);
         }
-        if !s.started {
-            if id == HOST && s.players.len() == 2 && !self.start_sent {
-                frame.action = Some(Action::Start);
-                self.start_sent = true;
-            }
-            return frame;
-        }
-        let objective = objective(s.objective);
-        if objective == Objective::Won {
-            self.saw_win = true;
-        }
-        if objective == Objective::Failed {
-            self.saw_failure = true;
-        }
-        if s.players.iter().any(|p| p.caught) {
-            self.saw_capture = true;
-        }
-        if id == HOST {
-            if objective.is_over() {
-                self.outcome_time += dt;
-                if self.outcome_time > 0.7 && self.outcome_time < 0.7 + dt * 1.5 {
-                    frame.action = Some(Action::Restart);
-                }
-                return frame;
-            }
-            if s.run == 2 {
-                frame.intent = self.walk(pose, &[[0.0, 24.0], [0.0, 18.0], [0.0, 8.0]], dt);
-            }
-            if s.run == 3 && s.players.len() == 1 {
-                if s.satchel == Satchel::Carried(HOST) {
-                    if !self.saw_win || !self.saw_failure || !self.saw_capture {
-                        self.error = Some("missing win/failure/capture evidence".into());
-                    } else {
-                        self.done = true;
-                        eprintln!(
-                            "NET SMOKE PASS host: shared win, shared failure, two restarts, disconnect and item recovery"
-                        );
-                    }
-                } else if let Satchel::Ground(item) = s.satchel {
-                    let path = [[0.0, 24.0], [0.0, 8.0], [0.0, 0.0], [0.0, -2.5], [2.15, -3.5]];
-                    frame.intent = self.walk(pose, &path, dt);
-                    if self.waypoint >= path.len() {
-                        frame.intent.look_delta = aim(pose, Vec3::from_array(item), dt, tuning);
-                        if !self.take_sent
-                            && target(layout, tuning, &pose, s.satchel, objective, id)
-                                .is_some_and(|t| t.kind == crate::control::TargetKind::Satchel && t.ready())
-                        {
-                            frame.action = Some(Action::Take);
-                            self.take_sent = true;
-                        }
-                    }
-                } else {
-                    self.error = Some("disconnected carrier did not leave a ground satchel".into());
-                }
-            }
-            return frame;
-        }
-        if objective.is_over() || s.players.iter().any(|p| p.id == id && p.caught) {
-            return frame;
-        }
-        if s.run == 3 && s.satchel == Satchel::Carried(id) {
-            if !self.saw_win || !self.saw_failure {
-                self.error = Some("client missed shared outcomes".into());
+        mirror(&mut self.mirror, snap);
+        let host = id == HOST;
+        let script = self.script.get_or_insert_with(|| {
+            if host {
+                RouteScript::net_host(layout, tuning)
             } else {
-                frame.leave = true;
-                self.done = true;
-                eprintln!("NET SMOKE PASS client: shared win/failure/restarts; leaving while carrying");
+                RouteScript::net_client(layout, tuning)
             }
-            return frame;
-        }
-        if s.run == 2 && s.satchel == Satchel::Carried(id) {
-            frame.intent = self.walk(pose, &[[2.2, -2.2], [0.0, -2.2], [0.0, 0.0], [0.0, 8.0]], dt);
-            return frame;
-        }
-        let mut enc = Encounter::new(layout);
-        enc.objective = objective;
-        enc.restitution = s.restitution;
-        enc.restituting = s.restituting;
-        enc.elapsed = s.elapsed;
-        enc.stats = Stats {
-            warnings: s.stats[0],
-            hunts: s.stats[1],
-            recoveries: s.stats[2],
-        };
-        enc.threat.state = match s.danger {
-            1 => ThreatState::Warning,
-            2 | 3 => ThreatState::Hunting,
-            _ => ThreatState::Stalking,
-        };
-        if let Some(th) = s.threat {
-            enc.threat.pos = Vec2::from_array(th.position);
-            enc.threat.presence = Presence::Present;
-        }
-        let result = self.script.tick(&Observation {
-            pose,
-            encounter: &enc,
-            dt,
-            target: target(layout, tuning, &pose, s.satchel, objective, id),
         });
-        if let Some(log) = result.log {
-            eprintln!("NET SMOKE player={id} {log}");
+        let step = script.tick(&Observation {
+            layout,
+            tuning,
+            me: id,
+            pose,
+            encounter: &self.mirror,
+            snapshot: Some(snap),
+            target,
+            dt,
+        });
+        if let Some(msg) = &step.log {
+            eprintln!("NET SMOKE player={id}: {msg}");
         }
-        if let Some(Err(e)) = result.finished {
-            self.error = Some(e);
+        match &step.finished {
+            Some(Ok(())) => {
+                self.done = true;
+                eprintln!(
+                    "NET SMOKE PASS host: shared pickup and delivery, both marks acknowledged, the shared win with \
+                     all bones, power and truck, two restarts, the shared failure, and the disconnected carrier's \
+                     dropped load recovered and delivered"
+                );
+            }
+            Some(Err(e)) => self.error = Some(e.clone()),
+            None => {}
         }
-        frame.intent = result.intent;
-        if frame.intent.interact_pressed
-            && !self.take_sent
-            && target(layout, tuning, &pose, s.satchel, objective, id)
-                .is_some_and(|t| t.kind == crate::control::TargetKind::Satchel && t.ready())
-        {
-            frame.action = Some(Action::Take);
-            self.take_sent = true;
+        if step.leave {
+            self.done = true;
+            eprintln!(
+                "NET SMOKE PASS client: watched the host's delivery, exchanged marks, acknowledged, boarded the \
+                 truck for the shared win, saw the shared failure and both restarts; leaving while carrying a bundle"
+            );
         }
-        if frame.action.is_none() {
-            frame.intent.interact_pressed = false;
-        }
+        frame.action = step.command();
+        frame.leave = step.leave;
+        frame.intent = step.intent;
         frame
     }
-    fn walk(&mut self, pose: Pose, path: &[[f32; 2]], dt: f32) -> Intent {
-        if self.waypoint >= path.len() {
-            return Intent::default();
-        }
-        let goal = Vec2::from_array(path[self.waypoint]);
-        let d = goal - pose.pos;
-        if d.length() < 0.22 {
-            self.waypoint += 1;
-            return Intent::default();
-        }
-        let dir = d.normalize();
-        Intent {
-            move_axis: Vec2::new(dir.dot(pose.right2()), dir.dot(pose.forward2())),
-            look_delta: Vec2::new(
-                wrap_angle(pose.yaw - Pose::yaw_toward(pose.pos, goal)).clamp(-3.0 * dt, 3.0 * dt),
-                -pose.pitch * 0.1,
-            ),
-            ..Default::default()
-        }
-    }
-}
-fn aim(pose: Pose, point: Vec3, dt: f32, tuning: &Tuning) -> Vec2 {
-    let delta = point - pose.eye(tuning);
-    Vec2::new(
-        wrap_angle(pose.yaw - Pose::yaw_toward(pose.pos, Vec2::new(point.x, point.z))).clamp(-4.0 * dt, 4.0 * dt),
-        (delta.y.atan2(Vec2::new(delta.x, delta.z).length()) - pose.pitch).clamp(-4.0 * dt, 4.0 * dt),
-    )
 }
 
 /// Two independent processes still use real UDP, handshakes, input packets,
-/// host validation and per-listener snapshots. No rendering is claimed here.
+/// host validation and per-listener snapshots, and each runs on the wall clock
+/// at 60 Hz as the game does, so their clocks cannot drift apart. No rendering
+/// is claimed here. A frame is the game's, in the game's order: the update
+/// brings the newest snapshot and the body follows its row, the route decides
+/// from what the client last saw, the head turns unless dead, the crosshair is
+/// read, the input goes out with its presses and the route's own command
+/// follows.
 pub fn run_headless(launch: Launch) -> Result<(), String> {
-    let layout = Layout::authored();
+    let layout = Layout::new();
     let tuning = Tuning::with_seed(launch.seed);
-    let mut endpoint = Endpoint::new(
-        launch.network.ok_or("headless requires --host/--join")?,
-        &layout,
-        &tuning,
-    )?;
+    if launch.network == Mode::Solo {
+        return Err("headless requires --host/--join".into());
+    }
+    let mut endpoint = Endpoint::new(launch.network.clone(), &layout, &tuning)?;
     let mut driver = Driver::new(&layout, &tuning);
     let mut pose = Pose::spawn(&layout);
-    let mut last_run = 0;
+    let mut run = 0;
+    // What the crosshair showed as the last frame ended: the HUD's view.
+    let mut hud: Option<Target> = None;
+    let mut last = Instant::now();
     eprintln!("NET SMOKE headless {}", endpoint.status);
     loop {
-        endpoint.update(STEP, &layout, &tuning);
+        let frame_start = Instant::now();
+        let dt = frame_start.duration_since(last).as_secs_f32().min(0.1);
+        last = frame_start;
+        endpoint.update(dt, &layout, &tuning);
         if let Some(s) = &endpoint.snapshot
-            && let Some(local) = s.players.iter().find(|p| Some(p.id) == endpoint.id)
+            && let Some(local) = endpoint.id.and_then(|id| s.player(id))
         {
-            pose.pos = Vec2::from_array(local.position);
-            if s.run != last_run {
-                pose.yaw = local.yaw;
-                pose.pitch = local.pitch;
-                last_run = s.run;
-            }
+            follow_body(&mut pose, local, s.run != run, dt, &tuning);
+            run = s.run;
         }
-        let frame = driver.tick(&endpoint, pose, STEP, &layout, &tuning);
+        let frame = driver.tick(&endpoint, pose, hud, dt, &layout, &tuning);
         if let Some(e) = driver.error {
             return Err(e);
         }
-        pose.look(frame.intent.look_delta, &tuning);
-        endpoint.input(
-            frame.intent.move_axis.to_array(),
-            pose.yaw,
-            pose.pitch,
-            frame.intent.interact_held,
-        );
+        // The frozen and the downed can still turn their heads; the dead only watch.
+        if status_of(endpoint.snapshot.as_ref(), endpoint.id) != 2 {
+            pose.look(frame.intent.look_delta, &tuning);
+        }
+        hud = endpoint
+            .snapshot
+            .as_ref()
+            .zip(endpoint.id)
+            .and_then(|(s, id)| crosshair(&layout, &tuning, s, id, &pose));
+        // The torch is on, as the game starts and the route never switches it.
+        let live = controls_live(endpoint.snapshot.as_ref(), endpoint.id, true);
+        let wire = Wire::new(&frame.intent, live, &pose, true, hud, &layout, &tuning);
+        wire.send(&mut endpoint, &layout, &tuning);
         if let Some(action) = frame.action {
             endpoint.command(action, &layout, &tuning);
         }
         if frame.leave {
-            endpoint.close("Client left smoke session carrying the satchel.");
+            endpoint.close("Client left the smoke session carrying a bundle.");
         }
         endpoint.notices.clear();
         if driver.done {
             return Ok(());
         }
-        std::thread::sleep(std::time::Duration::from_millis(4));
+        if let Some(rest) = FRAME.checked_sub(frame_start.elapsed()) {
+            std::thread::sleep(rest);
+        }
     }
 }

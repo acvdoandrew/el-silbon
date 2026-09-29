@@ -1,231 +1,236 @@
 # El Silbón — The Return
 
-A compact first-person folk-horror encounter set on a fictional stretch of the
-Colombian–Venezuelan Llanos, late 1990s. The current checkpoint supports an
-offline encounter and a two-player, player-hosted development session.
-The eventual cooperative target remains 4–8 players (reference six).
+A first-person folk-horror game set in one connected, authored district of
+the fictional Colombian–Venezuelan Llanos, 1998: nine landmarks plus the
+extraction road. Play alone, or with up to four players in a player-hosted
+session on a trusted LAN. There is no combat.
 
-Your truck died on the road. Beyond a sagging fence stand an abandoned house
-with a lamp still burning and an enormous ceiba. Take the bone satchel from the
-house, carry it to the ceiba's roots and hold there until the bones are home,
-then walk back to the road. Something tall, under a broad hat, whistles out on
-the llano — and the whistle lies: **when it sounds loud and close he is far
-away; when it sounds thin and far away he is near.** Solid walls (and the
-ceiba's trunk) break his line of sight. There is no combat.
+Your truck died at the river bridge. Ahead lie a hacienda with a lamp still
+burning, a windmill that could bring the power back, and five bundles of
+bones taken from El Silbón's sack. He is out in the rain, he wants them
+back, and he listens to everything. The whistle lies: **loud means he is
+far, thin means he is near.**
 
 The folklore here is fiction inspired by the legend; nothing depicts real
 ritual practice.
 
+> Development status, verification evidence and known limits live in
+> [`docs/PROGRESS.md`](docs/PROGRESS.md) (read its current handoff first).
+
 ## Requirements
 
-- Rust ≥ 1.95 (edition 2024). Bevy is pinned to [`0.19.1`](https://github.com/bevyengine/bevy/releases/tag/v0.19.1); its [tagged manifest](https://github.com/bevyengine/bevy/blob/v0.19.1/Cargo.toml) specifies the MSRV.
-- Linux: a Vulkan GPU, ALSA/PipeWire, `libudev`, Wayland or X11 headers
-  (the usual Bevy Linux dependencies).
-- Python 3 (standard library only) — only to regenerate the audio.
+- Rust ≥ 1.95 (edition 2024). Bevy is pinned to
+  [`0.19.1`](https://github.com/bevyengine/bevy/releases/tag/v0.19.1); its
+  [tagged manifest](https://github.com/bevyengine/bevy/blob/v0.19.1/Cargo.toml)
+  specifies the MSRV.
+- Linux: a Vulkan GPU, ALSA/PipeWire, `libudev`, Wayland or X11 headers (the
+  usual Bevy Linux dependencies).
+- Python 3 (standard library only), only to regenerate the audio.
 
 ## Run
 
 ```sh
-cargo run --release --locked                 # normal game
+cargo run --release --locked                 # solo
 cargo run --release --locked -- --help       # launch options
-cargo test --locked                          # headless gameplay tests
+cargo test --locked                          # headless rules and route tests
 ```
-
-Launch options:
 
 | Option | Meaning |
 |---|---|
-| `--seed N` | world-scatter and whistle-jitter seed (default `1997`) |
+| `--seed N` | world-scatter, storm and whistle-jitter seed (default `1997`) |
 | `--size WxH` | window size (default `1600x900`) |
-| `--shots DIR` | screenshot folder (default `./screenshots`) |
-| `--smoke` | **debug**: scripted deterministic route, see below |
+| `--shots DIR` | folder for F12 screenshots and the debug drivers (default `./screenshots`) |
+| `--host ADDR` | host a shared session, e.g. `127.0.0.1:5000` (loopback or private LAN only) |
+| `--join ADDR` | join a host before its run starts |
+| `--smoke` | **debug**: deterministic scripted run (win, restart, caught, restart), then exit |
+| `--tour` | **debug**: walk to every landmark and up the lookout, then the full `--smoke` route |
+| `--photos` | **debug**: presentation review captures from searched viewpoints, then exit |
+| `--net-smoke` | **debug**: scripted two-process shared-run route (with `--host`/`--join`) |
+| `--headless` | with `--net-smoke`: real networking without graphics |
 
 Assets load from this crate's `assets/` even when the binary is started from
 `target/`; set `BEVY_ASSET_ROOT` to override.
 
-## Two-player session
+## The run
 
-Build once: `cargo build --release --locked`. Start two separate applications:
+1. **Five bone bundles** lie at the ranch house table, the corral, the tall
+   grass fields, the caño's stilt hut and the old watchtower's deck. Taking
+   the first one wakes him; he rises far from everyone.
+2. Carry bundles to the **altar in the ceiba's roots** and hold interact to
+   lay each down. Carrying slows you, makes you louder and raises the night's
+   pressure; every bundle home eases it.
+3. With all five home, **crank the windmill pump** (the hold adds up across
+   players) to restore power: the lamps come on.
+4. **Start the truck** at the extraction road. The engine's roar draws him
+   while it warms up; once it is warm, every standing player must be in its
+   boarding zone to escape. If everyone is down or dead, the run fails.
 
-```sh
-# Host: plays as the amber player.
-./target/release/el_silbon --host 127.0.0.1:5000 --shots screenshots/host
-# Client: plays as the blue player.
-./target/release/el_silbon --join 127.0.0.1:5000 --shots screenshots/client
-```
+Surviving him:
 
-Wait until the banner reports **2/2 connected**, then the **host presses Enter**.
-Both retain WASD, mouse look, E/hold E and F. **G** puts the satchel down.
-**F6/R** restarts everyone (host only); **F10** ends the session for the host
-or leaves for the client. Closing the application also disconnects.
-Esc/focus loss opens a **local menu only**: the shared world continues.
-
-For a trusted LAN, substitute the host's explicit private LAN IP in **both**
-commands. Wildcard/public host addresses are rejected. No firewall/router
-changes, port forwarding, discovery, relay, Steam login or internet hosting
-are provided. Both peers must use matching gameplay sources, Cargo.lock and
-`--seed` (default 1997); mismatches are rejected before admission.
-
-**Policy:** join before the first start only. Restart retains connected
-players and does not reopen admission. After a disconnection, the host may
-continue alone; launch a new host session to admit a replacement player.
-
-The host validates movement/collision, aim, interaction reach, item ownership,
-objective progression and one threat simulation. Exactly one player carries
-the satchel. Dropping, capture or disconnection leaves it recoverable.
-A caught player is inactive until restart; the other may continue. All
-remaining players caught means shared failure. After restitution, an active
-survivor returning from outside the road goal produces shared victory.
-
-### Networking choice and boundaries
-
-[Renet 2.0](https://docs.rs/renet/2.0.0/renet/) and
-[renet_netcode 2.0](https://docs.rs/renet_netcode/2.0.0/renet_netcode/)
-are standalone Rust libraries, independent of the installed Bevy 0.19.1.
-This avoids an engine upgrade or replication framework. Renet's
-[separate Steam transport](https://github.com/lucaspoffo/renet/tree/master/renet_steam)
-is a future integration option, **not implemented here**.
-
-Host simulation runs at 60 Hz; snapshots/input send at 20 Hz. Remote positions
-are smoothed; there is no prediction/rollback or production anti-cheat.
-Actions use reliable ordered messages, run epochs and sequence numbers.
-The direct-address netcode setup is **unauthenticated development mode**:
-trusted loopback/LAN only, not a secure public service.
-
-Whistles are generated host-side per listener and sent as categorical timbre
-and pitch variation, not true distance or an invertible continuous distance.
-Enemy transforms are included only when present, within a broad view cone
-and with unblocked authored line of sight. The host necessarily knows the
-truth; clients can remember previously visible positions or infer information
-from cues. This is not a claim of comprehensive hidden-information security.
+- He warns when he sees you within range (the screen edge darkens, the
+  whistle thins). Break line of sight — walls, trunks, the truck — or crouch
+  in tall grass beyond a few metres to avert it. Otherwise he **hunts**:
+  exposure builds while he sees you. Stay out of his sight long enough and
+  he loses track, sinks and rises again far away.
+- Everything makes a sound: crouching sneaks, running is heard far away,
+  wading and planks are loud; rain and thunder mask footsteps. He
+  investigates what he hears.
+- **Fear** grows in the dark and alone and with every warning; lamplight,
+  company and prayer at the altar calm it. At its peak a **susto** freezes
+  you for a moment and you cry out.
+- **Ají** peppers (seven sites, up to three carried) scatter into a ward he
+  will not cross; the first touch makes him stop and count bones.
+- Caught players go **down**: they crawl and bleed out unless a teammate
+  holds interact beside them to revive them. Solo, going down ends the run.
+- Spooked cattle bellow; the lit watchtower beacon draws him away for a
+  while. Seven notes around the district explain the rules in fiction.
 
 ## Controls
 
 | Input | Action |
 |---|---|
-| Mouse | look; offline Begin or multiplayer entry captures cursor |
+| Mouse | look (Begin, or joining, captures the cursor) |
 | W A S D / arrows | move |
-| E or left click | interact; **hold** at the ceiba's hollow |
+| Shift | run (stamina) |
+| Ctrl / C | crouch |
+| E or left click | use; **hold** at the altar, pump, ignition, beacon or a downed teammate |
 | F | flashlight on/off |
-| Esc | offline pause / multiplayer local menu; releases cursor |
+| G | put a bundle down |
+| Q | scatter ají |
+| V or middle click | mark a spot for the party |
+| M | map |
+| Esc | pause (solo) / local menu (shared); releases the cursor |
 | F12 | screenshot of the game window |
-| R / F6 | multiplayer host restart; offline R on the outcome screen |
-| G | multiplayer: put the satchel down |
-| F10 | multiplayer: host ends session / client leaves |
+| R | outcome screen: play again (host) |
+| Enter / F6 / F10 | shared session: host starts / host restarts / host ends or client leaves |
 
-The menu adjusts master volume, mouse sensitivity and whistle captions.
-Offline pause freezes the encounter; multiplayer menus/focus loss stop only
-local input while the shared encounter continues. There is no bob or shake.
+The menu adjusts master volume, mouse sensitivity and whistle captions. Solo
+pause freezes the run; in a shared session menus and focus loss stop only
+local input while the world continues.
 
-## The encounter
+## Shared sessions (up to four players)
 
-1. Roadside: walk through the gate, across the yard and into the house.
-2. Take the bone satchel from the table (reach and line of sight are
-   enforced; the note beside it explains the whistle). Carrying slows you.
-3. He rises out of the grass at the anchor farthest from you — never close.
-   He walks an authored route around the property, lurks, and creeps in when
-   he can see you.
-4. If he sees you within range he **warns** (the whistle turns faint, the
-   screen edge darkens). Break line of sight — solid walls, not windows or
-   doorways — to avert it. Otherwise he **hunts**: exposure builds while he
-   sees you. Staying out of sight long enough makes him lose track, sink and
-   rise again far away.
-5. Hold E at the hollow in the ceiba's roots for three seconds (progress
-   pauses if you let go or look away). He leaves.
-6. Walk back out to the road: win. Offline capture ends the run; in multiplayer
-   a captured player waits for restart while their teammate may continue.
+Build once (`cargo build --release --locked`), then start separate
+applications:
 
-Intended length is 3–5 minutes; **this is not yet measured with human
-players** (see `docs/PROGRESS.md`).
+```sh
+./target/release/el_silbon --host 127.0.0.1:5000 --shots screenshots/host
+./target/release/el_silbon --join 127.0.0.1:5000 --shots screenshots/p2
+```
 
-## Tuning
+Players join in the lobby before the first start; the host presses **Enter**
+to start. Restarts keep the connected players and do not reopen admission.
+A player who leaves drops what they carry where they stood; the rest can
+continue. For a trusted LAN use the host's explicit private address in every
+command. Wildcard and public addresses are rejected; there is no discovery,
+relay, port forwarding, Steam login or internet hosting. Every peer must run
+matching gameplay sources, `Cargo.lock` and `--seed`; mismatches are refused
+before admission.
 
-Every gameplay number lives in [`src/tuning.rs`](src/tuning.rs): speeds, reach,
-warning and hunt timings, exposure, perception distances and gains, audio
-levels. The authored layout (house, openings, fences, ceiba, props, route
-anchors) is in [`src/geometry.rs`](src/geometry.rs) and drives both collision
-and visuals.
+The host's session is the single authority, in solo too: it validates
+movement and collision, aim, reach and occlusion, item ownership, objective
+progress and the one threat, and decides every outcome. It steps at 60 Hz;
+snapshots and input travel at 20 Hz. Remote players are smoothed; there is no
+prediction or rollback. Actions carry stable player IDs, run epochs and
+sequence numbers, never engine entity IDs or hidden AI state.
 
-## Debug smoke route (`--smoke`)
+Networking uses [Renet 2.0](https://docs.rs/renet/2.0.0/renet/) and
+[renet_netcode 2.0](https://docs.rs/renet_netcode/2.0.0/renet_netcode/),
+standalone of the pinned Bevy. The direct-address setup is
+**unauthenticated development mode**: trusted loopback/LAN only.
 
-`cargo run --release --locked -- --smoke` plays the real game with a deterministic
-scripted player (fixed 60 Hz simulated time, fixed seed, cursor never
-grabbed): roadside → house → satchel → waits exposed for the warning and hunt →
-hides inside → he loses track → ceiba restitution → road (win) → restart →
-satchel → stands exposed until caught → restart. It drives the same intent →
-look/collision → crosshair targeting → truth path as a player and never writes
-the outcome. The route only starts once the renderer reports no pipelines left
-to compile (plus a two-second real warm-up), and each screenshot waits — with
-simulated time frozen — until what is on screen is fully compiled and saved.
-Screenshots land in `screenshots/smoke/`: `01_roadside`, `02_approach`,
-`03_interior`, `04_warning`, `05_hunting`, `06_ceiba_hollow`,
-`07_ceiba_landmark` (the whole tree, looking back on the way out), `08_win`,
-`09_caught`. After each restart it compares entity counts (cameras, lights,
-ambience loop, the Silbón, meshes, UI nodes) with the first run. It logs
-`SMOKE PASS` and exits 0, or `SMOKE FAIL: …` and exits 1. `cargo test --locked`
-replays the same route headlessly.
+Whistles are chosen on the host per listener and sent as categorical cues,
+never a distance. His transform reaches a client only while he is present,
+within a broad view cone and with unblocked line of sight. The host
+necessarily knows the truth; clients may remember or infer. This is not a
+claim of hidden-information security.
 
-## Scope of this build
+## Layout and tuning
 
-In: one authored encounter, offline and two-player direct-address play,
-shared satchel/objectives/threat/outcomes, restart and disconnect recovery,
-pause/settings, captions, existing procedural visuals and synthesized audio.
-Not in: voice, assisted carrying, rescue/revival, Steam authentication,
-matchmaking, reconnect/host migration, map expansion or internet relay.
-Next milestone: **basic proximity voice**, after the two-player checklist.
+Every gameplay number lives in [`src/tuning.rs`](src/tuning.rs). Every
+coordinate — walls, openings, fences, the ceiba, props, sites, trails and
+his patrol graph — comes from one `geometry::Layout`
+([`src/geometry.rs`](src/geometry.rs),
+[`src/geometry/district.rs`](src/geometry/district.rs)); collision, line of
+sight, aiming and visuals all read it.
+`cargo run --release --locked --example layout_svg -- target/layout.svg`
+draws it top-down.
+
+He walks a patrol graph over the trails and steps straight toward what he
+pursues, sliding along blockers; it is not a navmesh. Sight is 2D line of
+sight against the layout's blockers; the lookout deck sees the whole llano,
+and is not a safe place.
+
+## Debug drivers
+
+All drivers play through the same input → session → snapshot path a player
+uses, never teleport the player, never write truth or outcomes, and never
+touch the desktop cursor, keyboard, focus or windows. They are labelled
+debug features.
+
+- **`--smoke`** plays a scripted player on fixed 60 Hz simulated time:
+  every bundle to the altar, the pump, the truck, the escape (win); restart;
+  then a second night of warning, hunt and recovery, then standing in the
+  open until caught (failure); restart. Screenshots wait, with simulated time
+  frozen, until the renderer has compiled what is on screen. After each
+  restart it compares entity counts (cameras, lights, ambience loop, the
+  Silbón, meshes, UI nodes) with the first run. It prints `SMOKE PASS` and
+  exits 0, or `SMOKE FAIL: …` and exits 1. Captures:
+  `<shots>/smoke/` (`01_roadside` … `10_escaped`, `07_warning`,
+  `08_caught`).
+- **`--tour`** first walks to every landmark at eye height and up the
+  lookout ramp, then restarts and plays the full smoke route. Its single
+  `00_overview` frame raises the camera and widens the fog range for
+  topology only.
+- **`--photos`** places the camera at viewpoints searched from the layout and
+  writes labelled frames and a `MANIFEST.tsv` to `<shots>/photos/`. Staged
+  state (camera, powered lamps, photo-only teammates, the downed view) is a
+  presentation mirror, written on each image and in the manifest; it is
+  never gameplay proof. Only the `00_overview*` frames widen the fog range.
+- **`--net-smoke`** runs the shared route in two real processes over UDP:
+  a delivery and exchanged marks, a shared win with all bones, power and
+  the truck, a restart, a shared failure, a second restart, then a carrier
+  who disconnects while carrying and a host who recovers and delivers the
+  dropped bundle. Both processes run on the wall clock at 60 Hz, so a full
+  run takes real minutes:
+
+  ```sh
+  ./target/release/el_silbon --host 127.0.0.1:5197 --net-smoke --headless
+  ./target/release/el_silbon --join 127.0.0.1:5197 --net-smoke --headless
+  ```
+
+  Each prints `NET SMOKE PASS …` and exits 0, or exits non-zero with the
+  failing step and state. Omit `--headless` (and give each process its own
+  `--shots`) to exercise the real renderer, the scene census and game-owned
+  screenshots in `<shots>/network/`.
+
+`cargo test --locked` replays the solo, tour and shared routes headlessly
+against the real session, with each client's snapshots at the rate its
+endpoint delivers them.
+
+## Scope
+
+In: the connected district, solo and up-to-four-player direct-address
+sessions, shared objectives, threat and outcomes, stealth, noise, fear,
+ají, downing and revival, pings, restart and disconnect recovery,
+pause/settings, captions, procedural visuals and synthesized audio.
+
+Not in: proximity voice (postponed), swimming, climbing, boat physics,
+Steam authentication, matchmaking, reconnection, host migration or internet
+relay.
 
 ## Hands-on checks
 
-Desktop testing is user-led; no automated Omarchy pointer/keyboard control.
-After rebuilding, close the old game window and relaunch to see the changes.
+Desktop testing is user-led; nothing automates the desktop pointer or
+keyboard. After rebuilding, close the old window and relaunch.
 
-### Two-player checklist
-
-1. Connect both applications before host Enter. Confirm amber/blue remote
-   players move and collide with the existing walls/doors; each controls only
-   its own camera. Try joining a third application after start: expect rejection.
-2. Both aim at the satchel and press E together: exactly one should carry it.
-   Carrier presses G; the other aims down and picks it up. Try E from too far
-   away or through a wall: ownership must not change.
-3. Compare whistle impressions from separated positions. Hide during a warning
-   and confirm the warning clears without an unavoidable capture.
-4. Return the satchel at the ceiba, then have an active player return to the
-   road. Both must receive victory; host F6/R resets both.
-5. Let the carrier get caught. Confirm they stop moving, the satchel drops and
-   the survivor can recover it. Both caught must produce shared failure.
-6. Restart, let the client carry, then client F10/close. Confirm its avatar
-   disappears and the host can recover/finish. End/close the host separately:
-   the client must report disconnection rather than continue a private AI run.
-7. Repeat restart and menus: no extra players, lights, satchels or audio loops.
-
-### Reproducible two-process smoke
-
-These commands use **real UDP endpoints in separate processes** and scripted
-game input, not desktop automation or a mocked network. Run in two terminals:
-
-```sh
-./target/release/el_silbon --host 127.0.0.1:5000 --net-smoke --headless
-./target/release/el_silbon --join 127.0.0.1:5000 --net-smoke --headless
-```
-
-The headless route uses accelerated fixed steps and claims no rendering proof.
-It performs a shared win, a both-caught run, two host restarts, and a carrier
-disconnect followed by host pickup. Each process prints `NET SMOKE PASS`
-and exits; failures return a nonzero exit code.
-
-Omit `--headless` to exercise the real renderer, scene census and game-owned
-screenshots in `screenshots/network/`. This opens two windows but never grabs
-the pointer or injects Omarchy input. Use separate `--shots` folders if desired.
-
-### Offline checklist
-
-- Walk the whole route; note confusing landmarks, collision snags, and total time.
-- Take the satchel, wait for a warning in the yard, then hide behind a solid wall.
-  Check that the warning and recovery feel fair.
-- Check whistle audibility/comfort and whether the distance inversion is understandable.
-- Complete restitution and escape; on a second run remain exposed, then restart with R.
-- Check pause/resume, mouse capture, volume, sensitivity, and caption controls.
+- Walk the whole route solo; note confusing landmarks, collision snags and
+  total time. Try a warning in the open, then hide behind a wall or crouch in
+  tall grass; check that recovery feels fair.
+- Listen to the whistle, rain and thunder for comfort and whether the
+  inverted distance reads.
+- Win once and lose once; restart with R from the outcome screen.
+- With two to four applications: join before Enter, check each controls only
+  its own view, share a bundle hand-off (G then E), revive a downed teammate,
+  and leave while carrying — the bundle must stay recoverable.
 - F12 saves game-only images in `screenshots/` (or the `--shots` folder).
-  Useful views: roadside, house table, whole ceiba, first threat sighting.
-
-Verified results and remaining visual/playtest checks: [`docs/PROGRESS.md`](docs/PROGRESS.md).

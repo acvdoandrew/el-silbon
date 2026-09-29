@@ -1,96 +1,125 @@
-//! HUD and menus: objective panel, controls, whistle legend, threat status,
-//! crosshair prompt and restitution progress, perceived-whistle captions,
-//! teaching hints, exposure vignette, and the briefing / pause (settings) /
-//! outcome / note overlays. All nodes are spawned once; states only toggle
-//! visibility and text, so restarts never accumulate UI.
+//! HUD and menus: objective checklist, vitals (fear, breath, peppers, load),
+//! crosshair prompts with hold progress, threat status, party roster and
+//! world markers, the map, notes, teaching hints, whistle captions and the
+//! briefing / pause / outcome overlays. All nodes are spawned once; states
+//! only toggle visibility and text, so restarts never accumulate UI.
+
+mod hud;
+mod map;
 
 use bevy::prelude::*;
 
-use crate::app::{EncounterMsg, Flow, GameSet, RestartRequest, Settings, Truth, TuningRes, WhistleMsg};
-use crate::control::TargetKind;
-use crate::encounter::{CurrentTarget, NoteOpen};
-use crate::geometry::AimStatus;
-use crate::perception::WhistleVariant;
-use crate::sim::{Event, Objective, Presence, ThreatState};
+use crate::app::{Flow, GameSet, Launch, LayoutRes, RunReset, Settings, Truth, TuningRes};
+use crate::net::{NetControl, Network, protocol::Action};
 
-const PANEL_BG: Color = Color::srgba(0.018, 0.022, 0.03, 0.5);
-const INK: Color = Color::srgb(0.93, 0.9, 0.84);
-const DIM: Color = Color::srgb(0.66, 0.66, 0.64);
-const AMBER: Color = Color::srgb(0.98, 0.72, 0.36);
-const RED: Color = Color::srgb(1.0, 0.42, 0.34);
-const PALE_BLUE: Color = Color::srgb(0.7, 0.8, 0.95);
+pub(crate) const PANEL_BG: Color = Color::srgba(0.018, 0.022, 0.03, 0.5);
+pub(crate) const INK: Color = Color::srgb(0.93, 0.9, 0.84);
+pub(crate) const DIM: Color = Color::srgb(0.66, 0.66, 0.64);
+pub(crate) const AMBER: Color = Color::srgb(0.98, 0.72, 0.36);
+pub(crate) const RED: Color = Color::srgb(1.0, 0.42, 0.34);
+pub(crate) const PALE_BLUE: Color = Color::srgb(0.7, 0.8, 0.95);
+pub(crate) const GREEN: Color = Color::srgb(0.55, 0.85, 0.5);
 const BUTTON: Color = Color::srgba(0.12, 0.11, 0.1, 0.92);
 const BUTTON_HOVER: Color = Color::srgba(0.24, 0.2, 0.15, 0.95);
 const BUTTON_PRESS: Color = Color::srgba(0.42, 0.3, 0.16, 0.95);
 
 #[derive(Resource)]
-struct Fonts {
-    sans: Handle<Font>,
-    serif: Handle<Font>,
-    italic: Handle<Font>,
+pub(crate) struct Fonts {
+    pub sans: Handle<Font>,
+    pub serif: Handle<Font>,
+    pub italic: Handle<Font>,
 }
 
 #[derive(Resource, Default)]
-struct Hint {
-    text: &'static str,
-    timer: f32,
-    priority: u8,
-    taught_loud: bool,
-    taught_faint: bool,
+pub(crate) struct Hint {
+    pub text: &'static str,
+    pub timer: f32,
+    pub priority: u8,
+    pub taught_loud: bool,
+    pub taught_faint: bool,
+    pub taught_crouch: bool,
 }
 
 #[derive(Resource, Default)]
-struct CaptionLine {
-    text: &'static str,
-    timer: f32,
+pub(crate) struct CaptionLine {
+    pub text: &'static str,
+    pub timer: f32,
 }
 
+/// The map overlay is up (M).
+#[derive(Resource, Default)]
+pub(crate) struct MapOpen(pub bool);
+
 #[derive(Component)]
-struct HudRoot;
+pub(crate) struct HudRoot;
+/// One line of the objective checklist.
 #[derive(Component)]
-struct ObjectiveTitle;
+pub(crate) struct ObjectiveLine(pub usize);
 #[derive(Component)]
-struct ObjectiveDetail;
+pub(crate) struct ObjectiveHint;
 #[derive(Component)]
-struct LegendText;
+pub(crate) struct StatusPanel;
 #[derive(Component)]
-struct StatusText;
+pub(crate) struct RosterLine(pub usize);
 #[derive(Component)]
-struct PromptText;
+pub(crate) struct FearOuter;
 #[derive(Component)]
-struct ProgressOuter;
+pub(crate) struct FearFill;
 #[derive(Component)]
-struct ProgressFill;
+pub(crate) struct BreathOuter;
 #[derive(Component)]
-struct CaptionText;
+pub(crate) struct BreathFill;
 #[derive(Component)]
-struct HintText;
+pub(crate) struct VitalsText;
 #[derive(Component)]
-struct CarryTag;
+pub(crate) struct PromptText;
 #[derive(Component)]
-struct Vignette;
+pub(crate) struct ProgressOuter;
 #[derive(Component)]
-struct BriefingPanel;
+pub(crate) struct ProgressFill;
 #[derive(Component)]
-struct PausePanel;
+pub(crate) struct ProgressLabel;
 #[derive(Component)]
-struct OutcomePanel;
+pub(crate) struct CaptionText;
 #[derive(Component)]
-struct OutcomeTitle;
+pub(crate) struct HintText;
 #[derive(Component)]
-struct OutcomeBody;
+pub(crate) struct Vignette;
+/// Full-screen colour wash: susto flashes, the downed grey-red.
 #[derive(Component)]
-struct NotePanel;
+pub(crate) struct Tint;
+#[derive(Component)]
+pub(crate) struct DownedPanel;
+#[derive(Component)]
+pub(crate) struct DownedText;
+#[derive(Component)]
+pub(crate) struct BriefingPanel;
+#[derive(Component)]
+pub(crate) struct PausePanel;
+#[derive(Component)]
+pub(crate) struct OutcomePanel;
+#[derive(Component)]
+pub(crate) struct OutcomeTitle;
+#[derive(Component)]
+pub(crate) struct OutcomeBody;
+#[derive(Component)]
+pub(crate) struct NotePanel;
+#[derive(Component)]
+pub(crate) struct NoteEs;
+#[derive(Component)]
+pub(crate) struct NoteEn;
+#[derive(Component)]
+pub(crate) struct NoteBy;
 
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
-enum SettingLabel {
+pub(crate) enum SettingLabel {
     Volume,
     Sensitivity,
     Captions,
 }
 
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
-enum MenuAction {
+pub(crate) enum MenuAction {
     Begin,
     Resume,
     Restart,
@@ -108,7 +137,8 @@ impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Hint>()
             .init_resource::<CaptionLine>()
-            .add_systems(Startup, spawn_ui)
+            .init_resource::<MapOpen>()
+            .add_systems(Startup, (map::build_map_image, spawn_ui).chain())
             .add_systems(OnEnter(Flow::Outcome), fill_outcome)
             .add_systems(
                 Update,
@@ -117,13 +147,19 @@ impl Plugin for HudPlugin {
                     (
                         buttons,
                         panels,
-                        objective_text,
-                        status_text,
-                        prompt,
-                        carry_tag,
-                        vignette,
-                        hints_and_captions,
+                        hud::objectives,
+                        hud::status_text,
+                        hud::roster,
+                        hud::vitals,
+                        hud::prompt,
+                        hud::vignette,
+                        hud::downed_panel,
+                        hud::hints_and_captions,
+                        hud::note_panel,
                         settings_text,
+                        map::toggle_map,
+                        map::update_map,
+                        map::update_markers,
                     )
                         .chain()
                         .in_set(GameSet::Present),
@@ -132,7 +168,17 @@ impl Plugin for HudPlugin {
     }
 }
 
-fn font(h: &Handle<Font>, size: f32) -> TextFont {
+/// One colour per party slot, shared by the roster, the map and the avatars.
+pub(crate) fn player_color(slot: usize) -> Color {
+    [
+        Color::srgb(0.98, 0.72, 0.36),
+        Color::srgb(0.35, 0.8, 0.85),
+        Color::srgb(0.92, 0.48, 0.58),
+        Color::srgb(0.62, 0.86, 0.42),
+    ][slot % 4]
+}
+
+pub(crate) fn font(h: &Handle<Font>, size: f32) -> TextFont {
     TextFont {
         font: h.clone().into(),
         font_size: FontSize::Px(size),
@@ -140,13 +186,13 @@ fn font(h: &Handle<Font>, size: f32) -> TextFont {
     }
 }
 
-fn set_text(text: &mut Text, s: &str) {
+pub(crate) fn set_text(text: &mut Text, s: &str) {
     if text.0 != s {
         text.0 = s.to_string();
     }
 }
 
-fn set_vis(v: &mut Visibility, show: bool) {
+pub(crate) fn set_vis(v: &mut Visibility, show: bool) {
     let want = if show {
         Visibility::Inherited
     } else {
@@ -157,7 +203,7 @@ fn set_vis(v: &mut Visibility, show: bool) {
     }
 }
 
-fn label(fonts: &Fonts, text: &str, size: f32, color: Color, italic: bool) -> impl Bundle {
+pub(crate) fn label(fonts: &Fonts, text: &str, size: f32, color: Color, italic: bool) -> impl Bundle {
     (
         Text::new(text),
         font(if italic { &fonts.italic } else { &fonts.sans }, size),
@@ -215,13 +261,48 @@ fn card(width: f32) -> impl Bundle {
     )
 }
 
-fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, launch: Res<crate::app::Launch>) {
+fn bar(width: f32, height: f32, fill: Color) -> (Node, BorderColor, BackgroundColor, Visibility) {
+    let _ = fill;
+    (
+        Node {
+            width: px(width),
+            height: px(height),
+            border: UiRect::all(px(1)),
+            border_radius: BorderRadius::all(px(3)),
+            ..default()
+        },
+        BorderColor::all(Color::srgba(1.0, 0.85, 0.6, 0.45)),
+        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5)),
+        Visibility::Hidden,
+    )
+}
+
+fn fill_node(color: Color) -> impl Bundle {
+    (
+        Node {
+            width: percent(0),
+            height: percent(100),
+            border_radius: BorderRadius::all(px(2)),
+            ..default()
+        },
+        BackgroundColor(color),
+    )
+}
+
+fn spawn_ui(
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    launch: Res<Launch>,
+    map_image: Res<map::MapImage>,
+    layout: Res<LayoutRes>,
+) {
     let fonts = Fonts {
         sans: assets.load("fonts/NotoSans-Regular.ttf"),
         serif: assets.load("fonts/NotoSerif-Regular.ttf"),
         italic: assets.load("fonts/NotoSerif-Italic.ttf"),
     };
     let f = &fonts;
+    let shared = !launch.network.is_solo();
 
     commands
         .spawn((
@@ -234,7 +315,7 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, launch: Res<crate:
             },
         ))
         .with_children(|root| {
-            // Exposure vignette, behind everything else.
+            // Fear and exposure vignette, behind everything else.
             root.spawn((
                 Vignette,
                 Node {
@@ -249,14 +330,25 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, launch: Res<crate:
                     vec![ColorStop::percent(Color::NONE, 45), ColorStop::percent(Color::NONE, 100)],
                 )),
             ));
+            // Full-screen wash (susto flash, downed).
+            root.spawn((
+                Tint,
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: percent(100),
+                    height: percent(100),
+                    ..default()
+                },
+                BackgroundColor(Color::NONE),
+            ));
 
-            // Objective and whistle legend (compact, top left).
+            // Objective checklist (compact, top left).
             root.spawn((
                 Node {
                     position_type: PositionType::Absolute,
                     left: px(18),
                     top: px(16),
-                    max_width: px(370),
+                    max_width: px(400),
                     flex_direction: FlexDirection::Column,
                     padding: UiRect::axes(px(12), px(10)),
                     row_gap: px(4),
@@ -267,20 +359,29 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, launch: Res<crate:
             ))
             .with_children(|p| {
                 p.spawn((Text::new("EL SILBÓN — THE RETURN"), font(&f.serif, 12.5), TextColor(AMBER)));
-                p.spawn((ObjectiveTitle, label(f, "", 19.0, INK, false)));
-                p.spawn((ObjectiveDetail, label(f, "", 14.0, DIM, false)));
-                p.spawn((
-                    LegendText,
-                    Visibility::Hidden,
-                    label(
-                        f,
-                        "Loud whistle = he is far · Faint whistle = he is near · Solid walls break his sight",
-                        13.0,
-                        PALE_BLUE,
-                        false,
-                    ),
-                ));
+                for i in 0..3 {
+                    p.spawn((ObjectiveLine(i), label(f, "", 16.0, INK, false)));
+                }
+                p.spawn((ObjectiveHint, label(f, "", 13.0, PALE_BLUE, false)));
             });
+
+            // Party roster (top centre, hosted play only).
+            if shared {
+                root.spawn(Node {
+                    position_type: PositionType::Absolute,
+                    top: px(12),
+                    width: percent(100),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: px(2),
+                    ..default()
+                })
+                .with_children(|r| {
+                    for i in 0..4 {
+                        r.spawn((RosterLine(i), label(f, "", 14.0, INK, false)));
+                    }
+                });
+            }
 
             // Controls (bottom right, always readable, out of the way).
             root.spawn((
@@ -288,7 +389,7 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, launch: Res<crate:
                     position_type: PositionType::Absolute,
                     right: px(18),
                     bottom: px(16),
-                    max_width: px(560),
+                    max_width: px(640),
                     padding: UiRect::axes(px(10), px(6)),
                     border_radius: BorderRadius::all(px(5)),
                     ..default()
@@ -296,8 +397,8 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, launch: Res<crate:
                 BackgroundColor(PANEL_BG),
                 children![label(
                     f,
-                    "WASD move · Mouse look · E / click interact (hold at the ceiba) · F flashlight · Esc pause · F12 screenshot",
-                    12.5,
+                    "WASD move · Shift run · Ctrl crouch · E use / hold · F light · G drop · Q ají · V mark · M map · Esc",
+                    12.0,
                     Color::srgb(0.62, 0.62, 0.58),
                     false,
                 )],
@@ -309,14 +410,14 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, launch: Res<crate:
                     position_type: PositionType::Absolute,
                     right: px(22),
                     top: px(20),
-                    max_width: px(420),
+                    max_width: px(440),
                     padding: UiRect::axes(px(12), px(8)),
                     border_radius: BorderRadius::all(px(6)),
                     ..default()
                 },
                 BackgroundColor(PANEL_BG),
                 Visibility::Hidden,
-                StatusText,
+                StatusPanel,
                 children![(Text::new(""), font(&f.sans, 17.0), TextColor(INK))],
             ));
 
@@ -358,43 +459,28 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, launch: Res<crate:
                 BackgroundColor(Color::srgba(1.0, 0.97, 0.9, 0.7)),
             ));
 
-            // Prompt and restitution progress (just below centre).
-            root.spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    top: percent(54),
-                    width: percent(100),
-                    flex_direction: FlexDirection::Column,
-                    align_items: AlignItems::Center,
-                    row_gap: px(8),
-                    ..default()
-                },
-            ))
+            // Prompt and hold progress (just below centre).
+            root.spawn(Node {
+                position_type: PositionType::Absolute,
+                top: percent(54),
+                width: percent(100),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                row_gap: px(8),
+                ..default()
+            })
             .with_children(|p| {
-                p.spawn((PromptText, Text::new(""), font(&f.sans, 18.0), TextColor(INK), TextShadow::default()));
                 p.spawn((
-                    ProgressOuter,
-                    Visibility::Hidden,
-                    Node {
-                        width: px(260),
-                        height: px(8),
-                        border: UiRect::all(px(1)),
-                        border_radius: BorderRadius::all(px(4)),
-                        ..default()
-                    },
-                    BorderColor::all(Color::srgba(1.0, 0.85, 0.6, 0.6)),
-                    BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5)),
-                    children![(
-                        ProgressFill,
-                        Node {
-                            width: percent(0),
-                            height: percent(100),
-                            border_radius: BorderRadius::all(px(3)),
-                            ..default()
-                        },
-                        BackgroundColor(Color::srgb(0.95, 0.72, 0.42)),
-                    )],
+                    PromptText,
+                    Text::new(""),
+                    font(&f.sans, 18.0),
+                    TextColor(INK),
+                    TextShadow::default(),
                 ));
+                p.spawn((ProgressLabel, Text::new(""), font(&f.italic, 15.0), TextColor(AMBER)));
+                p.spawn((ProgressOuter, bar(260.0, 8.0, AMBER))).with_children(|b| {
+                    b.spawn((ProgressFill, fill_node(Color::srgb(0.95, 0.72, 0.42))));
+                });
             });
 
             // Perceived whistle caption (bottom centre).
@@ -415,57 +501,102 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, launch: Res<crate:
                 )],
             ));
 
-            // Carry tag (bottom left).
+            // Vitals (bottom left): susto, breath, peppers and load.
             root.spawn((
-                CarryTag,
-                Visibility::Hidden,
                 Node {
                     position_type: PositionType::Absolute,
                     left: px(22),
                     bottom: px(20),
-                    padding: UiRect::axes(px(12), px(7)),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: px(6),
+                    padding: UiRect::axes(px(12), px(8)),
                     border_radius: BorderRadius::all(px(6)),
                     ..default()
                 },
                 BackgroundColor(PANEL_BG),
-                children![(
-                    Text::new("Carrying the bones — you move slower"),
-                    font(&f.sans, 15.0),
-                    TextColor(AMBER)
-                )],
-            ));
+            ))
+            .with_children(|v| {
+                v.spawn((Text::new("SUSTO"), font(&f.serif, 12.0), TextColor(RED)));
+                v.spawn((FearOuter, bar(190.0, 8.0, RED))).with_children(|b| {
+                    b.spawn((FearFill, fill_node(Color::srgb(0.85, 0.35, 0.28))));
+                });
+                v.spawn((BreathOuter, bar(190.0, 5.0, PALE_BLUE))).with_children(|b| {
+                    b.spawn((BreathFill, fill_node(Color::srgb(0.7, 0.8, 0.95))));
+                });
+                v.spawn((VitalsText, label(f, "", 14.0, AMBER, false)));
+            });
+
+            // Downed / dead overlay.
+            root.spawn((DownedPanel, overlay(), Visibility::Hidden, GlobalZIndex(6)))
+                .with_children(|o| {
+                    o.spawn(Node {
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        row_gap: px(6),
+                        margin: UiRect::top(px(-120)),
+                        ..default()
+                    })
+                    .with_children(|c| {
+                        c.spawn((
+                            DownedText,
+                            Text::new(""),
+                            font(&f.serif, 30.0),
+                            TextColor(RED),
+                            TextShadow::default(),
+                            TextLayout::justify(Justify::Center),
+                        ));
+                    });
+                });
+
+            // The map (M).
+            map::spawn_map_panel(root, f, &map_image, &layout.0);
 
             // --- Overlays.
-            root.spawn((BriefingPanel, overlay(), BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.35)), GlobalZIndex(10)))
+            root.spawn((BriefingPanel, overlay(), BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.4)), GlobalZIndex(10)))
                 .with_children(|o| {
-                    o.spawn(card(780.0)).with_children(|c| {
+                    o.spawn(card(860.0)).with_children(|c| {
                         c.spawn((Text::new("EL SILBÓN"), font(&f.serif, 64.0), TextColor(INK)));
-                        c.spawn((Text::new("The Return — a first local encounter"), font(&f.italic, 22.0), TextColor(AMBER)));
+                        c.spawn((
+                            Text::new("The Return — some whistles should never be followed"),
+                            font(&f.italic, 22.0),
+                            TextColor(AMBER),
+                        ));
                         c.spawn((
                             Text::new(
-                                "Los Llanos, 1998. The truck died a few kilometres back. By the road: a fenced hato, \
-                                 an old ceiba, and a house where a lamp still burns. Something in that house was taken \
-                                 from the tree. Carry it back to the ceiba's roots, then return to the road.",
+                                "Los Llanos, 1998. Your truck died at the river bridge and the road home is thirty \
+                                 kilometres of dark. Ahead: a hacienda with a lamp still burning, a windmill that \
+                                 could bring the power back, and five bundles of bones taken from El Silbón's sack. \
+                                 He is out in the rain, he wants them back, and he listens to everything.",
                             ),
-                            font(&f.sans, 17.0),
+                            font(&f.sans, 16.0),
                             TextColor(INK),
                             TextLayout::justify(Justify::Center),
                         ));
                         c.spawn((
                             Text::new(
-                                "The whistle lies. When it sounds loud and close, he is far away. \
-                                 When it sounds thin and far away, he is near. Solid walls break his sight.",
+                                "The whistle lies: loud means he is far, thin means he is near. Walls, trunks and tall \
+                                 grass break his sight. Everything you do makes a sound — crouch to sneak, run to be \
+                                 heard; rain and thunder hide your steps. Fear grows in the dark and alone.",
                             ),
-                            font(&f.italic, 18.0),
+                            font(&f.italic, 17.0),
                             TextColor(PALE_BLUE),
                             TextLayout::justify(Justify::Center),
                         ));
                         c.spawn((
                             Text::new(
-                                "WASD move · Mouse look · E or left click interact (hold at the ceiba) · F flashlight\n\
-                                 Esc pause & settings (volume, sensitivity, captions) · F12 screenshot",
+                                "Find the five bundles and lay them at the ceiba · restore power at the windmill · start \
+                                 the truck and survive its roar. Peppers (ají) stop him for a while. Revive the fallen.",
                             ),
                             font(&f.sans, 15.0),
+                            TextColor(AMBER),
+                            TextLayout::justify(Justify::Center),
+                        ));
+                        c.spawn((
+                            Text::new(
+                                "WASD move · Mouse look · Shift run · Ctrl/C crouch · E or click use (hold at sites) · F flashlight\n\
+                                 G put a bundle down · Q scatter ají · V mark a spot · M map · Esc pause · F12 screenshot",
+                            ),
+                            font(&f.sans, 14.0),
                             TextColor(DIM),
                             TextLayout::justify(Justify::Center),
                         ));
@@ -478,7 +609,15 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, launch: Res<crate:
                 .with_children(|o| {
                     o.spawn(card(560.0)).with_children(|c| {
                         c.spawn((Text::new("Paused"), font(&f.serif, 40.0), TextColor(INK)));
-                        c.spawn((Text::new(if launch.network.is_some() { "Local menu only. The shared encounter continues." } else { "The encounter is frozen. The mouse is free." }), font(&f.sans, 15.0), TextColor(DIM)));
+                        c.spawn((
+                            Text::new(if shared {
+                                "Local menu only. The shared run continues."
+                            } else {
+                                "The run is frozen. The mouse is free."
+                            }),
+                            font(&f.sans, 15.0),
+                            TextColor(DIM),
+                        ));
                         for (kind, down, up) in [
                             (SettingLabel::Volume, MenuAction::VolumeDown, MenuAction::VolumeUp),
                             (SettingLabel::Sensitivity, MenuAction::SensitivityDown, MenuAction::SensitivityUp),
@@ -525,7 +664,7 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, launch: Res<crate:
 
             root.spawn((OutcomePanel, overlay(), Visibility::Hidden, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)), GlobalZIndex(10)))
                 .with_children(|o| {
-                    o.spawn(card(680.0)).with_children(|c| {
+                    o.spawn(card(700.0)).with_children(|c| {
                         c.spawn((OutcomeTitle, Text::new(""), font(&f.serif, 44.0), TextColor(INK)));
                         c.spawn((
                             OutcomeBody,
@@ -542,7 +681,7 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, launch: Res<crate:
             root.spawn((NotePanel, overlay(), Visibility::Hidden, GlobalZIndex(9))).with_children(|o| {
                 o.spawn((
                     Node {
-                        width: px(560),
+                        width: px(580),
                         flex_direction: FlexDirection::Column,
                         padding: UiRect::all(px(30)),
                         row_gap: px(12),
@@ -553,26 +692,14 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, launch: Res<crate:
                 ))
                 .with_children(|c| {
                     let ink = Color::srgb(0.16, 0.12, 0.1);
+                    c.spawn((NoteEs, Text::new(""), font(&f.italic, 22.0), TextColor(ink)));
+                    c.spawn((NoteBy, Text::new(""), font(&f.italic, 18.0), TextColor(ink)));
+                    c.spawn((NoteEn, Text::new(""), font(&f.sans, 15.0), TextColor(Color::srgb(0.25, 0.2, 0.16))));
                     c.spawn((
-                        Text::new(
-                            "Si lo oyes cerca, está lejos.\n\
-                             Si lo oyes lejos, ya está aquí.\n\
-                             Que no te vea: ponte tras las paredes.\n\
-                             Los huesos van a la ceiba, a sus raíces.",
-                        ),
-                        font(&f.italic, 23.0),
-                        TextColor(ink),
+                        Text::new("[E] put the page down"),
+                        font(&f.sans, 14.0),
+                        TextColor(Color::srgb(0.3, 0.24, 0.18)),
                     ));
-                    c.spawn((Text::new("— M."), font(&f.italic, 18.0), TextColor(ink)));
-                    c.spawn((
-                        Text::new(
-                            "If you hear him close, he is far. If you hear him far, he is already here. \
-                             Don't let him see you: get behind the walls. The bones go to the ceiba, to its roots.",
-                        ),
-                        font(&f.sans, 15.0),
-                        TextColor(Color::srgb(0.25, 0.2, 0.16)),
-                    ));
-                    c.spawn((Text::new("[E] put the note down"), font(&f.sans, 14.0), TextColor(Color::srgb(0.3, 0.24, 0.18))));
                 });
             });
         });
@@ -582,12 +709,10 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, launch: Res<crate:
 fn buttons(
     mut query: Query<(&Interaction, &MenuAction, &mut BackgroundColor), Changed<Interaction>>,
     mut next: ResMut<NextState<Flow>>,
-    mut restart: MessageWriter<RestartRequest>,
     mut exit: MessageWriter<AppExit>,
     mut settings: ResMut<Settings>,
     tuning: Res<TuningRes>,
-    net: Res<crate::net::Network>,
-    mut net_commands: MessageWriter<crate::net::NetControl>,
+    mut net_commands: MessageWriter<NetControl>,
 ) {
     for (interaction, action, mut bg) in &mut query {
         match interaction {
@@ -597,11 +722,7 @@ fn buttons(
                 match action {
                     MenuAction::Begin | MenuAction::Resume => next.set(Flow::Playing),
                     MenuAction::Restart => {
-                        if net.enabled {
-                            net_commands.write(crate::net::NetControl::Action(crate::net::protocol::Action::Restart));
-                        } else {
-                            restart.write(RestartRequest);
-                        }
+                        net_commands.write(NetControl::Action(Action::Restart));
                     }
                     MenuAction::Quit => {
                         exit.write(AppExit::Success);
@@ -627,12 +748,10 @@ fn buttons(
 
 fn panels(
     state: Res<State<Flow>>,
-    note: Res<NoteOpen>,
     mut q: ParamSet<(
         Query<&mut Visibility, With<BriefingPanel>>,
         Query<&mut Visibility, With<PausePanel>>,
         Query<&mut Visibility, With<OutcomePanel>>,
-        Query<&mut Visibility, With<NotePanel>>,
     )>,
 ) {
     let s = *state.get();
@@ -644,271 +763,6 @@ fn panels(
     }
     for mut v in &mut q.p2() {
         set_vis(&mut v, s == Flow::Outcome);
-    }
-    for mut v in &mut q.p3() {
-        set_vis(&mut v, s == Flow::Playing && note.0);
-    }
-}
-
-fn objective_text(
-    truth: Res<Truth>,
-    mut q: ParamSet<(
-        Query<&mut Text, With<ObjectiveTitle>>,
-        Query<&mut Text, With<ObjectiveDetail>>,
-        Query<&mut Visibility, With<LegendText>>,
-    )>,
-) {
-    let (title, detail) = match truth.encounter.objective {
-        Objective::FindSatchel => (
-            "Find the bone satchel in the house",
-            "A lamp still burns inside. It should be on the table.",
-        ),
-        Objective::ReturnBones => (
-            "Return the bones to the ceiba",
-            "Carry them to the great tree behind the house and hold E at the hollow in its roots.",
-        ),
-        Objective::Escape => ("Go back to the road", "Out through the gate. It is over."),
-        Objective::Won => ("You reached the road", ""),
-        Objective::Failed => ("He found you", ""),
-    };
-    for mut t in &mut q.p0() {
-        set_text(&mut t, title);
-    }
-    for mut t in &mut q.p1() {
-        set_text(&mut t, detail);
-    }
-    let legend = truth.encounter.objective != Objective::FindSatchel;
-    for mut v in &mut q.p2() {
-        set_vis(&mut v, legend);
-    }
-}
-
-fn status_text(
-    truth: Res<Truth>,
-    mut panel: Query<(&mut Visibility, &Children), With<StatusText>>,
-    mut texts: Query<(&mut Text, &mut TextColor)>,
-    net: Res<crate::net::Network>,
-) {
-    let th = &truth.encounter.threat;
-    let present = matches!(th.presence, Presence::Present | Presence::Rising { .. });
-    let status: Option<(&str, Color)> = if truth.encounter.objective.is_over() {
-        None
-    } else if net.enabled {
-        match net.snapshot().map(|s| s.danger) {
-            Some(1) => Some(("He has seen you — break his line of sight", AMBER)),
-            Some(2) => Some(("He is coming — get behind solid walls!", RED)),
-            Some(3) => Some(("Out of his sight… stay hidden", PALE_BLUE)),
-            _ if present => Some(("You can see him on the llano", DIM)),
-            _ => None,
-        }
-    } else {
-        match th.state {
-            ThreatState::Warning => Some(("He has seen you — break his line of sight", AMBER)),
-            ThreatState::Hunting if th.has_sight => Some(("He is coming — get behind solid walls!", RED)),
-            ThreatState::Hunting => Some(("Out of his sight… stay hidden", PALE_BLUE)),
-            ThreatState::Stalking if present => Some(("He is out there on the llano", DIM)),
-            _ => None,
-        }
-    };
-    for (mut vis, children) in &mut panel {
-        set_vis(&mut vis, status.is_some());
-        if let Some((s, c)) = status {
-            let kids: &[Entity] = children;
-            for &child in kids {
-                if let Ok((mut t, mut color)) = texts.get_mut(child) {
-                    set_text(&mut t, s);
-                    if color.0 != c {
-                        color.0 = c;
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn prompt(
-    truth: Res<Truth>,
-    target: Res<CurrentTarget>,
-    note: Res<NoteOpen>,
-    state: Res<State<Flow>>,
-    mut q: ParamSet<(
-        Query<&mut Text, With<PromptText>>,
-        Query<&mut Visibility, With<ProgressOuter>>,
-        Query<&mut Node, With<ProgressFill>>,
-    )>,
-) {
-    let enc = &truth.encounter;
-    let playing = *state.get() == Flow::Playing;
-    let restituting = enc.objective == Objective::ReturnBones && enc.restitution > 0.0;
-    let text = if !playing {
-        ""
-    } else if restituting && enc.restituting {
-        "Returning the bones…"
-    } else {
-        match target.0 {
-            Some(t) => match (t.kind, t.status) {
-                (TargetKind::Satchel, AimStatus::Ready { .. }) => "[E] Take the bone satchel",
-                (TargetKind::Satchel, _) => "The bone satchel — move closer",
-                (TargetKind::Note, AimStatus::Ready { .. }) if note.0 => "[E] Put the note down",
-                (TargetKind::Note, AimStatus::Ready { .. }) => "[E] Read the note",
-                (TargetKind::Note, _) => "A note — move closer",
-                (TargetKind::Offering, AimStatus::Ready { .. }) => "[Hold E] Return the bones to the ceiba",
-                (TargetKind::Offering, _) => "The hollow in the roots — move closer",
-            },
-            None if restituting => "Paused — hold E at the hollow in the roots",
-            None => "",
-        }
-    };
-    for mut t in &mut q.p0() {
-        set_text(&mut t, text);
-    }
-    for mut v in &mut q.p1() {
-        set_vis(&mut v, playing && restituting);
-    }
-    let w = percent((enc.restitution * 100.0).round());
-    for mut n in &mut q.p2() {
-        if n.width != w {
-            n.width = w;
-        }
-    }
-}
-
-fn carry_tag(
-    truth: Res<Truth>,
-    net: Res<crate::net::Network>,
-    state: Res<State<Flow>>,
-    mut q: Query<&mut Visibility, With<CarryTag>>,
-) {
-    let show = (if net.enabled {
-        net.carrying()
-    } else {
-        truth.encounter.carrying()
-    }) && *state.get() != Flow::Briefing;
-    for mut v in &mut q {
-        set_vis(&mut v, show);
-    }
-}
-
-fn vignette(
-    time: Res<Time>,
-    truth: Res<Truth>,
-    mut q: Query<&mut BackgroundGradient, With<Vignette>>,
-    mut shown: Local<f32>,
-) {
-    let th = &truth.encounter.threat;
-    let pulse = if th.state == ThreatState::Warning {
-        0.18 + 0.08 * (time.elapsed_secs() * 3.0).sin()
-    } else {
-        0.0
-    };
-    let target = (th.exposure * 0.85).max(pulse).min(0.9);
-    let k = (time.delta_secs() * 6.0).min(1.0);
-    let mut a = *shown + (target - *shown) * k;
-    if a < 0.01 {
-        a = 0.0;
-    }
-    if a == *shown || ((a - *shown).abs() < 0.004 && a != 0.0) {
-        return;
-    }
-    *shown = a;
-    let edge = Color::srgba(0.06, 0.0, 0.0, a);
-    for mut g in &mut q {
-        *g = BackgroundGradient::from(RadialGradient::new(
-            UiPosition::CENTER,
-            RadialGradientShape::FarthestCorner,
-            vec![ColorStop::percent(Color::NONE, 45), ColorStop::percent(edge, 100)],
-        ));
-    }
-}
-
-fn hints_and_captions(
-    time: Res<Time>,
-    settings: Res<Settings>,
-    mut hint: ResMut<Hint>,
-    mut caption: ResMut<CaptionLine>,
-    mut events: MessageReader<EncounterMsg>,
-    mut phrases: MessageReader<WhistleMsg>,
-    mut q: ParamSet<(Query<&mut Text, With<HintText>>, Query<&mut Text, With<CaptionText>>)>,
-) {
-    let dt = time.delta_secs();
-    let show = |hint: &mut Hint, text: &'static str, secs: f32, priority: u8| {
-        if hint.timer <= 0.0 || priority >= hint.priority {
-            hint.text = text;
-            hint.timer = secs;
-            hint.priority = priority;
-        }
-    };
-    for EncounterMsg(e) in events.read() {
-        match e {
-            Event::SatchelTaken => show(
-                &mut hint,
-                "The satchel is heavier than it looks. Something out on the llano knows.",
-                6.0,
-                1,
-            ),
-            Event::WarningBegan => show(
-                &mut hint,
-                "He has seen you. Get solid walls between you before he comes.",
-                6.0,
-                2,
-            ),
-            Event::HuntBegan => show(&mut hint, "He is coming. Break his line of sight!", 4.0, 2),
-            Event::WarningAverted => show(&mut hint, "He lost sight of you.", 4.0, 2),
-            Event::LostTrack => show(
-                &mut hint,
-                "He lost your trail and sinks into the grass. He will rise somewhere else.",
-                6.0,
-                2,
-            ),
-            Event::RestitutionComplete => {
-                show(
-                    &mut hint,
-                    "The bones are home. The whistling stops. Go back to the road.",
-                    7.0,
-                    3,
-                );
-            }
-            _ => {}
-        }
-    }
-    for WhistleMsg(p) in phrases.read() {
-        caption.text = p.variant.caption();
-        caption.timer = 4.5;
-        match p.variant {
-            WhistleVariant::Loud if !hint.taught_loud => {
-                hint.taught_loud = true;
-                show(
-                    &mut hint,
-                    "A loud whistle, as if right beside you. The old rule: when he sounds near, he is far.",
-                    8.0,
-                    3,
-                );
-            }
-            WhistleVariant::Faint if !hint.taught_faint => {
-                hint.taught_faint = true;
-                show(
-                    &mut hint,
-                    "A thin whistle, far, far away… so he is NEAR. Get solid walls between you.",
-                    8.0,
-                    3,
-                );
-            }
-            _ => {}
-        }
-    }
-    hint.timer -= dt;
-    caption.timer -= dt;
-    let hint_text = if hint.timer > 0.0 { hint.text } else { "" };
-    let caption_text = if caption.timer > 0.0 && settings.captions {
-        caption.text
-    } else {
-        ""
-    };
-    for mut t in &mut q.p0() {
-        set_text(&mut t, hint_text);
-    }
-    for mut t in &mut q.p1() {
-        set_text(&mut t, caption_text);
     }
 }
 
@@ -931,6 +785,7 @@ fn settings_text(settings: Res<Settings>, mut q: Query<(&SettingLabel, &mut Text
 
 fn fill_outcome(
     truth: Res<Truth>,
+    net: Res<Network>,
     mut q: ParamSet<(
         Query<&mut Text, With<OutcomeTitle>>,
         Query<&mut Text, With<OutcomeBody>>,
@@ -938,24 +793,31 @@ fn fill_outcome(
 ) {
     let enc = &truth.encounter;
     let secs = enc.elapsed.max(0.0) as u32;
+    let (home, total) = net.snapshot().map_or((0, 5), |s| (s.world.delivered, s.world.total));
     let stats = format!(
-        "Time: {}:{:02}   ·   Warnings: {}   ·   Times you slipped his sight: {}",
+        "Time: {}:{:02}  ·  Bones at rest: {home}/{total}  ·  Times he warned: {}  ·  Slipped his sight: {}\n\
+         Times downed: {}  ·  Revived: {}",
         secs / 60,
         secs % 60,
         enc.stats.warnings,
-        enc.stats.recoveries
+        enc.stats.recoveries,
+        enc.stats.downs,
+        enc.stats.revives,
     );
-    let (title, body) = if enc.objective == Objective::Won {
+    let (title, body) = if enc.outcome == crate::sim::Outcome::Won {
         (
-            "You made it back to the road.",
-            format!("The bones rest in the ceiba's roots. Behind you the llano is quiet again.\n\n{stats}"),
+            "The truck pulls away.",
+            format!(
+                "Behind you the rain hushes the llano. The bones rest in the ceiba's roots, and somewhere out there \
+                 a whistle goes thin and far away… for now.\n\n{stats}"
+            ),
         )
     } else {
         (
             "He found you.",
             format!(
                 "The whistle had gone thin and far away — he was already near.\n\
-                 Next time, put solid walls between you as soon as it fades.\n\n{stats}"
+                 Next time: stay together, stay in the light, and put walls between you when it fades.\n\n{stats}"
             ),
         )
     };
@@ -967,9 +829,18 @@ fn fill_outcome(
     }
 }
 
-fn reset_ui(mut requests: MessageReader<RestartRequest>, mut hint: ResMut<Hint>, mut caption: ResMut<CaptionLine>) {
+fn reset_ui(
+    mut requests: MessageReader<RunReset>,
+    mut hint: ResMut<Hint>,
+    mut caption: ResMut<CaptionLine>,
+    mut map: ResMut<MapOpen>,
+) {
     if requests.read().count() > 0 {
+        let taught = (hint.taught_loud, hint.taught_faint, hint.taught_crouch);
         *hint = Hint::default();
+        // Lessons already learned stay learned across restarts.
+        (hint.taught_loud, hint.taught_faint, hint.taught_crouch) = taught;
         *caption = CaptionLine::default();
+        map.0 = false;
     }
 }

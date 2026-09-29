@@ -1,6 +1,7 @@
 //! App assembly: launch options, shared resources, the run flow
-//! (briefing → playing ⇄ paused → outcome), cursor capture, focus safety and
-//! restart. Gameplay truth lives in `sim`; this module only wires it in.
+//! (briefing → playing ⇄ paused → outcome), cursor capture and focus safety.
+//! Gameplay truth lives in `sim` and `net::session`; this module only wires
+//! the presentation to it.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -10,7 +11,8 @@ use bevy::time::TimeUpdateStrategy;
 use bevy::window::{CursorGrabMode, CursorOptions, PresentMode, PrimaryWindow, WindowFocused, WindowResolution};
 
 use crate::geometry::Layout;
-use crate::perception::{CueDirector, WhistlePhrase};
+use crate::net::transport::Mode;
+use crate::perception::WhistlePhrase;
 use crate::sim::{Encounter, Event};
 use crate::tuning::{DEFAULT_SEED, Tuning};
 
@@ -21,12 +23,12 @@ pub struct LayoutRes(pub Layout);
 #[derive(Resource)]
 pub struct TuningRes(pub Tuning);
 
-/// Offline truth, or a sanitized multiplayer presentation mirror. Multiplayer
-/// authority and each listener's cue director remain inside `net::session`.
+/// The presentation mirror of what this player may legitimately know: the
+/// visible threat, the outcome and the run clock, refilled from every
+/// snapshot. Hidden AI state never lives here; it stays in `net::session`.
 #[derive(Resource)]
 pub struct Truth {
     pub encounter: Encounter,
-    pub cue: CueDirector,
 }
 
 /// Player-adjustable settings (pause menu).
@@ -58,9 +60,14 @@ pub struct Launch {
     pub seed: u64,
     pub shots_dir: PathBuf,
     pub size: (u32, u32),
-    pub network: Option<crate::net::transport::Mode>,
+    /// Solo (default), host or join.
+    pub network: Mode,
     pub net_smoke: bool,
     pub headless: bool,
+    /// DEBUG: ground-level tour of every place, then the objective smoke.
+    pub tour: bool,
+    /// DEBUG: fly a camera to authored viewpoints, capture, exit. No gameplay.
+    pub photos: bool,
 }
 
 impl Default for Launch {
@@ -70,26 +77,30 @@ impl Default for Launch {
             seed: DEFAULT_SEED,
             shots_dir: PathBuf::from("screenshots"),
             size: (1600, 900),
-            network: None,
+            network: Mode::Solo,
             net_smoke: false,
             headless: false,
+            tour: false,
+            photos: false,
         }
     }
 }
 
 pub const USAGE: &str = "\
-El Silbón — The Return (first local encounter)
+El Silbón — The Return
 
 USAGE: el_silbon [--seed N] [--size WxH] [--shots DIR] [--smoke]
 
   --seed N      world scatter / whistle jitter seed (default 1997)
   --size WxH    window size (default 1600x900)
-  --shots DIR   screenshot folder for F12 and the smoke route (default ./screenshots)
-  --smoke       DEBUG: play the deterministic scripted route (win, restart,
-                caught, restart), save screenshots, print a summary, exit
+  --shots DIR   screenshot folder for F12 and the debug routes (default ./screenshots)
+  --tour        DEBUG: walk to every place, then play the scripted full run
+  --smoke       DEBUG: play the deterministic scripted full run (win, restart,
+                downed, restart), save screenshots, print a summary, exit
+  --photos      DEBUG: fly a camera to authored viewpoints, save screenshots, exit
   --host ADDR   host and play, e.g. 127.0.0.1:5000 (loopback/private LAN only)
-  --join ADDR   join a host before the encounter starts
-  --net-smoke   DEBUG: real two-process shared-encounter route
+  --join ADDR   join a host before the run starts
+  --net-smoke   DEBUG: real two-process shared-run route
   --headless    with --net-smoke: run real networking without graphics
 ";
 
@@ -100,18 +111,23 @@ impl Launch {
         while let Some(arg) = it.next() {
             match arg.as_str() {
                 "--smoke" => launch.smoke = true,
+                "--tour" => {
+                    launch.tour = true;
+                    launch.smoke = true;
+                }
+                "--photos" => launch.photos = true,
                 "--host" | "--join" => {
-                    if launch.network.is_some() {
+                    if launch.network != Mode::Solo {
                         return Err("Choose either --host or --join, not both.".into());
                     }
                     let value = it.next().ok_or("host/join needs IP:PORT")?;
                     let addr = value.parse().map_err(|_| format!("Invalid socket address: {value}"))?;
                     let addr = crate::net::transport::local_address(addr)?;
-                    launch.network = Some(if arg == "--host" {
-                        crate::net::transport::Mode::Host(addr)
+                    launch.network = if arg == "--host" {
+                        Mode::Host(addr)
                     } else {
-                        crate::net::transport::Mode::Join(addr)
-                    });
+                        Mode::Join(addr)
+                    };
                 }
                 "--net-smoke" => launch.net_smoke = true,
                 "--headless" => launch.headless = true,
@@ -133,10 +149,13 @@ impl Launch {
                 other => return Err(format!("unknown argument: {other}\n\n{USAGE}")),
             }
         }
-        if launch.smoke && launch.network.is_some() {
-            return Err("--smoke is offline only; use --net-smoke for a shared session.".into());
+        if (launch.smoke || launch.photos) && launch.network != Mode::Solo {
+            return Err("--smoke and --photos are solo only; use --net-smoke for a shared session.".into());
         }
-        if launch.net_smoke && launch.network.is_none() {
+        if launch.smoke && launch.photos {
+            return Err("Choose --smoke/--tour or --photos, not both.".into());
+        }
+        if launch.net_smoke && launch.network == Mode::Solo {
             return Err("--net-smoke needs --host or --join.".into());
         }
         if launch.headless && !launch.net_smoke {
@@ -152,9 +171,9 @@ pub enum Flow {
     #[default]
     Briefing,
     Playing,
-    /// Encounter frozen, cursor free, settings available.
+    /// Solo: the run is frozen. Shared: only local input stops.
     Paused,
-    /// Won or caught; restart available.
+    /// Won or lost; restart available.
     Outcome,
 }
 
@@ -166,21 +185,32 @@ pub struct EncounterMsg(pub Event);
 #[derive(Message, Clone, Copy, Debug)]
 pub struct WhistleMsg(pub WhistlePhrase);
 
-/// Restart the encounter from the road (menu button, R key, debug route).
+/// The run was reset (a new epoch began): views clear themselves.
 #[derive(Message, Clone, Copy, Debug, Default)]
-pub struct RestartRequest;
+pub struct RunReset;
+
+/// The run time the sky is showing (seconds): rain, lightning and thunder are
+/// pure functions of `(seed, t)` so every player sees the same storm.
+#[derive(Resource, Default, Clone, Copy, Debug)]
+pub struct StormClock {
+    pub t: f32,
+    /// Where the sky was last frame, to catch onsets in `(prev, t]`.
+    pub prev: f32,
+}
 
 /// Frame ordering of gameplay systems in `Update`.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum GameSet {
-    /// Restart, pause keys, devices or the debug route → intent.
+    /// Pause keys, devices or the debug route → intent.
     Control,
-    /// Intent → look and collision movement.
+    /// Intent → look.
     Motion,
     /// Crosshair targeting.
     Target,
-    /// Truth step, perception, outcome.
+    /// Session step and snapshot mirroring.
     Simulate,
+    /// The storm clock advances once everything else has moved.
+    Weather,
     /// Views, audio, HUD.
     Present,
 }
@@ -225,12 +255,12 @@ fn asset_root() -> String {
 
 pub fn build_app(launch: Launch) -> App {
     let tuning = Tuning::with_seed(launch.seed);
-    let layout = Layout::authored();
+    let layout = Layout::new();
     let encounter = Encounter::new(&layout);
-    let cue = CueDirector::new(tuning.seed);
+    let automated = launch.smoke || launch.photos;
 
     let mut app = App::new();
-    let present_mode = if launch.smoke {
+    let present_mode = if automated {
         PresentMode::AutoNoVsync
     } else {
         PresentMode::AutoVsync
@@ -252,7 +282,7 @@ pub fn build_app(launch: Launch) -> App {
                 ..default()
             }),
     );
-    if launch.smoke {
+    if automated {
         // Fixed 60 Hz simulated time regardless of render speed: every smoke
         // run steps the same truth in the same order.
         app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(1.0 / 60.0)));
@@ -261,18 +291,20 @@ pub fn build_app(launch: Launch) -> App {
     app.insert_resource(ClearColor(Color::linear_rgb(fog[0], fog[1], fog[2])))
         .insert_resource(GlobalAmbientLight {
             color: Color::srgb(0.55, 0.64, 0.9),
-            brightness: 55.0,
+            brightness: 90.0,
             affects_lightmapped_meshes: true,
         })
         .insert_resource(LayoutRes(layout))
         .insert_resource(TuningRes(tuning))
-        .insert_resource(Truth { encounter, cue })
+        .insert_resource(Truth { encounter })
         .insert_resource(Settings::default())
         .insert_resource(launch)
         .init_state::<Flow>()
         .add_message::<EncounterMsg>()
         .add_message::<WhistleMsg>()
-        .add_message::<RestartRequest>()
+        .add_message::<RunReset>()
+        .init_resource::<StormClock>()
+        .add_systems(Update, advance_storm.in_set(GameSet::Weather))
         .configure_sets(
             Update,
             (
@@ -280,6 +312,7 @@ pub fn build_app(launch: Launch) -> App {
                 GameSet::Motion,
                 GameSet::Target,
                 GameSet::Simulate,
+                GameSet::Weather,
                 GameSet::Present,
             )
                 .chain(),
@@ -299,19 +332,36 @@ pub fn build_app(launch: Launch) -> App {
         .add_systems(OnExit(Flow::Paused), thaw_time)
         .add_systems(
             Update,
-            (
-                apply_restart.run_if(crate::net::offline),
-                pause_keys,
-                pause_on_focus_loss,
-            )
-                .chain()
-                .in_set(GameSet::Control),
+            (pause_keys, pause_on_focus_loss).chain().in_set(GameSet::Control),
         );
     app
 }
 
+/// The sky follows the run clock while a run is on, and simply keeps moving
+/// in the lobby, the briefing and after the outcome. Only a solo pause holds
+/// it (the run itself is frozen); in a shared game the storm is the same
+/// for everyone and the menu cannot stop it.
+pub(crate) fn advance_storm(
+    time: Res<Time<Real>>,
+    launch: Res<Launch>,
+    truth: Res<Truth>,
+    state: Res<State<Flow>>,
+    mut clock: ResMut<StormClock>,
+) {
+    clock.prev = clock.t;
+    if *state.get() == Flow::Paused && launch.network.is_solo() {
+        return;
+    }
+    let run = truth.encounter.elapsed;
+    if run > 0.0 && !truth.encounter.outcome.is_over() {
+        clock.t = run;
+    } else {
+        clock.t += time.delta_secs();
+    }
+}
+
 fn capture_cursor(launch: Res<Launch>, mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>) {
-    if launch.smoke || launch.net_smoke {
+    if launch.smoke || launch.net_smoke || launch.photos {
         return; // never grab the desktop's pointer during automation
     }
     cursor.visible = false;
@@ -324,7 +374,7 @@ fn release_cursor(mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>) {
 }
 
 fn freeze_time(launch: Res<Launch>, mut time: ResMut<Time<Virtual>>) {
-    if launch.network.is_none() {
+    if launch.network.is_solo() {
         time.pause();
     }
 }
@@ -333,41 +383,22 @@ fn thaw_time(mut time: ResMut<Time<Virtual>>) {
     time.unpause();
 }
 
-/// Restart: every truth value, timer and perception state back to the start.
-/// Other plugins reset their own views on the same message.
-pub fn apply_restart(
-    mut requests: MessageReader<RestartRequest>,
-    mut truth: ResMut<Truth>,
-    layout: Res<LayoutRes>,
-    tuning: Res<TuningRes>,
-    mut next: ResMut<NextState<Flow>>,
-) {
-    if requests.read().count() == 0 {
-        return;
-    }
-    let Truth { encounter, cue } = &mut *truth;
-    encounter.reset(&layout.0);
-    cue.reset(tuning.0.seed);
-    next.set(Flow::Playing);
-    info!("encounter restarted");
-}
-
 fn pause_keys(
     keys: Res<ButtonInput<KeyCode>>,
     state: Res<State<Flow>>,
     launch: Res<Launch>,
     mut next: ResMut<NextState<Flow>>,
-    mut restart: MessageWriter<RestartRequest>,
+    mut control: MessageWriter<crate::net::NetControl>,
 ) {
-    if launch.smoke {
+    if launch.smoke || launch.photos {
         return;
     }
     match state.get() {
         Flow::Playing if keys.just_pressed(KeyCode::Escape) => next.set(Flow::Paused),
         Flow::Paused if keys.just_pressed(KeyCode::Escape) => next.set(Flow::Playing),
-        Flow::Briefing if keys.just_pressed(KeyCode::Enter) => next.set(Flow::Playing),
-        Flow::Outcome if launch.network.is_none() && keys.just_pressed(KeyCode::KeyR) => {
-            restart.write(RestartRequest);
+        Flow::Briefing if keys.just_pressed(KeyCode::Enter) && launch.network.is_solo() => next.set(Flow::Playing),
+        Flow::Outcome if launch.network.is_host() && keys.just_pressed(KeyCode::KeyR) => {
+            control.write(crate::net::NetControl::Action(crate::net::protocol::Action::Restart));
         }
         _ => {}
     }
@@ -381,7 +412,7 @@ fn pause_on_focus_loss(
     mut next: ResMut<NextState<Flow>>,
 ) {
     let lost = focus.read().any(|f| !f.focused);
-    if lost && !launch.smoke && !launch.net_smoke && *state.get() == Flow::Playing {
+    if lost && !launch.smoke && !launch.net_smoke && !launch.photos && *state.get() == Flow::Playing {
         next.set(Flow::Paused);
     }
 }
@@ -401,14 +432,20 @@ mod tests {
         assert_eq!(l.seed, 42);
         assert_eq!(l.size, (1280, 720));
         assert_eq!(l.shots_dir, PathBuf::from("out"));
+        assert_eq!(l.network, Mode::Solo);
         assert!(args("--seed nope").is_err());
         assert!(args("--size 12").is_err());
         assert!(args("--fly").is_err());
+        assert!(args("--map district").is_err(), "there is only one map now");
         assert!(args("--headless").is_err());
         assert!(args("--net-smoke").is_err());
+        assert!(args("--tour").unwrap().smoke);
+        assert!(args("--photos").unwrap().photos);
+        assert!(args("--photos --smoke").is_err());
         assert!(args("--host 0.0.0.0:5000").is_err());
         assert!(args("--host 8.8.8.8:5000").is_err());
         assert!(args("--host 127.0.0.1:5000 --join 127.0.0.1:5000").is_err());
         assert!(args("--host 127.0.0.1:5000 --smoke").is_err());
+        assert!(matches!(args("--host 127.0.0.1:5000").unwrap().network, Mode::Host(_)));
     }
 }

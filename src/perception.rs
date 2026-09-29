@@ -9,7 +9,7 @@
 use bevy::math::Vec2;
 
 use crate::rng::Rng;
-use crate::sim::{Encounter, Objective, Presence, ThreatState};
+use crate::sim::{Encounter, Presence, ThreatState};
 use crate::tuning::Tuning;
 
 /// The three recorded timbres of the same phrase.
@@ -38,6 +38,16 @@ impl WhistleVariant {
             WhistleVariant::Loud => tuning.gain_loud,
             WhistleVariant::Middling => tuning.gain_mid,
             WhistleVariant::Faint => tuning.gain_faint,
+        }
+    }
+
+    /// How much a listener is frightened by hearing it. Deliberately the
+    /// inverse of comfort: thin and far away means he is near.
+    pub fn dread(self, tuning: &Tuning) -> f32 {
+        match self {
+            WhistleVariant::Loud => 0.0,
+            WhistleVariant::Middling => tuning.fear_faint * 0.4,
+            WhistleVariant::Faint => tuning.fear_faint,
         }
     }
 }
@@ -72,6 +82,8 @@ pub fn variant_for(seeming: f32) -> WhistleVariant {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CueDirector {
     countdown: f32,
+    /// Seconds until the next far-off whistle while he is still dormant.
+    prologue: f32,
     rng: Rng,
     last_state: ThreatState,
     pub last_phrase: Option<WhistlePhrase>,
@@ -80,9 +92,13 @@ pub struct CueDirector {
 
 impl CueDirector {
     pub fn new(seed: u64) -> Self {
+        let mut rng = Rng::fork(seed, 0xC0E);
+        let t = Tuning::default();
+        let prologue = rng.range(t.prologue_phrase_interval.0, t.prologue_phrase_interval.1) * 0.6;
         Self {
             countdown: 0.0,
-            rng: Rng::fork(seed, 0xC0E),
+            prologue,
+            rng,
             last_state: ThreatState::Dormant,
             last_phrase: None,
             phrases: 0,
@@ -108,12 +124,40 @@ impl CueDirector {
             }
             self.last_state = th.state;
         }
+        if enc.outcome.is_over() {
+            return None;
+        }
+        // Before the first bundle is touched he is only a rumour: a whistle
+        // now and then from far off. He is truly far, so it seems close.
+        if th.state == ThreatState::Dormant {
+            self.prologue -= dt;
+            if self.prologue > 0.0 {
+                return None;
+            }
+            self.prologue = self
+                .rng
+                .range(tuning.prologue_phrase_interval.0, tuning.prologue_phrase_interval.1);
+            let variant = if self.rng.f32() < 0.6 {
+                WhistleVariant::Loud
+            } else {
+                WhistleVariant::Middling
+            };
+            let phrase = WhistlePhrase {
+                variant,
+                gain: variant.gain(tuning) * 0.85,
+                speed: 0.97 + 0.06 * self.rng.f32(),
+                seeming_closeness: if variant == WhistleVariant::Loud { 1.0 } else { 0.5 },
+            };
+            self.last_phrase = Some(phrase);
+            self.phrases += 1;
+            return Some(phrase);
+        }
         let active_state = matches!(
             th.state,
             ThreatState::Stalking | ThreatState::Warning | ThreatState::Hunting
         );
         let present = matches!(th.presence, Presence::Present | Presence::Rising { .. });
-        if !active_state || !present || enc.objective == Objective::Failed {
+        if !active_state || !present {
             return None;
         }
         self.countdown -= dt;
@@ -164,23 +208,34 @@ mod tests {
             assert!(s >= prev);
             prev = s;
         }
-        // And the loud variant is louder than the faint one.
+        // The loud variant is louder than the faint one, and the faint one is
+        // the frightening one.
         assert!(WhistleVariant::Loud.gain(&t) > WhistleVariant::Faint.gain(&t));
+        assert!(WhistleVariant::Faint.dread(&t) > WhistleVariant::Middling.dread(&t));
+        assert_eq!(WhistleVariant::Loud.dread(&t), 0.0);
     }
 
     #[test]
-    fn director_emits_inverted_phrases_only_while_he_is_present() {
-        let layout = Layout::authored();
+    fn director_whistles_far_off_before_he_wakes_then_inverted_phrases_while_present() {
+        let layout = Layout::new();
         let t = Tuning::default();
         let mut enc = Encounter::new(&layout);
         let mut cue = CueDirector::new(t.seed);
         let listener = Vec2::new(0.0, 9.0);
-        // Dormant: silence.
-        for _ in 0..600 {
-            assert!(cue.tick(1.0 / 60.0, &enc, listener, &t).is_none());
+        // Dormant: only rare far-off whistles, never a close-sounding warning.
+        let mut prologue = Vec::new();
+        for _ in 0..(150 * 60) {
+            if let Some(p) = cue.tick(1.0 / 60.0, &enc, listener, &t) {
+                prologue.push(p);
+            }
         }
+        assert!(
+            (2..=6).contains(&prologue.len()),
+            "expected a few, got {}",
+            prologue.len()
+        );
+        assert!(prologue.iter().all(|p| p.variant != WhistleVariant::Faint));
         // Present and far away: the phrase seems loud.
-        enc.objective = Objective::ReturnBones;
         enc.threat.state = ThreatState::Stalking;
         enc.threat.presence = Presence::Present;
         enc.threat.movement = Movement::Still;
@@ -206,8 +261,14 @@ mod tests {
         let near = near.expect("warning must whistle within a second");
         assert_eq!(near.variant, WhistleVariant::Faint);
         assert!(near.gain < far.unwrap().gain);
-        // Resolved: silence again.
-        enc.threat.state = ThreatState::Resolved;
+        // Counting bones: silence.
+        enc.threat.state = ThreatState::Counting;
+        for _ in 0..1200 {
+            assert!(cue.tick(1.0 / 60.0, &enc, listener, &t).is_none());
+        }
+        // After the run ends: silence.
+        enc.threat.state = ThreatState::Stalking;
+        enc.outcome = crate::sim::Outcome::Won;
         for _ in 0..1200 {
             assert!(cue.tick(1.0 / 60.0, &enc, listener, &t).is_none());
         }

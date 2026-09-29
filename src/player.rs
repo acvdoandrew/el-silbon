@@ -1,13 +1,15 @@
 //! First-person body: camera, flashlight, device input → intent, and the
-//! shared look/collision movement from `control`.
+//! look/light handling. Position is owned by the session; this module only
+//! turns the head and lifts the eye.
 
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::light::NotShadowCaster;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
+use bevy::render::view::{ColorGrading, ColorGradingGlobal};
 
-use crate::app::{Flow, GameSet, Launch, LayoutRes, RestartRequest, Settings, Truth, TuningRes};
+use crate::app::{Flow, GameSet, Launch, LayoutRes, RunReset, Settings, TuningRes};
 use crate::control::{Intent, Pose};
 use crate::world::{CarriedSatchel, Palette, SatchelAsset};
 
@@ -28,11 +30,16 @@ pub struct Flashlight {
 #[derive(Resource, Default)]
 pub struct CurrentIntent(pub Intent);
 
+/// Whether the flashlight is on (the host counts it: light makes you easier to see).
+#[derive(Resource)]
+pub struct LightOn(pub bool);
+
 pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CurrentIntent>()
+            .insert_resource(LightOn(true))
             .add_systems(Startup, spawn_player.after(crate::world::spawn_world))
             .add_systems(
                 Update,
@@ -42,15 +49,19 @@ impl Plugin for PlayerPlugin {
                         .in_set(GameSet::Control)
                         .after(reset_player)
                         .run_if(in_state(Flow::Playing))
-                        .run_if(|launch: Res<Launch>| !launch.smoke && !launch.net_smoke),
+                        .run_if(|launch: Res<Launch>| !launch.smoke && !launch.net_smoke && !launch.photos),
                     apply_motion.in_set(GameSet::Motion).run_if(in_state(Flow::Playing)),
                 ),
             );
     }
 }
 
-pub(crate) fn eye_transform(pose: &Pose, tuning: &crate::tuning::Tuning) -> Transform {
-    Transform::from_translation(pose.eye(tuning)).with_rotation(Quat::from_euler(
+pub(crate) fn eye_transform(
+    pose: &Pose,
+    tuning: &crate::tuning::Tuning,
+    layout: &crate::geometry::Layout,
+) -> Transform {
+    Transform::from_translation(pose.eye(tuning, layout)).with_rotation(Quat::from_euler(
         EulerRot::YXZ,
         pose.yaw,
         pose.pitch,
@@ -80,6 +91,17 @@ fn spawn_player(
             }),
             bevy::camera::Hdr,
             Tonemapping::TonyMcMapface,
+            // A cool, rich night: the lanterns stay warm against it. Global
+            // grading only: sectional contrast crushes linear-HDR darks.
+            ColorGrading {
+                global: ColorGradingGlobal {
+                    exposure: 0.3,
+                    temperature: -0.04,
+                    post_saturation: 1.14,
+                    ..default()
+                },
+                ..default()
+            },
             Bloom {
                 intensity: 0.1,
                 ..Bloom::NATURAL
@@ -88,9 +110,9 @@ fn spawn_player(
                 color: Color::linear_rgba(fog[0], fog[1], fog[2], 1.0),
                 directional_light_color: Color::srgba(0.42, 0.48, 0.66, 0.3),
                 directional_light_exponent: 22.0,
-                falloff: FogFalloff::from_visibility_squared(82.0),
+                falloff: FogFalloff::from_visibility_squared(crate::world::land::fog_visibility(&layout.0)),
             },
-            eye_transform(&pose, &tuning.0),
+            eye_transform(&pose, &tuning.0, &layout.0),
         ))
         .with_children(|cam| {
             cam.spawn((
@@ -156,44 +178,45 @@ fn read_devices(
         interact_pressed: keys.just_pressed(KeyCode::KeyE) || mouse.just_pressed(MouseButton::Left),
         interact_held: keys.pressed(KeyCode::KeyE) || mouse.pressed(MouseButton::Left),
         toggle_flashlight: keys.just_pressed(KeyCode::KeyF),
+        crouch: keys.any_pressed([KeyCode::ControlLeft, KeyCode::KeyC]),
+        sprint: keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]),
+        drop: keys.just_pressed(KeyCode::KeyG),
+        use_aji: keys.just_pressed(KeyCode::KeyQ),
+        ping: keys.just_pressed(KeyCode::KeyV) || mouse.just_pressed(MouseButton::Middle),
     };
 }
 
 fn apply_motion(
-    time: Res<Time>,
     intent: Res<CurrentIntent>,
-    truth: Res<Truth>,
-    layout: Res<LayoutRes>,
     tuning: Res<TuningRes>,
+    layout: Res<LayoutRes>,
     player: Single<(&mut Player, &mut Transform)>,
     net: Res<crate::net::Network>,
+    mut light: ResMut<LightOn>,
     flashlight: Single<(&mut Flashlight, &mut SpotLight)>,
 ) {
-    let tuning = &tuning.0;
-    let dt = time.delta_secs().min(tuning.max_step);
     let (mut player, mut tf) = player.into_inner();
-    let speed = truth.encounter.player_speed(tuning);
-    if !net.enabled || !net.caught() {
-        player.pose.look(intent.0.look_delta, tuning);
+    // Even the frozen and the downed can turn their heads; the dead only watch.
+    if net.status() != 2 {
+        player.pose.look(intent.0.look_delta, &tuning.0);
     }
-    if !net.enabled {
-        player.pose.walk(&layout.0, tuning, intent.0.move_axis, speed, dt);
-    }
-    *tf = eye_transform(&player.pose, tuning);
+    *tf = eye_transform(&player.pose, &tuning.0, &layout.0);
 
-    if intent.0.toggle_flashlight {
+    if intent.0.toggle_flashlight && net.status() != 2 {
         let (mut torch, mut spot) = flashlight.into_inner();
         torch.on = !torch.on;
         spot.intensity = if torch.on { FLASHLIGHT_LUMENS } else { 0.0 };
+        light.0 = torch.on;
     }
 }
 
 pub(crate) fn reset_player(
-    mut requests: MessageReader<RestartRequest>,
+    mut requests: MessageReader<RunReset>,
     layout: Res<LayoutRes>,
     tuning: Res<TuningRes>,
     player: Single<(&mut Player, &mut Transform)>,
     flashlight: Single<(&mut Flashlight, &mut SpotLight)>,
+    mut light: ResMut<LightOn>,
     mut intent: ResMut<CurrentIntent>,
 ) {
     if requests.read().count() == 0 {
@@ -201,9 +224,10 @@ pub(crate) fn reset_player(
     }
     let (mut player, mut tf) = player.into_inner();
     player.pose = Pose::spawn(&layout.0);
-    *tf = eye_transform(&player.pose, &tuning.0);
+    *tf = eye_transform(&player.pose, &tuning.0, &layout.0);
     let (mut torch, mut spot) = flashlight.into_inner();
     torch.on = true;
     spot.intensity = FLASHLIGHT_LUMENS;
+    light.0 = true;
     intent.0 = Intent::default();
 }

@@ -6,7 +6,9 @@
 //! - [`sim`]: encounter truth — objectives and the Silbón's hidden state.
 //! - [`perception`]: truth → what a listener hears (inverted whistle).
 //! - [`control`]: intent, first-person kinematics, crosshair targeting.
-//! - [`script`]: DEBUG deterministic smoke route.
+//! - [`body`]: gait, stamina, fear, downed state.
+//! - [`storm`]: rain, lightning and thunder as functions of the run clock.
+//! - [`script`], [`photos`]: DEBUG smoke route and photo viewpoints.
 //!
 //! Bevy adapters and presentation: [`app`], [`player`], [`encounter`],
 //! [`audio`], [`ui`], [`world`], [`debug`].
@@ -17,16 +19,21 @@
 
 pub mod app;
 pub mod audio;
+pub mod body;
 pub mod control;
 pub mod debug;
 pub mod encounter;
 pub mod geometry;
+pub mod lore;
 pub mod net;
+pub mod noise;
 pub mod perception;
+pub mod photos;
 pub mod player;
 pub mod rng;
 pub mod script;
 pub mod sim;
+pub mod storm;
 pub mod tuning;
 pub mod ui;
 pub mod world;

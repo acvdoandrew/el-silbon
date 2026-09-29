@@ -14,12 +14,18 @@ use std::{
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Mode {
+    /// One player, no sockets: the same session, run in-process.
+    Solo,
     Host(SocketAddr),
     Join(SocketAddr),
 }
 impl Mode {
+    /// Runs the authoritative session (solo or hosted).
     pub fn is_host(&self) -> bool {
-        matches!(self, Self::Host(_))
+        matches!(self, Self::Host(_) | Self::Solo)
+    }
+    pub fn is_solo(&self) -> bool {
+        matches!(self, Self::Solo)
     }
 }
 
@@ -52,6 +58,7 @@ struct ClientSocket {
     hello: bool,
 }
 enum SocketSide {
+    Solo(Box<Session>),
     Host(Box<HostSocket>),
     Client(Box<ClientSocket>),
 }
@@ -80,6 +87,11 @@ impl Endpoint {
             .duration_since(UNIX_EPOCH)
             .map_err(|e| e.to_string())?;
         let (side, id, status) = match mode {
+            Mode::Solo => (
+                SocketSide::Solo(Box::new(Session::new(layout, tuning))),
+                Some(HOST),
+                "Solo run".to_owned(),
+            ),
             Mode::Host(addr) => {
                 local_address(addr)?;
                 let socket = UdpSocket::bind(addr).map_err(|e| format!("Cannot host on {addr}: {e}"))?;
@@ -150,19 +162,24 @@ impl Endpoint {
     pub fn run(&self) -> u64 {
         self.snapshot.as_ref().map_or(1, |s| s.run)
     }
+    /// DEBUG ONLY: the authoritative session, when this process runs it
+    /// (solo or host). Presentation must never read hidden truth from here.
+    pub fn debug_session(&self) -> Option<&Session> {
+        match &self.side {
+            SocketSide::Solo(s) => Some(s),
+            SocketSide::Host(h) => Some(&h.session),
+            SocketSide::Client(_) => None,
+        }
+    }
     pub fn snapshot_age(&self) -> f32 {
         self.elapsed - self.last_snapshot_at
     }
-    pub fn input(&mut self, axis: [f32; 2], yaw: f32, pitch: f32, hold: bool) {
+    /// Record the newest input frame; the endpoint stamps epoch and sequence.
+    pub fn input(&mut self, mut input: Input) {
         self.input_sequence += 1;
-        self.latest = Input {
-            run: self.run(),
-            sequence: self.input_sequence,
-            axis,
-            yaw,
-            pitch,
-            hold,
-        };
+        input.run = self.run();
+        input.sequence = self.input_sequence;
+        self.latest = input;
     }
     pub fn command(&mut self, action: Action, layout: &Layout, tuning: &Tuning) {
         if self.closed {
@@ -171,6 +188,15 @@ impl Endpoint {
         self.action_sequence += 1;
         let run = self.run();
         match &mut self.side {
+            SocketSide::Solo(session) => {
+                let _ = session.input(HOST, self.latest, tuning);
+                if let Err(e) = session.command(HOST, run, self.action_sequence, action, layout, tuning) {
+                    self.last_error = e;
+                    self.error_until = self.elapsed + 4.0;
+                } else {
+                    self.last_error.clear();
+                }
+            }
             SocketSide::Host(socket) => {
                 let session = &mut socket.session;
                 let _ = session.input(HOST, self.latest, tuning);
@@ -208,6 +234,7 @@ impl Endpoint {
         self.notices.clear();
         self.snapshot = None;
         match &mut self.side {
+            SocketSide::Solo(_) => {}
             SocketSide::Host(socket) => {
                 let HostSocket { server, transport, .. } = &mut **socket;
                 server.broadcast_message(
@@ -243,6 +270,25 @@ impl Endpoint {
         let mut incoming = Vec::new();
         let mut failure = None;
         match &mut self.side {
+            SocketSide::Solo(session) => {
+                if !session.started {
+                    // A solo run starts at once; the briefing screen is its lobby.
+                    self.action_sequence += 1;
+                    let _ = session.command(HOST, session.run, self.action_sequence, Action::Start, layout, tuning);
+                }
+                let _ = session.input(HOST, self.latest, tuning);
+                self.accumulator += dt;
+                while self.accumulator >= STEP {
+                    session.step(layout, tuning, STEP);
+                    self.accumulator -= STEP;
+                }
+                for (id, message) in session.outbox.drain(..) {
+                    if id == HOST {
+                        incoming.push(message);
+                    }
+                }
+                incoming.push(ServerMessage::Snapshot(session.snapshot(HOST, layout, tuning)));
+            }
             SocketSide::Host(socket) => {
                 let HostSocket {
                     server,
@@ -266,7 +312,7 @@ impl Endpoint {
                             if let Some(id) = peers.remove(&client_id) {
                                 session.remove_player(id);
                                 self.status = format!("Player {id} left ({reason}); the host can continue.");
-                                eprintln!("NET disconnected player={id}; satchel={:?}", session.satchel);
+                                eprintln!("NET disconnected player={id}; bundles={}", session.relic_summary());
                             }
                             pending.remove(&client_id);
                             closing.remove(&client_id);
@@ -379,8 +425,8 @@ impl Endpoint {
                         server.send_message(wire_id, DefaultChannel::ReliableOrdered, encode(&message));
                     }
                 }
+                incoming.push(ServerMessage::Snapshot(session.snapshot(HOST, layout, tuning)));
                 if send {
-                    incoming.push(ServerMessage::Snapshot(session.snapshot(HOST, layout, tuning)));
                     for (&wire_id, &id) in peers.iter() {
                         server.send_message(
                             wire_id,

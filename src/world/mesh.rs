@@ -64,6 +64,16 @@ impl MeshBuilder {
         self.idx.is_empty()
     }
 
+    /// Move everything from `other` into this builder.
+    pub fn append(&mut self, other: MeshBuilder) {
+        let base = self.pos.len() as u32;
+        self.pos.extend(other.pos);
+        self.nrm.extend(other.nrm);
+        self.uv.extend(other.uv);
+        self.col.extend(other.col);
+        self.idx.extend(other.idx.into_iter().map(|i| i + base));
+    }
+
     pub fn vertex(&mut self, p: Vec3, n: Vec3, uv: Vec2, c: Rgba) -> u32 {
         let i = self.pos.len() as u32;
         self.pos.push(p.to_array());
@@ -361,12 +371,121 @@ impl MeshBuilder {
         }
     }
 
+    /// Per-vertex tangents (xyz + handedness) for tangent-space normal maps.
+    ///
+    /// Accumulated from UV derivatives per triangle in O(vertices + indices)
+    /// rather than `Mesh::generate_tangents`: its handling of coincident-vertex
+    /// triangles (blob poles, lathe tips, ribbon tips) is quadratic in mesh
+    /// size, and it silently substitutes a tangent that may be parallel to the
+    /// normal. Bevy's shader neither normalises nor orthogonalises the
+    /// tangent, so every entry is a finite unit vector perpendicular to the
+    /// vertex normal. Vertices whose triangles have no usable UV area (sky
+    /// dome with constant UVs, zero-width ribbons) get an arbitrary
+    /// perpendicular; their normal map cannot mean anything anyway.
+    ///
+    /// Convention matches `Mesh::generate_tangents`: T = dP/du, bitangent
+    /// `w * cross(N, T)` = -dP/dv (Bevy's V axis points down the image).
+    fn tangents(&self) -> Vec<[f32; 4]> {
+        let n = self.pos.len();
+        let mut t_acc = vec![Vec3::ZERO; n];
+        let mut b_acc = vec![Vec3::ZERO; n];
+        for tri in self.idx.as_chunks::<3>().0 {
+            let [i0, i1, i2] = [tri[0] as usize, tri[1] as usize, tri[2] as usize];
+            let p0 = Vec3::from_array(self.pos[i0]);
+            let e1 = Vec3::from_array(self.pos[i1]) - p0;
+            let e2 = Vec3::from_array(self.pos[i2]) - p0;
+            let uv0 = Vec2::from_array(self.uv[i0]);
+            let d1 = Vec2::from_array(self.uv[i1]) - uv0;
+            let d2 = Vec2::from_array(self.uv[i2]) - uv0;
+            let det = d1.x * d2.y - d2.x * d1.y;
+            let area = e1.cross(e2).length();
+            // Negated comparisons also reject NaN.
+            if !(det.abs() > 1e-12 && area > 0.0 && area.is_finite()) {
+                continue;
+            }
+            let inv = 1.0 / det;
+            let dp_du = (e1 * d2.y - e2 * d1.y) * inv;
+            let dp_dv = (e2 * d1.x - e1 * d2.x) * inv;
+            let (Some(t), Some(b)) = (dp_du.try_normalize(), (-dp_dv).try_normalize()) else {
+                continue;
+            };
+            for i in [i0, i1, i2] {
+                t_acc[i] += t * area;
+                b_acc[i] += b * area;
+            }
+        }
+        (0..n)
+            .map(|i| {
+                let nrm = Vec3::from_array(self.nrm[i]);
+                match (t_acc[i] - nrm * nrm.dot(t_acc[i])).try_normalize() {
+                    Some(t) => {
+                        let w = if nrm.cross(t).dot(b_acc[i]) < 0.0 { -1.0 } else { 1.0 };
+                        [t.x, t.y, t.z, w]
+                    }
+                    None => {
+                        let t = nrm.any_orthonormal_vector();
+                        [t.x, t.y, t.z, 1.0]
+                    }
+                }
+            })
+            .collect()
+    }
+
     pub fn build(self) -> Mesh {
+        let tangents = self.tangents();
         Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
             .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.pos)
             .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, self.nrm)
             .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, self.uv)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents)
             .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.col)
             .with_inserted_indices(Indices::U32(self.idx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_basis(b: &MeshBuilder, tangents: &[[f32; 4]]) {
+        for (t, n) in tangents.iter().zip(&b.nrm) {
+            let tv = Vec3::new(t[0], t[1], t[2]);
+            assert!(t.iter().all(|c| c.is_finite()), "{t:?}");
+            assert!((tv.length() - 1.0).abs() < 1e-4, "{t:?}");
+            assert!(tv.dot(Vec3::from_array(*n)).abs() < 1e-4, "{t:?} vs {n:?}");
+            assert!(t[3] == 1.0 || t[3] == -1.0);
+        }
+    }
+
+    #[test]
+    fn tangents_follow_uv_axes_and_stay_finite_on_bad_input() {
+        // Front-facing quad, u → +X, v (image-down) → -Y: glTF-style (1,0,0,+1).
+        let mut b = MeshBuilder::new();
+        b.quad(
+            [Vec3::ZERO, Vec3::X, Vec3::new(1.0, 1.0, 0.0), Vec3::Y],
+            [
+                Vec2::new(0.0, 1.0),
+                Vec2::new(1.0, 1.0),
+                Vec2::new(1.0, 0.0),
+                Vec2::ZERO,
+            ],
+            WHITE,
+        );
+        let t = b.tangents();
+        assert_basis(&b, &t);
+        assert!(t.iter().all(|t| (t[0] - 1.0).abs() < 1e-4 && t[3] == 1.0), "{t:?}");
+
+        // Constant UVs (sky dome), coincident-vertex triangle and NaN position.
+        let mut b = MeshBuilder::new();
+        let v0 = b.vertex(Vec3::ZERO, Vec3::Y, Vec2::ZERO, WHITE);
+        let v1 = b.vertex(Vec3::X, Vec3::Y, Vec2::ZERO, WHITE);
+        let v2 = b.vertex(Vec3::Z, Vec3::Y, Vec2::ZERO, WHITE);
+        let v3 = b.vertex(Vec3::ZERO, Vec3::Y, Vec2::new(1.0, 0.0), WHITE);
+        let v4 = b.vertex(Vec3::new(f32::NAN, 0.0, 0.0), Vec3::Y, Vec2::new(0.0, 1.0), WHITE);
+        b.tri(v0, v1, v2);
+        b.tri(v0, v3, v1);
+        b.tri(v0, v4, v2);
+        assert_basis(&b, &b.tangents());
+        assert_basis(&MeshBuilder::new(), &MeshBuilder::new().tangents());
     }
 }

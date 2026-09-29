@@ -1,5 +1,13 @@
-//! Two-player development session. Transport and hidden simulation are separate
-//! from this application's local camera, UI and audio presentation.
+//! The client adapter: one path for solo, hosted and joined play. The
+//! transport and the hidden simulation stay independent of this
+//! application's camera, HUD and audio; this module feeds local input to the
+//! endpoint and mirrors each snapshot into what the presentation may know.
+//!
+//! The rules of one client frame live here as plain functions so the game,
+//! the smoke drivers and the session tests all play by them: `controls_live`
+//! gates the controls, `Wire` is what a frame sends, `follow_body` is how the
+//! local body trails its snapshot row and `mirror` is what the presentation
+//! may know of the encounter.
 pub mod protocol;
 mod render_smoke;
 pub mod session;
@@ -7,116 +15,242 @@ pub mod smoke;
 pub mod transport;
 
 use crate::{
-    app::{EncounterMsg, Flow, GameSet, Launch, LayoutRes, RestartRequest, Truth, TuningRes, WhistleMsg},
+    app::{EncounterMsg, Flow, GameSet, Launch, LayoutRes, RunReset, Truth, TuningRes, WhistleMsg},
+    control::{Intent, Pose, Target, TargetKind},
     encounter::CurrentTarget,
+    geometry::Layout,
     perception::{WhistlePhrase, WhistleVariant},
-    player::{CurrentIntent, Player},
-    sim::{Encounter, Presence, Stats, ThreatState},
-    world::{Palette, SatchelAsset},
+    player::{CurrentIntent, LightOn, Player},
+    sim::{Encounter, Outcome, Presence, Stats, ThreatState},
+    tuning::Tuning,
 };
 use bevy::prelude::*;
-use protocol::{Action, HOST, Satchel, ServerMessage};
+use protocol::{Action, HOST, Input, PlayerId, PlayerView, ServerMessage, Snapshot};
 use transport::Endpoint;
+
+/// 0 active, 1 downed, 2 dead (active until the first snapshot).
+pub fn status_of(snapshot: Option<&Snapshot>, me: Option<PlayerId>) -> u8 {
+    snapshot
+        .zip(me)
+        .and_then(|(s, id)| s.player(id))
+        .map_or(0, |p| p.status)
+}
+
+/// Whether this player's controls reach the world: the run is on, they are
+/// not dead, the game is playing and no susto holds them frozen. When not,
+/// the packet a frame sends carries no movement and it sends no commands.
+pub fn controls_live(snapshot: Option<&Snapshot>, me: Option<PlayerId>, playing: bool) -> bool {
+    snapshot.is_some_and(|s| {
+        playing && s.started && !s.outcome().is_over() && status_of(Some(s), me) != 2 && s.me.stun <= 0.0
+    })
+}
+
+/// What one client frame puts on the wire: the input packet (orientation as
+/// this frame left it), then the presses of the intent, in order: interact
+/// only where the crosshair is on a bundle or pepper, drop, pepper, and a
+/// mark of what the crosshair holds. The game and every smoke driver build
+/// their frames here; only explicit session commands (start, restart, a
+/// scripted mark) follow them. Run and sequence are stamped by the sender.
+pub struct Wire {
+    pub input: Input,
+    commands: [Option<Action>; 4],
+}
+
+impl Wire {
+    pub fn new(
+        intent: &Intent,
+        live: bool,
+        pose: &Pose,
+        light: bool,
+        target: Option<Target>,
+        layout: &Layout,
+        tuning: &Tuning,
+    ) -> Self {
+        let input = Input {
+            axis: if live { intent.move_axis.to_array() } else { [0.0; 2] },
+            yaw: pose.yaw,
+            pitch: pose.pitch,
+            hold: live && intent.interact_held,
+            crouch: live && intent.crouch,
+            sprint: live && intent.sprint,
+            light,
+            ..default()
+        };
+        if !live {
+            return Self {
+                input,
+                commands: [None; 4],
+            };
+        }
+        let pickup = intent.interact_pressed
+            && target
+                .filter(|t| t.usable())
+                .is_some_and(|t| matches!(t.kind, TargetKind::Relic(_) | TargetKind::Aji(_)));
+        let mark = intent.ping.then(|| {
+            let at = target
+                .map(|t| t.center)
+                .unwrap_or_else(|| layout.ray_ground(pose.eye(tuning, layout), pose.look_dir(), tuning.ping_range));
+            Action::Ping { at: at.to_array() }
+        });
+        Self {
+            input,
+            commands: [
+                pickup.then_some(Action::Interact),
+                intent.drop.then_some(Action::Drop),
+                intent.use_aji.then_some(Action::UseAji),
+                mark,
+            ],
+        }
+    }
+
+    /// The commands that follow the input packet, in order.
+    pub fn commands(&self) -> impl Iterator<Item = Action> + '_ {
+        self.commands.iter().flatten().copied()
+    }
+
+    /// Hand the frame to an endpoint, which stamps run and sequence.
+    pub fn send(&self, endpoint: &mut Endpoint, layout: &Layout, tuning: &Tuning) {
+        endpoint.input(self.input);
+        for action in self.commands() {
+            endpoint.command(action, layout, tuning);
+        }
+    }
+}
+
+/// The local body follows its own row of the newest snapshot as the eye does:
+/// position and stance ease toward the authority's (`dt` seconds on the
+/// session's clock); the player's own look is only taken from it when a new
+/// run begins (`fresh`).
+pub fn follow_body(pose: &mut Pose, local: &PlayerView, fresh: bool, dt: f32, tuning: &Tuning) {
+    let position = Vec2::from_array(local.position);
+    let k = if fresh { 1.0 } else { (dt * 24.0).min(1.0) };
+    pose.pos = pose.pos.lerp(position, k);
+    if fresh {
+        pose.yaw = local.yaw;
+        pose.pitch = local.pitch;
+    }
+    let want_lower = match local.status {
+        0 if local.crouch => tuning.crouch_lower,
+        0 => 0.0,
+        _ => tuning.downed_lower,
+    };
+    pose.lower += (want_lower - pose.lower) * (dt * 9.0).min(1.0);
+    if fresh {
+        pose.lower = want_lower;
+    }
+}
+
+/// The presentation's mirror of the encounter, from a snapshot alone: the
+/// outcome, the clock, the tallies and the danger this player feels. Where
+/// the threat stands comes only from what the player can see.
+pub fn mirror(enc: &mut Encounter, s: &Snapshot) {
+    enc.outcome = s.outcome();
+    enc.elapsed = s.elapsed;
+    enc.stats = Stats {
+        warnings: s.stats[0],
+        hunts: s.stats[1],
+        recoveries: s.stats[2],
+        downs: s.stats[3],
+        revives: s.stats[4],
+    };
+    enc.threat.presence = Presence::Hidden;
+    enc.threat.speed = 0.0;
+    enc.threat.state = match s.danger {
+        1 => ThreatState::Warning,
+        2 | 3 => ThreatState::Hunting,
+        4 => ThreatState::Counting,
+        _ => ThreatState::Dormant,
+    };
+    enc.threat.has_sight = matches!(s.danger, 1 | 2);
+    enc.threat.exposure = s.exposure;
+}
 
 #[derive(Resource, Default)]
 pub struct Network {
-    pub enabled: bool,
     pub endpoint: Option<Endpoint>,
     pub error: String,
     applied_run: u64,
     last_serial: u64,
-    roster: std::collections::BTreeMap<u64, Entity>,
 }
+
 impl Network {
-    pub fn snapshot(&self) -> Option<&protocol::Snapshot> {
+    pub fn snapshot(&self) -> Option<&Snapshot> {
         self.endpoint.as_ref().and_then(|e| e.snapshot.as_ref())
     }
     pub fn id(&self) -> Option<u64> {
         self.endpoint.as_ref().and_then(|e| e.id)
     }
-    pub fn carrying(&self) -> bool {
-        self.snapshot().is_some_and(|s| {
-            Some(match s.satchel {
-                Satchel::Carried(id) => id,
-                _ => 0,
-            }) == self.id()
-        })
+    /// This player's row in the latest snapshot.
+    pub fn me(&self) -> Option<&protocol::PlayerView> {
+        let id = self.id()?;
+        self.snapshot()?.player(id)
     }
-    pub fn caught(&self) -> bool {
-        self.snapshot()
-            .is_some_and(|s| s.players.iter().any(|p| Some(p.id) == self.id() && p.caught))
+    /// 0 active, 1 downed, 2 dead (active until the first snapshot).
+    pub fn status(&self) -> u8 {
+        status_of(self.snapshot(), self.id())
     }
+    pub fn carrying(&self) -> usize {
+        self.me().map_or(0, |p| p.carrying as usize)
+    }
+    /// The run is on: started and not over.
+    pub fn running(&self) -> bool {
+        self.snapshot().is_some_and(|s| s.started && !s.outcome().is_over())
+    }
+    /// On their feet and the run is on.
     pub fn active(&self) -> bool {
-        self.snapshot()
-            .is_some_and(|s| s.started && !protocol::objective(s.objective).is_over())
-            && !self.caught()
+        self.running() && self.status() == 0
+    }
+    pub fn is_solo(&self) -> bool {
+        self.endpoint.as_ref().is_some_and(|e| e.mode.is_solo())
+    }
+    pub fn is_shared(&self) -> bool {
+        self.endpoint.as_ref().is_some_and(|e| !e.mode.is_solo())
+    }
+    pub fn stunned(&self) -> bool {
+        self.snapshot().is_some_and(|s| s.me.stun > 0.0)
     }
 }
+
 #[derive(Message)]
 pub enum NetControl {
     Action(Action),
     Leave,
 }
+
 #[derive(Component)]
-struct RemotePlayer(u64);
-#[derive(Component)]
-struct RemoteBag(u64);
+pub(crate) struct RemotePlayer(u64);
 #[derive(Component)]
 struct NetBanner;
-#[derive(Resource)]
-struct AvatarAssets {
-    body: Handle<Mesh>,
-    head: Handle<Mesh>,
-    amber: Handle<StandardMaterial>,
-    blue: Handle<StandardMaterial>,
-}
 
 pub struct NetworkPlugin;
 impl Plugin for NetworkPlugin {
     fn build(&self, app: &mut App) {
         let launch = app.world().resource::<Launch>().clone();
-        let mut net = Network {
-            enabled: launch.network.is_some(),
-            ..default()
-        };
-        if let Some(mode) = launch.network {
-            match Endpoint::new(
-                mode,
-                &app.world().resource::<LayoutRes>().0,
-                &app.world().resource::<TuningRes>().0,
-            ) {
-                Ok(e) => net.endpoint = Some(e),
-                Err(e) => net.error = e,
-            }
+        let mut net = Network::default();
+        match Endpoint::new(
+            launch.network.clone(),
+            &app.world().resource::<LayoutRes>().0,
+            &app.world().resource::<TuningRes>().0,
+        ) {
+            Ok(e) => net.endpoint = Some(e),
+            Err(e) => net.error = e,
         }
-        app.insert_resource(net).add_message::<NetControl>();
-        if app.world().resource::<Network>().enabled {
-            app.add_systems(Startup, setup)
-                .add_systems(Update, net_keys.in_set(GameSet::Control))
-                .add_systems(Update, update.in_set(GameSet::Simulate))
-                .add_systems(Update, (avatars, banner).in_set(GameSet::Present));
-            if launch.net_smoke {
-                app.add_plugins(render_smoke::NetworkSmokePlugin);
-            }
+        app.insert_resource(net)
+            .add_message::<NetControl>()
+            .add_systems(Startup, setup)
+            .add_systems(Update, net_keys.in_set(GameSet::Control))
+            .add_systems(Update, update.in_set(GameSet::Simulate))
+            .add_systems(Update, (avatars, banner).in_set(GameSet::Present));
+        if launch.net_smoke {
+            app.add_plugins(render_smoke::NetworkSmokePlugin);
         }
     }
 }
-pub fn offline(launch: Res<Launch>) -> bool {
-    launch.network.is_none()
-}
-fn setup(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut mats: ResMut<Assets<StandardMaterial>>,
-    assets: Res<AssetServer>,
-    mut next: ResMut<NextState<Flow>>,
-) {
-    commands.insert_resource(AvatarAssets {
-        body: meshes.add(Capsule3d::new(0.25, 0.95)),
-        head: meshes.add(Sphere::new(0.19)),
-        amber: mats.add(Color::srgb(0.8, 0.43, 0.12)),
-        blue: mats.add(Color::srgb(0.15, 0.65, 0.82)),
-    });
+
+fn setup(mut commands: Commands, assets: Res<AssetServer>, launch: Res<Launch>, mut next: ResMut<NextState<Flow>>) {
+    if launch.network.is_solo() {
+        return; // the briefing screen leads into play
+    }
     commands.spawn((
         NetBanner,
         Text::new("Connecting…"),
@@ -139,37 +273,44 @@ fn setup(
     ));
     next.set(Flow::Playing);
 }
-fn net_keys(keys: Res<ButtonInput<KeyCode>>, mut controls: MessageWriter<NetControl>) {
-    if keys.just_pressed(KeyCode::Enter) {
+
+fn net_keys(keys: Res<ButtonInput<KeyCode>>, launch: Res<Launch>, mut controls: MessageWriter<NetControl>) {
+    if launch.smoke || launch.net_smoke || launch.photos {
+        return;
+    }
+    if keys.just_pressed(KeyCode::Enter) && launch.network.is_host() && !launch.network.is_solo() {
         controls.write(NetControl::Action(Action::Start));
     }
-    if keys.just_pressed(KeyCode::KeyG) {
-        controls.write(NetControl::Action(Action::Drop));
-    }
-    if keys.just_pressed(KeyCode::F6) || keys.just_pressed(KeyCode::KeyR) {
+    // R on the outcome screen is the app's (`app::pause_keys`).
+    if keys.just_pressed(KeyCode::F6) && launch.network.is_host() {
         controls.write(NetControl::Action(Action::Restart));
     }
-    if keys.just_pressed(KeyCode::F10) {
+    if keys.just_pressed(KeyCode::F10) && !launch.network.is_solo() {
         controls.write(NetControl::Leave);
     }
 }
+
 fn update(
-    time: Res<Time<Real>>,
+    time: Res<Time>,
+    real: Res<Time<Real>>,
     layout: Res<LayoutRes>,
     tuning: Res<TuningRes>,
     state: Res<State<Flow>>,
     mut net: ResMut<Network>,
     mut controls: MessageReader<NetControl>,
     intent: Res<CurrentIntent>,
+    light: Res<LightOn>,
     target: Res<CurrentTarget>,
     mut player: Single<(&mut Player, &mut Transform)>,
     mut truth: ResMut<Truth>,
     mut next: ResMut<NextState<Flow>>,
-    mut reset: MessageWriter<RestartRequest>,
+    mut reset: MessageWriter<RunReset>,
     mut events: MessageWriter<EncounterMsg>,
     mut whistles: MessageWriter<WhistleMsg>,
 ) {
-    let active = net.active() && *state.get() == Flow::Playing;
+    let playing = *state.get() == Flow::Playing;
+    let solo = net.is_solo();
+    let live = controls_live(net.snapshot(), net.id(), playing);
     let Network {
         endpoint,
         applied_run,
@@ -181,24 +322,8 @@ fn update(
         return;
     };
     let pose = player.0.pose;
-    endpoint.input(
-        if active {
-            intent.0.move_axis.to_array()
-        } else {
-            [0.0; 2]
-        },
-        pose.yaw,
-        pose.pitch,
-        active && intent.0.interact_held,
-    );
-    if active
-        && intent.0.interact_pressed
-        && target
-            .0
-            .is_some_and(|t| t.ready() && t.kind == crate::control::TargetKind::Satchel)
-    {
-        endpoint.command(Action::Take, &layout.0, &tuning.0);
-    }
+    let wire = Wire::new(&intent.0, live, &pose, light.0, target.0, &layout.0, &tuning.0);
+    wire.send(endpoint, &layout.0, &tuning.0);
     for command in controls.read() {
         match command {
             NetControl::Action(a) => endpoint.command(*a, &layout.0, &tuning.0),
@@ -209,13 +334,19 @@ fn update(
             }),
         }
     }
-    endpoint.update(time.delta_secs(), &layout.0, &tuning.0);
+    // A paused solo run stands still; shared worlds keep going.
+    let dt = if solo {
+        if playing { time.delta_secs() } else { 0.0 }
+    } else {
+        real.delta_secs()
+    };
+    endpoint.update(dt, &layout.0, &tuning.0);
     if endpoint.closed {
         if *applied_run != 0 {
             *applied_run = 0;
-            reset.write(RestartRequest);
+            reset.write(RunReset);
         }
-        truth.encounter = Encounter::new(&layout.0);
+        truth.encounter.outcome = Outcome::Running;
         next.set(Flow::Paused);
         return;
     }
@@ -226,9 +357,13 @@ fn update(
     if changed {
         *applied_run = s.run;
         *last_serial = 0;
-        reset.write(RestartRequest);
+        reset.write(RunReset);
         truth.encounter = Encounter::new(&layout.0);
-        next.set(Flow::Playing);
+        // A new run is played at once, restarted from the outcome screen or
+        // the menu alike; only solo's opening briefing (its lobby) waits.
+        if !(solo && *state.get() == Flow::Briefing) {
+            next.set(Flow::Playing);
+        }
         info!(
             "NET applied run {} local={:?} roster={}",
             s.run,
@@ -236,28 +371,16 @@ fn update(
             s.players.len()
         );
     }
+    mirror(&mut truth.encounter, s);
     let enc = &mut truth.encounter;
-    enc.objective = protocol::objective(s.objective);
-    enc.restitution = s.restitution;
-    enc.restituting = s.restituting;
-    enc.elapsed = s.elapsed;
-    enc.stats = Stats {
-        warnings: s.stats[0],
-        hunts: s.stats[1],
-        recoveries: s.stats[2],
-    };
-    enc.threat.presence = Presence::Hidden;
-    enc.threat.pos = Vec2::ZERO;
-    enc.threat.speed = 0.0;
-    enc.threat.state = match s.danger {
-        1 => ThreatState::Warning,
-        2 | 3 => ThreatState::Hunting,
-        _ => ThreatState::Dormant,
-    };
-    enc.threat.has_sight = matches!(s.danger, 1 | 2);
-    enc.threat.exposure = s.exposure;
     if let Some(visible) = s.threat {
-        enc.threat.pos = Vec2::from_array(visible.position);
+        let target_pos = Vec2::from_array(visible.position);
+        // The wire runs at 20 Hz; smooth what the eye sees.
+        enc.threat.pos = if changed || enc.threat.pos.distance(target_pos) > 6.0 {
+            target_pos
+        } else {
+            enc.threat.pos.lerp(target_pos, (real.delta_secs() * 14.0).min(1.0))
+        };
         enc.threat.facing = Vec2::from_array(visible.facing);
         enc.threat.speed = visible.speed;
         if s.danger == 0 {
@@ -271,21 +394,13 @@ fn update(
             }
         };
     }
-    if let Some(local) = s.players.iter().find(|p| Some(p.id) == endpoint.id) {
-        let position = Vec2::from_array(local.position);
-        let k = if changed {
-            1.0
-        } else {
-            (time.delta_secs() * 24.0).min(1.0)
-        };
-        player.0.pose.pos = player.0.pose.pos.lerp(position, k);
-        if changed {
-            player.0.pose.yaw = local.yaw;
-            player.0.pose.pitch = local.pitch;
-        }
-        *player.1 = crate::player::eye_transform(&player.0.pose, &tuning.0);
+    if let Some(local) = s.player(endpoint.id.unwrap_or(HOST)) {
+        // The body eases on the clock its session runs on: simulated time in
+        // solo (so a fixed-step smoke replays exactly), the wall clock shared.
+        follow_body(&mut player.0.pose, local, changed, dt, &tuning.0);
+        *player.1 = crate::player::eye_transform(&player.0.pose, &tuning.0, &layout.0);
     }
-    if enc.objective.is_over() {
+    if enc.outcome.is_over() {
         next.set(Flow::Outcome);
     }
     let run = s.run;
@@ -331,21 +446,28 @@ fn update(
         false
     });
 }
+
+/// Remote players, drawn from the snapshot: position, yaw, stance, torch and
+/// the bundle on their back.
 fn avatars(
     mut commands: Commands,
     time: Res<Time<Real>>,
-    mut net: ResMut<Network>,
-    assets: Res<AvatarAssets>,
-    satchel: Res<SatchelAsset>,
-    palette: Res<Palette>,
-    mut roots: Query<(&RemotePlayer, &mut Transform, &mut Visibility)>,
-    mut bags: Query<(&RemoteBag, &mut Visibility), Without<RemotePlayer>>,
+    net: Res<Network>,
+    kit: Res<crate::world::avatar::AvatarKit>,
+    layout: Res<LayoutRes>,
+    mut roster: Local<std::collections::BTreeMap<u64, Entity>>,
+    mut roots: Query<(&RemotePlayer, &mut Transform, &mut Visibility, &Children)>,
+    mut parts: Query<
+        (
+            &mut Visibility,
+            Has<crate::world::avatar::AvatarBag>,
+            Has<crate::world::avatar::AvatarTorch>,
+        ),
+        Without<RemotePlayer>,
+    >,
 ) {
-    let Network { endpoint, roster, .. } = &mut *net;
-    let local = endpoint.as_ref().and_then(|e| e.id);
-    let snapshot = endpoint.as_ref().and_then(|e| e.snapshot.as_ref());
-    let players = snapshot.map_or(&[][..], |s| s.players.as_slice());
-    let carried = snapshot.map(|s| s.satchel);
+    let local = net.id();
+    let players = net.snapshot().map_or(&[][..], |s| s.players.as_slice());
     roster.retain(|id, entity| {
         let keep = players.iter().any(|p| p.id == *id && Some(p.id) != local);
         if !keep {
@@ -353,68 +475,79 @@ fn avatars(
         }
         keep
     });
-    for p in players.iter().filter(|p| Some(p.id) != local) {
+    for (slot, p) in players.iter().enumerate().filter(|(_, p)| Some(p.id) != local) {
         roster.entry(p.id).or_insert_with(|| {
-            let material = if p.id == HOST { &assets.amber } else { &assets.blue };
-            commands
-                .spawn((
-                    RemotePlayer(p.id),
-                    Name::new(format!("remote player {}", p.id)),
-                    Mesh3d(assets.body.clone()),
-                    MeshMaterial3d(material.clone()),
-                    Transform::from_xyz(p.position[0], 0.85, p.position[1]),
-                    Visibility::Inherited,
-                ))
-                .with_children(|root| {
-                    root.spawn((
-                        Mesh3d(assets.head.clone()),
-                        MeshMaterial3d(material.clone()),
-                        Transform::from_xyz(0.0, 0.85, 0.0),
-                    ));
-                    root.spawn((
-                        RemoteBag(p.id),
-                        Mesh3d(satchel.sack.clone()),
-                        MeshMaterial3d(palette.burlap.clone()),
-                        Transform::from_xyz(0.4, -0.2, -0.2).with_scale(Vec3::splat(0.7)),
-                        Visibility::Hidden,
-                    ));
-                })
-                .id()
+            let at = Vec3::new(
+                p.position[0],
+                layout.0.surface_height(Vec2::from_array(p.position)),
+                p.position[1],
+            );
+            kit.spawn(
+                &mut commands,
+                slot,
+                format!("remote player {}", p.id),
+                RemotePlayer(p.id),
+                at,
+            )
         });
     }
-    for (id, mut transform, mut vis) in &mut roots {
-        if let Some(p) = players.iter().find(|p| p.id == id.0) {
-            let to = Vec3::new(p.position[0], 0.85, p.position[1]);
-            transform.translation = if transform.translation.distance(to) > 4.0 {
-                to
-            } else {
-                transform.translation.lerp(to, (time.delta_secs() * 18.0).min(1.0))
-            };
-            transform.rotation = transform
-                .rotation
-                .slerp(Quat::from_rotation_y(p.yaw), (time.delta_secs() * 18.0).min(1.0));
-            *vis = if p.caught {
-                Visibility::Hidden
-            } else {
-                Visibility::Inherited
-            };
+    for (id, mut transform, mut vis, children) in &mut roots {
+        let Some(p) = players.iter().find(|p| p.id == id.0) else {
+            continue;
+        };
+        let pos = Vec2::from_array(p.position);
+        let ground = layout.0.surface_height(pos);
+        // Standing, crouched, or down on the ground.
+        let (lift, squash, roll) = match p.status {
+            0 if p.crouch => (0.0, 0.72, 0.0),
+            0 => (0.0, 1.0, if p.sprint { 0.16 } else { 0.0 }),
+            _ => (0.16, 1.0, 1.35),
+        };
+        let to = Vec3::new(pos.x, ground + lift, pos.y);
+        let k = (time.delta_secs() * 18.0).min(1.0);
+        transform.translation = if transform.translation.distance(to) > 4.0 {
+            to
+        } else {
+            transform.translation.lerp(to, k)
+        };
+        let want = Quat::from_rotation_y(p.yaw) * Quat::from_rotation_x(-roll);
+        transform.rotation = transform.rotation.slerp(want, k);
+        transform.scale = transform.scale.lerp(Vec3::new(1.0, squash, 1.0), k);
+        *vis = if p.status == 2 {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        };
+        for &child in children {
+            if let Ok((mut child_vis, bag, torch)) = parts.get_mut(child) {
+                if bag {
+                    *child_vis = if p.carrying > 0 {
+                        Visibility::Inherited
+                    } else {
+                        Visibility::Hidden
+                    };
+                } else if torch {
+                    *child_vis = if p.light && p.status == 0 {
+                        Visibility::Inherited
+                    } else {
+                        Visibility::Hidden
+                    };
+                }
+            }
         }
     }
-    for (bag, mut vis) in &mut bags {
-        *vis = if carried == Some(Satchel::Carried(bag.0)) {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-    }
 }
+
 fn banner(
     net: Res<Network>,
     flow: Res<State<Flow>>,
-    banner: Single<(&mut Text, &mut Node), With<NetBanner>>,
+    banner: Option<Single<(&mut Text, &mut Node), With<NetBanner>>>,
     mut buffer: Local<String>,
 ) {
     use std::fmt::Write;
+    let Some(banner) = banner else {
+        return;
+    };
     let (mut text, mut node) = banner.into_inner();
     // Keep session status visible without covering pause/outcome menu buttons.
     let menu = *flow.get() != Flow::Playing;
@@ -434,28 +567,26 @@ fn banner(
         }
         return;
     };
-    let role = if e.mode.is_host() {
-        "HOST P1 (amber)"
-    } else {
-        "CLIENT (blue)"
-    };
+    let role = if e.mode.is_host() { "HOST" } else { "CLIENT" };
     if e.closed {
         buffer.push_str(&e.status);
     } else if let Some(s) = &e.snapshot {
         let state = if !s.started {
-            "Lobby: host presses Enter when both players are connected"
-        } else if s.objective == 3 {
-            "SHARED VICTORY: the bones are home and a survivor reached the road."
-        } else if s.objective == 4 {
-            "SHARED FAILURE: everyone remaining was caught. The host can restart."
-        } else if net.caught() {
-            "CAUGHT: inactive until host restarts. Your teammate can recover the satchel."
+            "Lobby: the host presses Enter when everyone is connected"
+        } else if s.outcome == 1 {
+            "SHARED VICTORY: the truck is away with everyone still standing."
+        } else if s.outcome == 2 {
+            "SHARED FAILURE: nobody is left on their feet. The host can restart."
+        } else if net.status() == 1 {
+            "DOWN: a teammate can revive you (hold E beside you)."
+        } else if net.status() == 2 {
+            "You bled out. Watch over your teammates."
         } else {
-            "G: put satchel down | Esc: local menu (world continues)"
+            "V: mark | Q: pepper | G: put a bundle down | Esc: local menu (world continues)"
         };
         let _ = write!(
             &mut *buffer,
-            "{role} | player {} | {}/2 connected | run {}\n{state}\nF6/R: host restart | F10: {}",
+            "{role} | player {} | {} connected | run {}\n{state}\nF6: host restart | F10: {}",
             e.id.unwrap_or(0),
             s.players.len(),
             s.run,
