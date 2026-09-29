@@ -1,0 +1,66 @@
+EL SILBÓN — THE RETURN  (test build)
+====================================
+
+A co-op folk-horror night on the Venezuelan llanos, solo or with up to four
+friends. Lay his bones to rest, restore the power, start the truck — and
+remember: if you hear him close, he is far away; if you hear him far away,
+he is already here.
+
+
+RUNNING IT
+----------
+Windows:  unzip the whole folder anywhere and run el_silbon.exe. Keep the
+          "assets" folder next to it. The build is not signed, so Windows
+          may say "Windows protected your PC": click "More info", then
+          "Run anyway". A console window opens beside the game; it shows
+          the game's log (handy if something goes wrong — leave it open).
+Linux:    unzip, then run ./el_silbon (chmod +x el_silbon if needed).
+
+Settings, the journal and who you play as are saved in
+%APPDATA%\el-silbon (Windows) or ~/.local/share/el-silbon (Linux).
+
+
+PLAYING WITH FRIENDS
+--------------------
+Everyone must run this same build.
+
+1. Everyone: Main menu > "Play with friends" > "Who you are" — pick a
+   survivor (El Llanero, La Coplera, El Encargado, El Muchacho).
+2. The host: "Host a night". The address shown (for example
+   192.168.1.20:5000) is what the others type. The first time, Windows
+   Firewall asks about el_silbon.exe: allow it on PRIVATE networks.
+3. The others: "Join a friend", type the host's address, "Join".
+4. In the lobby, F7 switches to a free survivor. The host presses ENTER
+   when everyone is in.
+
+Same house / same Wi-Fi: use the host's LAN address (192.168.x.x or
+10.x.x.x).
+
+Friends far away: install Tailscale (https://tailscale.com, free) on every
+machine and join the same tailnet (the host invites the others). The host
+then types their Tailscale address (100.x.x.x, shown in the Tailscale app)
+as "Your address", with :5000, and the others join that address. Public
+internet addresses and port forwarding are not supported.
+
+
+CONTROLS
+--------
+Mouse                look
+W A S D              move        Shift  run        Ctrl / C  crouch
+E / left click       use (hold at the altar, pump, ignition, beacon,
+                     a downed friend, or Tureco)
+Space                skill check (press as the needle crosses the zone)
+F                    torch on/off
+G                    put a bundle down          Q   scatter ají
+V / middle click     mark a spot for the party  M   map
+X                    aboard the ready truck: drive off now
+Esc                  menu (with friends the night goes on)
+F12                  screenshot
+Host:  Enter start · F6 restart · F10 end the session
+Guest: F10 leave
+
+
+THIS BUILD
+----------
+A private test build. The Silbón's whistle is a third-party recording that
+is not cleared for public release: please do not redistribute this build.

@@ -1,0 +1,26 @@
+# Builds the Windows executable on a native Windows runner (MSVC). Run it
+# by hand (Actions > Windows build > Run workflow, or
+# `gh workflow run windows.yml`); the release zip is assembled from its
+# artifact and the repository's assets (see docs/RELEASING.md).
+name: Windows build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      # The models and audio live in Git LFS and are not needed to compile.
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: el_silbon-windows-x86_64
+          path: target/release/el_silbon.exe
+          if-no-files-found: error

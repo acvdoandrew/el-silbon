@@ -31,16 +31,26 @@ impl Mode {
 
 pub fn local_address(address: SocketAddr) -> Result<SocketAddr, String> {
     let allowed = match address.ip() {
-        IpAddr::V4(ip) => ip.is_loopback() || ip.is_private(),
+        // Loopback, a private LAN, or a private overlay network (Tailscale
+        // and other CGNAT-range VPNs, 100.64.0.0/10) for friends far away.
+        IpAddr::V4(ip) => ip.is_loopback() || ip.is_private() || shared_space(ip),
         IpAddr::V6(ip) => ip.is_loopback() || ip.is_unique_local(),
     };
     if !allowed || address.port() == 0 {
         return Err(
-            "Use an explicit loopback or private LAN address with a nonzero port; public/wildcard hosting is disabled."
+            "Use an explicit loopback, private LAN or VPN (100.64.x.x) address with a nonzero port; \
+                    public/wildcard hosting is disabled."
                 .into(),
         );
     }
     Ok(address)
+}
+
+/// The shared address space (RFC 6598), where private overlay networks
+/// such as Tailscale give each machine its address.
+fn shared_space(ip: std::net::Ipv4Addr) -> bool {
+    let [a, b, _, _] = ip.octets();
+    a == 100 && (64..128).contains(&b)
 }
 
 struct HostSocket {
@@ -595,6 +605,28 @@ impl Drop for Endpoint {
 mod tests {
     use super::*;
     use crate::tuning::Night;
+
+    #[test]
+    fn only_loopback_lan_and_private_vpn_addresses_may_host() {
+        for ok in [
+            "127.0.0.1:5000",
+            "192.168.1.20:5000",
+            "10.0.0.4:5000",
+            "172.20.1.1:5000",
+            "100.101.7.9:5000",
+        ] {
+            assert!(local_address(ok.parse().unwrap()).is_ok(), "{ok}");
+        }
+        for bad in [
+            "0.0.0.0:5000",
+            "8.8.8.8:5000",
+            "100.20.0.1:5000",
+            "100.128.0.1:5000",
+            "192.168.1.20:0",
+        ] {
+            assert!(local_address(bad.parse().unwrap()).is_err(), "{bad}");
+        }
+    }
 
     /// Real loopback UDP: a joiner knocking with another night is told the
     /// host's, and admitted once it knocks again with it.

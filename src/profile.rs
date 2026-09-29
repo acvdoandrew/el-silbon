@@ -79,11 +79,13 @@ impl Profile {
     }
 }
 
-/// Where the profile lives on this machine.
+/// Where the profile lives on this machine (`%APPDATA%\el-silbon` on
+/// Windows).
 pub fn path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("APPDATA").filter(|_| cfg!(windows)).map(PathBuf::from))
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")))?;
     Some(base.join("el-silbon").join("profile.json"))
 }

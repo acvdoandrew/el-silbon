@@ -138,7 +138,8 @@ USAGE: el_silbon [--seed N] [--size WxH] [--shots DIR] [--smoke]
   --photos      DEBUG: fly a camera to authored viewpoints, save screenshots, exit
   --menu-shots  DEBUG: show the title screen and every menu page, save screenshots, exit
   --trailer     DEBUG: render the teaser's shots frame by frame (1920x1080, 30 fps), exit
-  --host ADDR   host and play, e.g. 127.0.0.1:5000 (loopback/private LAN only)
+  --host ADDR   host and play, e.g. 192.168.1.20:5000 (loopback, private LAN or a
+                private VPN such as Tailscale, 100.64.x.x)
   --join ADDR   join a host before the run starts
   --survivor S  who you are to the others: llanero, coplera, encargado or muchacho
                 (default: the choice saved from the menu)

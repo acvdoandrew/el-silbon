@@ -186,7 +186,9 @@ Players join in the lobby before the first start; the host presses **Enter**
 to start. Restarts keep the connected players and do not reopen admission.
 A player who leaves drops what they carry where they stood; the rest can
 continue. For a trusted LAN use the host's explicit private address in every
-command. Wildcard and public addresses are rejected; there is no discovery,
+command. Friends elsewhere can join over a private VPN such as Tailscale
+(its 100.64.x.x addresses are accepted; the host gives its Tailscale
+address). Wildcard and public addresses are rejected; there is no discovery,
 relay, port forwarding, Steam login or internet hosting. Every peer must run
 matching gameplay sources, `Cargo.lock` and `--seed`; mismatches are refused
 before admission.

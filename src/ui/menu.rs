@@ -316,8 +316,9 @@ fn rows(menu: &Menu, settings: &Settings, ctx: &Context, profile: &ProfileRes) -
         ),
         Page::Multiplayer => (
             "With friends".into(),
-            "Up to four players on the same local network. One hosts the night; the others join with the \
-             host's address and receive the host's night and difficulty.\nChoose who the others will see. \
+            "Up to four players on the same local network, or far apart on a private VPN such as Tailscale. \
+             One hosts the night; the others join with the host's address and receive the host's night and \
+             difficulty.\nChoose who the others will see. \
              If a friend is already them, you are someone else (F7 in the lobby changes)."
                 .into(),
             vec![
