@@ -507,13 +507,43 @@ pub fn shots(layout: &Layout) -> Vec<Shot> {
     s.still = 0.6;
     out.push(s);
 
+    // 16. The party: all four survivors walk out of the dark toward us under
+    // the gate's lamps, torches on, as the camera backs away before them.
+    let ahead = Vec2::new(-layout.spawn_yaw.sin(), -layout.spawn_yaw.cos());
+    let right = Vec2::new(-ahead.y, ahead.x);
+    let from_spawn = |a: f32, r: f32, up: f32| {
+        let p = layout.spawn + ahead * a + right * r;
+        at(p.x, p.y, up)
+    };
+    let mut s = Shot::new(
+        "16_party",
+        3.5,
+        vec![
+            key(0.0, from_spawn(1.6, 0.3, 1.15), from_spawn(8.0, 0.0, 1.3)),
+            key(3.5, from_spawn(0.2, -0.2, 1.1), from_spawn(8.0, 0.0, 1.35)),
+        ],
+    );
+    s.fov = 45.0;
+    s.handheld = 0.3;
+    s.key_light = Some((from_spawn(4.0, 1.5, 3.2), 26_000.0));
+    s.still = 0.8;
+    s.mates = [(-1.2, 8.5), (-0.4, 9.4), (0.45, 8.9), (1.25, 9.8)]
+        .iter()
+        .map(|&(r, a)| Mate {
+            steady: true,
+            ..Mate::walk(
+                layout.spawn + ahead * a + right * r,
+                layout.spawn + ahead * (a - 4.5) + right * r * 0.9,
+            )
+        })
+        .collect();
+    out.push(s);
+
     // Not in the cut, for review (TRAILER_ONLY=90): the four survivors going
     // past on the road outside the gate, side on — one sprinting, one
     // creeping crouched, one carrying bones, one walking — then one down,
     // crawling, as another crouches to them.
     // In front of the spawn, where the gate lamps light the road.
-    let ahead = Vec2::new(-layout.spawn_yaw.sin(), -layout.spawn_yaw.cos());
-    let right = Vec2::new(-ahead.y, ahead.x);
     let lane = layout.spawn + ahead * 6.0;
     let cam = |side: f32, up: f32| {
         let p = layout.spawn + right * side;

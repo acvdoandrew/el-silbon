@@ -1,6 +1,17 @@
 # Progress
 
-## Current handoff — 2026-09-29 (models v2 and their animation)
+## Current handoff — 2026-09-29 (the trailer, redone)
+
+The teaser was re-rendered with the v2 models (`--trailer`, 2094 frames)
+and re-cut with the same narration, score and sound: 89.4 s, -13.5 LUFS,
+peak -1.3 dB, the catch's 0.45 s silence still silent. New shot
+`16_party` (after the "UP TO FOUR FRIENDS" card): all four survivors walk
+out of the dark toward the camera under the gate lamps, torches on.
+Output: `~/Videos/el_silbon_trailer.mp4` (and a 720p preview); the first
+cut is kept as `el_silbon_trailer_v1.mp4`. Unverified: the user has not
+watched it yet.
+
+## Earlier handoff — 2026-09-29 (models v2 and their animation)
 
 Uncommitted, on top of the survivors pass below. The user asked for every
 model to look like its concept sheet and to be animated well, working in

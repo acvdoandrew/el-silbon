@@ -55,6 +55,7 @@ SEGMENTS = [
     ("card_road", "card", 1.6, {"lines": [(spaced("ONE ROAD OUT"), SERIF, 50, "0xEDE6D8", 0)]}),
     ("truck", "shot", 4.0, {"dir": "08_truck"}),
     ("card_friends", "card", 1.6, {"lines": [(spaced("UP TO FOUR FRIENDS"), SERIF, 50, "0xEDE6D8", 0)]}),
+    ("party", "shot", 3.5, {"dir": "16_party"}),
     ("friends", "shot", 5.0, {"dir": "09_friends"}),
     ("card_lies", "card", 2.0, {"lines": [(spaced("THE WHISTLE LIES"), SERIF, 56, "0xB51A1A", 0)]}),
     ("hat", "shot", 3.0, {"dir": "11_hat"}),
