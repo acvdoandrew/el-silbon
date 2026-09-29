@@ -915,6 +915,82 @@ fn the_truck_waits_for_bones_and_power_then_its_engine_is_the_finale() {
     assert_eq!(r.s.snapshot(1, &r.l, &r.t).outcome, r.s.snapshot(2, &r.l, &r.t).outcome);
 }
 
+/// The engine warm and ready, the threat kept off.
+fn ready_truck(r: &mut Rig) {
+    r.calm = true;
+    let progress = &mut r.s.encounter.progress;
+    for x in progress.relics.iter_mut() {
+        *x = Relic::Delivered;
+    }
+    progress.power = 1.0;
+    progress.key = true;
+    progress.truck = 1.0;
+    progress.warm = r.t.truck_warmup;
+}
+
+#[test]
+fn whoever_is_aboard_the_ready_truck_can_drive_off_without_the_others() {
+    // Alone there is nobody to leave: the ordinary boarding rule stands.
+    let mut solo = Rig::new(1);
+    ready_truck(&mut solo);
+    let zone = solo.l.district.truck;
+    solo.put(1, zone.zone_center + Vec2::new(zone.zone_radius + 5.0, 0.0));
+    assert!(solo.act(1, Action::DriveOff).is_err());
+
+    let mut r = Rig::new(3);
+    let zone = r.l.district.truck;
+    let outside = zone.zone_center + Vec2::new(zone.zone_radius + 5.0, 0.0);
+    r.put(1, zone.zone_center);
+    r.put(2, zone.zone_center + Vec2::new(0.8, 0.0));
+    r.put(3, outside);
+    assert!(r.act(1, Action::DriveOff).is_err(), "not before the truck runs");
+    ready_truck(&mut r);
+    r.put(1, outside);
+    assert!(r.act(1, Action::DriveOff).is_err(), "only from aboard");
+    r.put(1, zone.zone_center);
+    r.s.players.get_mut(&2).unwrap().status = Status::Downed { bleed: 30.0 };
+    assert!(r.act(2, Action::DriveOff).is_err(), "not by the fallen");
+    assert_eq!(r.s.encounter.outcome, Outcome::Running);
+    r.act(1, Action::DriveOff).expect("aboard and ready");
+    assert_eq!(r.s.encounter.outcome, Outcome::Won);
+    // The fallen one in the zone and the one outside are both left.
+    let snap = r.s.snapshot(3, &r.l, &r.t);
+    assert_eq!(snap.left_behind, vec![2, 3]);
+    r.idle(0.05);
+    assert!(r.events(1).contains(&Event::Escaped));
+    assert!(r.act(1, Action::DriveOff).is_err(), "the night is over");
+    // A new night leaves nobody behind.
+    r.act(HOST, Action::Restart).unwrap();
+    assert!(r.s.snapshot(3, &r.l, &r.t).left_behind.is_empty());
+    assert_eq!(r.s.encounter.outcome, Outcome::Running);
+}
+
+#[test]
+fn the_night_remembers_what_each_player_did_and_tells_it_once_it_is_over() {
+    let mut r = Rig::new(2);
+    r.calm = true;
+    for _ in 0..2 {
+        r.s.encounter.progress.relics[1] = Relic::Carried(2);
+        r.act(2, Action::Drop).expect("carrying");
+    }
+    assert!(
+        r.s.snapshot(2, &r.l, &r.t).deeds.is_empty(),
+        "nothing is told mid-night"
+    );
+    ready_truck(&mut r);
+    let zone = r.l.district.truck;
+    r.put(1, zone.zone_center);
+    r.put(2, zone.zone_center + Vec2::new(zone.zone_radius + 5.0, 0.0));
+    r.act(1, Action::DriveOff).expect("aboard and ready");
+    let snap = r.s.snapshot(2, &r.l, &r.t);
+    let deeds = |id: u64| snap.deeds.iter().find(|(p, _)| *p == id).map(|(_, d)| *d).unwrap();
+    assert_eq!(deeds(2).drops, 2);
+    assert_eq!(deeds(1).drops, 0);
+    // A new night starts with a clean slate.
+    r.act(HOST, Action::Restart).unwrap();
+    assert!(r.s.players.values().all(|p| p.deeds == Default::default()));
+}
+
 /// A stalking threat 14 m away with sight but a huge warning cooldown.
 fn lurker(r: &mut Rig, player: Vec2) {
     let node = Vec2::new(35.0, 2.0);

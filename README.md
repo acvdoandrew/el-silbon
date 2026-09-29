@@ -123,6 +123,14 @@ Surviving him:
   you off, and only ají in his path (or Tureco's bark) makes him drop you
   before you are gone. Once out, a teammate can help you up. Solo, being
   caught ends the run.
+- With friends, whoever is aboard the ready truck can **drive off without
+  the others** (X); those left behind get their own ending. At the end of
+  every night the outcome card hands out **awards** (screamed the most,
+  butterfingers, first to fall, guardian angel, rode in his sack…).
+- When he catches you there is a breath of silence first; he comes from
+  one of three ways, sometimes from the edge of your sight. Badly
+  frightened, you may hear footsteps behind you that are nobody's, and in
+  company see a friend's mark where nobody marked.
 - Twenty pages lie around the district (letters, ledgers, a copla, the
   parish register, a telegram, the radio on the shelf…): read them all
   over your nights to piece the tale together.
@@ -142,6 +150,7 @@ Surviving him:
 | F | flashlight on/off |
 | G | put a bundle down |
 | Q | scatter ají |
+| X | with friends, aboard the ready truck: drive off now, leaving whoever is not aboard |
 | V or middle click | mark a spot for the party |
 | M | map |
 | Esc | pause (solo) / local menu (shared); releases the cursor |
@@ -256,6 +265,7 @@ debug features.
   state (camera, powered lamps, photo-only teammates, the downed view) is a
   presentation mirror, written on each image and in the manifest; it is
   never gameplay proof. Only the `00_overview*` frames widen the fog range.
+  `PHOTOS_ONLY=lunge` (any part of a frame name) shoots just those frames.
 - **`--menu-shots`** opens on the title screen, shows it at four landmark
   stops and then every menu page, begins a solo night (briefing, play,
   pause, pause settings) and leaves it for the title again, saving one

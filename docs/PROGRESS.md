@@ -1,5 +1,157 @@
 # Progress
 
+## Current handoff — 2026-09-29 (the catch, rebuilt)
+
+Uncommitted, with the quick wins below (all on `c154ec4`). The user found
+being caught underwhelming and buggy ("as if el silbon is inside the
+ground") and asked for it fixed and made very scary.
+
+### Why it looked buried
+
+The lunge placed him relative to the camera: root = eye − 2.75 m. Caught,
+the eye drops to 0.34 m, so his root stood about 2.4 m underground with
+only the hat and face above the grass (visible in the old frame 53).
+
+### The catch now (`silbon::lunge_frame`, pure; `omen::Catch`)
+
+Frozen at the moment of the catch (where the eye stood and looked, and one
+of three ways: ahead, left or right, which hand leads), so the view and he
+never chase each other. One pure function gives his root, bend and joints,
+the caught eye and what it looks at, the torch, the light on his face, the
+black and the shake; the model, the camera, the torch, the face light and
+the veil all read it.
+
+1. **Silence** (0.45 s): every sound stops (except the catch's own), the
+   world dims, the torch gutters out.
+2. **His whistle right in your ear** (`whistle_ear.wav`, 0.62 s), in the
+   dark: the one time it is loud because he is close (it cannot mislead
+   now; presentation only, a Sting on your own status, never a cue).
+3. **Strobe**: the torch bursts back four times, each flash showing him
+   closer (5 m, 3 m, 1.7 m, on you), the view flaring and punching in,
+   while you are knocked onto your back.
+4. **Over you**: standing on the real ground, crouched and bent nearly flat
+   over you, his face lit, twisted upright to stare straight into your
+   view, head snapping side to side, claws closing.
+5. **Black** at 1.75 s: the bones rattle, the ears ring (`ringing.wav`),
+   the world murmurs back; the view is handed back under the black.
+
+The HUD is hidden for the whole catch; a solo run's outcome waits for it to
+end (`fright.lunge.is_none()`, not a copied constant). The old
+standing-camera poses are gone; photo frames 53, 54, 58 and 59 now hold
+the catch at four instants (`PHOTOS_ONLY=lunge`). The smoke route's
+`08_caught` is retimed to land while he is over you, and it restarts only
+after the black lifts.
+
+### Verified
+
+- New pure test: over the whole catch, on uneven ground, from every side,
+  his feet are on the ground, his hips never in the earth, the eye above
+  it, and when shown his face is 0.3–6 m away, turned to the eye and in
+  the middle of the view.
+- Gate green (62 unit + 7 district + 40 session tests); photos of the four
+  instants reviewed (the user approved the stare as it is).
+- Rendered `--smoke` (release, user-approved): `SMOKE PASS` (589.5 s
+  simulated, two restarts, census steady: the veil is spawned once).
+  `08_caught` is a real catch: the view on its back, he stands on the
+  ground bent over it, his eyes lit under the brim, claws out, no HUD.
+
+### Unverified (user-led)
+
+- The whole thing in motion and with sound (`--play` and get caught), and
+  the shared case (hauled into the sack: the catch keeps the view steady
+  while the body is carried off underneath, until the black).
+
+## Current handoff — 2026-09-29 (quick wins: scares and co-op)
+
+Uncommitted, on top of `c154ec4` (whistle, whistle lab, placed sound). The
+user asked for the roadmap v2 quick wins (below) while they decide A8, A9,
+B10 and B11.
+
+### What changed
+
+- **A2 Better lunges** (presentation): being caught now starts with 0.4 s
+  of total silence (every sink, loops included, muted at once; the
+  ordinary downed sound skipped for the one caught), then he comes with
+  the sting. Three poses (arms wide, the photographed one; rising from
+  below with a claw at your eyes; looming over you, head cocked) and,
+  sometimes, from the edge of your sight with the head snapping toward
+  him. A camera recoil and shake (laid on in `head_bob`'s own
+  write-and-restore), a field-of-view punch-in, a white flash and a black
+  blink (`view_settings`, never in photos). Pose and side come from the
+  omen counter, never from where he is. The outcome waits for the gap
+  too. Photos gain `58_caught_lunge_from_below` and `59_caught_lunge_looming`.
+- **A3 Footsteps that are nobody's** (director → session event → omen,
+  placed): at high fear, 5–7 steps from 9–12 m behind you, walking toward
+  where you stood, on the ground's real surface; turn to face them and
+  there is nothing.
+- **A4 False marks** (director, in company only): at high fear, a mark in
+  a living teammate's colour where nobody marked, with its tick at the
+  same loudness a real one has. Local only: never in the snapshot.
+- **B3 The truck leaves** (`Action::DriveOff`, key X): anyone aboard the
+  ready truck can go; whoever is not aboard (down, in his sack, or simply
+  elsewhere) is left behind (`Snapshot::left_behind`). Refused alone,
+  before the truck is ready, from outside the zone, while down, and after
+  the night is over; a restart clears it. The left behind get their own
+  ending ("They left without you.") and count as caught in the tally; the
+  ones who left get a mark. The route script never presses X.
+- **B1 Night awards** (`awards.rs`, pure): the session counts each
+  player's deeds (sustos, drops, bundles laid, downs, revives, peppers,
+  stampedes, warnings, times in the sack, first fall) and sends them once
+  the night is over; the outcome card lists up to two awards each (left
+  behind, rode in his sack, first to fall, screamed the most,
+  butterfingers, his favourite, guardian angel, bone bearer, ají in every
+  pocket, started a stampede, Tureco's friend, untouched). Floors mean
+  nothing is given for nothing; comparing awards need company; ties go to
+  the earliest in the party.
+- Also fixed on the way: an event raised by an action after the night is
+  over was never sent (the step returns early); `drive_off` flushes it.
+
+### Verified
+
+- Gate green: fmt, clippy `-D warnings`, 61 unit (new: four award rules;
+  footsteps and false marks need fear, false marks need company, omens
+  still never repeat back to back) + 7 district + 40 session tests (new:
+  who may drive off and who is left; deeds told only at the end, cleared
+  by a restart).
+- Sweep (`the_routes_hold`): solo 150/150, shared 149/150 (unchanged; the
+  same seed 125).
+- Headless UDP pair (the protocol gained `DriveOff`, `left_behind`,
+  `deeds` and two omen codes): first run **failed** (the host, evading
+  on the way to bundle 3 at 156 s with fear 0.97, went down before the
+  route meant it to; the client then failed because the host left); the
+  rerun passed on both sides. Nothing in this batch changes the rules the
+  route plays against (deeds only count, nobody presses X, omens are
+  presentation) and the deterministic shared sweep is unchanged, so this
+  reads as the real-time pair's timing variance, but it is one failure in
+  two runs: rerun it before relying on it.
+
+- Rendered `--photos` (release, user-approved): 54 frames, exit 0. The two
+  new lunge poses were wrong at first (on this rig a negative tilt leans
+  toward the viewer, and the face only shows when the head tips back far
+  enough to lift the brim); fixed by placing each pose's head from the rig
+  (from below: 0.35 m under the eye, 0.9 m out; looming: 0.3 m above,
+  1.4 m out) and re-shot with `PHOTOS_ONLY=lunge` (new debug filter):
+  all four lunge frames show his lit face under the brim.
+- Rendered `--smoke` (release, user-approved): first run **failed** the
+  restart census (UI nodes 121 → 131): a closed menu kept its last page's
+  rows (the outcome's) until it reopened, since the menu work
+  (`8fa6fd7`, never smoke-run). Fixed (closing the menu despawns its
+  rows); rerun `SMOKE PASS` (586.4 s simulated, two restarts, census
+  steady). Reviewed: `08_caught` is a real catch with the new lunge
+  (red, his lit face at arm's length); `10_escaped` shows the outcome card
+  with tonight's awards ("His favourite", "Started a stampede").
+- Fixed after that review: a whistle caption from play overlapped the
+  outcome menu's last row; hints and captions now show only during play
+  (not re-smoked: a two-line visibility change).
+
+### Unverified (user-led, or needs a rendered run)
+
+- The lunge's silence, side approach, kick, punch and flash in motion
+  (stills cannot show them).
+- The phantom steps and false marks in play (they need high fear, and
+  the false mark needs a friend).
+- Driving off and the awards on the outcome card in a real shared night.
+
 ## Current handoff — 2026-09-29 (placed sound; scare and co-op proposal)
 
 Uncommitted, on top of the uncommitted whistle work below (both on
@@ -165,7 +317,8 @@ Cost: S small, M medium, L large. Layer and any constraint in brackets.
 ### Suggested order
 
 1. Quick wins: A2 better lunges, A3 phantom footsteps, A4 false marks,
-   B1 night awards, B3 the truck leaves.
+   B1 night awards, B3 the truck leaves. **Built** (see the quick-wins
+   handoff at the top).
 2. Then: A1 the scare budget, A5 the house, B2 shouts, B4 ánimas.
 3. Then: A6 hold your breath, B5 the two-person carry, B8 twists, B9
    unlocks.

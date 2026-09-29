@@ -1136,6 +1136,7 @@ pub fn wards(
 pub fn pings(
     time: Res<Time>,
     net: Res<Network>,
+    fright: Res<super::omen::Fright>,
     camera: Single<&Transform, (With<Player>, Without<PingMarker>)>,
     mut views: Query<(&PingMarker, &mut Transform, &mut Visibility)>,
 ) {
@@ -1147,10 +1148,14 @@ pub fn pings(
     };
     // One marker per player slot, so colours stay stable.
     for (view, mut tf, mut vis) in &mut views {
-        let ping = list.iter().find(|p| slot_of(p.by) == view.0);
+        // A teammate's real mark, or one that fear put in their colour.
+        let ping = list
+            .iter()
+            .find(|p| slot_of(p.by) == view.0)
+            .map(|p| Vec3::from_array(p.pos))
+            .or(fright.false_mark.filter(|m| m.slot == view.0).map(|m| m.at));
         match ping {
-            Some(p) => {
-                let at = Vec3::from_array(p.pos);
+            Some(at) => {
                 let dist = at.distance(camera.translation);
                 let bob = (time.elapsed_secs() * 2.4 + view.0 as f32).sin() * 0.08;
                 tf.translation = at + Vec3::Y * (0.9 + bob);

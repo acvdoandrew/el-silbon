@@ -55,6 +55,9 @@ pub enum Action {
     },
     Start,
     Restart,
+    /// Drive off in the ready truck now, with whoever is aboard; everyone
+    /// else is left behind.
+    DriveOff,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -249,6 +252,12 @@ pub struct Snapshot {
     pub pings: Vec<PingView>,
     #[serde(default)]
     pub dog: DogView,
+    /// Who the truck left behind, once someone drove off without them.
+    #[serde(default)]
+    pub left_behind: Vec<PlayerId>,
+    /// Each player's deeds, sent once the night is over.
+    #[serde(default)]
+    pub deeds: Vec<(PlayerId, crate::awards::Deeds)>,
 }
 
 impl Snapshot {

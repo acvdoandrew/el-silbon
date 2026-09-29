@@ -67,7 +67,7 @@ pub fn controls_live(snapshot: Option<&Snapshot>, me: Option<PlayerId>, playing:
 /// scripted mark) follow them. Run and sequence are stamped by the sender.
 pub struct Wire {
     pub input: Input,
-    commands: [Option<Action>; 7],
+    commands: [Option<Action>; 8],
 }
 
 impl Wire {
@@ -93,7 +93,7 @@ impl Wire {
         if !live {
             return Self {
                 input,
-                commands: [None; 7],
+                commands: [None; 8],
             };
         }
         let pickup = intent.interact_pressed
@@ -119,6 +119,7 @@ impl Wire {
                 intent.skill.map(|(id, needle)| Action::Skill { id, needle }),
                 intent.code.map(|code| Action::TryCode { code }),
                 intent.name.map(|variant| Action::Name { variant }),
+                intent.drive_off.then_some(Action::DriveOff),
             ],
         }
     }
@@ -407,7 +408,7 @@ fn net_keys(keys: Res<ButtonInput<KeyCode>>, launch: Res<Launch>, mut controls: 
 }
 
 fn update(
-    (time, real): (Res<Time>, Res<Time<Real>>),
+    (time, real, fright): (Res<Time>, Res<Time<Real>>, Res<crate::world::omen::Fright>),
     mut outcome_wait: Local<f32>,
     layout: Res<LayoutRes>,
     tuning: Res<TuningRes>,
@@ -527,12 +528,10 @@ fn update(
     if enc.outcome.is_over() {
         *outcome_wait += real.delta_secs();
         let caught = status_of(Some(s), endpoint.id) != 0;
-        let hold = if caught && enc.outcome == crate::sim::Outcome::Failed {
-            crate::world::omen::LUNGE + 0.2
-        } else {
-            0.0
-        };
-        if *outcome_wait >= hold {
+        // Caught at the end: the catch plays out first (it starts a moment
+        // after the status arrives, so give it that moment to begin).
+        let hold = caught && enc.outcome == crate::sim::Outcome::Failed;
+        if !hold || (*outcome_wait >= 0.3 && fright.lunge.is_none()) {
             next.set(Flow::Outcome);
         }
     } else {

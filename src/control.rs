@@ -37,6 +37,8 @@ pub struct Intent {
     pub code: Option<[u8; 3]>,
     /// Name which of him walks tonight (a `sim::Variant` code) this frame.
     pub name: Option<u8>,
+    /// Drive off in the ready truck now, without whoever is not aboard.
+    pub drive_off: bool,
 }
 
 /// Where the player stands and looks.

@@ -105,6 +105,8 @@ pub(crate) fn objectives(
         "Hold E at the truck's ignition. The engine will roar, and he will come."
     } else if !ready {
         "Survive. Keep watch while the engine warms."
+    } else if net.is_shared() {
+        "Everyone standing: get into the truck zone! Or, aboard, press X to drive off without the others."
     } else {
         "Everyone standing: get into the truck zone!"
     };
@@ -508,6 +510,7 @@ pub(crate) fn downed_panel(
 pub(crate) fn hints_and_captions(
     time: Res<Time<Real>>,
     settings: Res<Settings>,
+    state: Res<State<Flow>>,
     net: Res<Network>,
     mut hint: ResMut<Hint>,
     mut caption: ResMut<CaptionLine>,
@@ -722,8 +725,10 @@ pub(crate) fn hints_and_captions(
     }
     hint.timer -= dt;
     caption.timer -= dt;
-    let hint_text = if hint.timer > 0.0 { hint.text } else { "" };
-    let caption_text = if caption.timer > 0.0 && settings.captions {
+    // Only over play: a menu (pause, outcome) has the screen to itself.
+    let playing = *state.get() == Flow::Playing;
+    let hint_text = if hint.timer > 0.0 && playing { hint.text } else { "" };
+    let caption_text = if caption.timer > 0.0 && settings.captions && playing {
         caption.text
     } else {
         ""

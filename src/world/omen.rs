@@ -10,7 +10,10 @@
 //! - The hat: his broad hat lying on the trail ahead; gone when you get close.
 //! - Phantom: a tall, hatted shape at the edge of sight, for a heartbeat.
 //! - Stolen light: a torch moving far off that belongs to nobody.
-//! - Caught: he lunges into your face (the outcome screen waits for it).
+//! - Caught: the torch dies in a silence, his whistle comes right in your
+//!   ear, and the torch strobes back on him closer each time as you fall;
+//!   he bends over you, and everything goes black (the outcome screen
+//!   waits for it). See `silbon::lunge_frame`.
 //! - Reveal: a lightning strike shows him close, with a stinger.
 
 use bevy::light::{NotShadowCaster, NotShadowReceiver};
@@ -31,9 +34,30 @@ const DRAG_LIFE: f32 = 120.0;
 const HAT_LIFE: f32 = 60.0;
 const PHANTOM_LIFE: f32 = 0.7;
 const STOLEN_LIFE: f32 = 28.0;
-/// The caught lunge: how long it lasts, and how fast he closes.
-pub const LUNGE: f32 = 1.4;
-pub const LUNGE_IN: f32 = 0.28;
+/// The catch's clock runs from `-LUNGE_GAP` to `LUNGE`: a silence, the
+/// whistle in your ear (from `EAR_AT`), him (from 0), the black (from
+/// `CUT_AT`), the world coming back.
+pub const LUNGE_GAP: f32 = 1.07;
+pub const EAR_AT: f32 = -0.62;
+pub const CUT_AT: f32 = 1.75;
+pub const LUNGE: f32 = 3.1;
+/// How many ways he comes (the side he comes from, the hand that leads).
+pub const CATCH_WAYS: u32 = 3;
+
+/// The catch, frozen the moment it happens so the view and he never chase
+/// each other: where the caught eye stood, which way he comes, and how.
+/// Nothing here is where he truly is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Catch {
+    pub eye: Vec3,
+    /// Ground height under the eye.
+    pub ground: f32,
+    /// Level unit direction from the eye toward where he comes from.
+    pub dir: Vec2,
+    /// Where the eye looked (level unit direction) when it was caught.
+    pub forward: Vec2,
+    pub variation: u32,
+}
 /// Seconds between two lightning reveals.
 const REVEAL_COOL: f32 = 45.0;
 
@@ -43,6 +67,10 @@ pub enum Sting {
     Caught,
     Reveal,
     Phantom,
+    /// The whistle right in your ear, as he has you.
+    EarWhistle,
+    /// The black: the bones in his sack and your ears ringing.
+    Cut,
     /// Bones in the dark, from a spot behind the listener when there is one
     /// (a place near the listener's own eye, never where he is).
     Bones(Option<Vec3>),
@@ -50,6 +78,30 @@ pub enum Sting {
     Swell,
     /// The click that ends a silence, behind the listener too.
     Clack(Option<Vec3>),
+    /// One of the footsteps that are nobody's.
+    Step(Vec3),
+    /// A mark's tick where nobody marked.
+    Mark(Vec3),
+}
+
+/// Footsteps behind you that are nobody's: where the next falls, the way
+/// they come, how many so far and of how many, and when the next falls.
+#[derive(Clone, Copy, Debug)]
+struct PhantomSteps {
+    at: Vec2,
+    toward: Vec2,
+    taken: u32,
+    total: u32,
+    next: f32,
+}
+
+/// A mark shown in a teammate's colour that the teammate never made.
+#[derive(Clone, Copy, Debug)]
+pub struct FalseMark {
+    /// The party slot whose colour it wears.
+    pub slot: usize,
+    pub at: Vec3,
+    pub left: f32,
 }
 
 #[derive(Resource, Default)]
@@ -58,14 +110,19 @@ pub struct Fright {
     lamps: Option<f32>,
     /// Seconds into a silence.
     silence: Option<f32>,
-    /// Seconds into the caught lunge.
+    /// Seconds into the catch (negative: the silence and the whistle
+    /// before him), and the catch itself.
     pub lunge: Option<f32>,
+    pub catch: Option<Catch>,
     reveal_cool: f32,
     last_flash: f32,
     /// This player's status in the last snapshot (0 on their feet).
     last_status: u8,
     /// A small counter that varies where omens are placed.
     turn: u32,
+    steps: Option<PhantomSteps>,
+    /// Shown by `dynamic::pings` while it lasts.
+    pub false_mark: Option<FalseMark>,
 }
 
 impl Fright {
@@ -86,6 +143,29 @@ impl Fright {
         } else {
             0.0
         }
+    }
+
+    /// Every sound held: the breath before he comes.
+    pub fn held(&self) -> bool {
+        self.lunge.is_some_and(|s| s < 0.0)
+    }
+
+    /// How much of the world is heard through the catch (its own sounds
+    /// aside): nothing in the silence, all of it while he is on you, a
+    /// murmur in the black, then back.
+    pub fn world_level(&self) -> f32 {
+        match self.lunge {
+            None => 1.0,
+            Some(s) if s < 0.0 => 0.0,
+            Some(s) if s < CUT_AT => 1.0,
+            Some(s) => 0.1 + 0.9 * ((s - (LUNGE - 0.6)) / 0.6).clamp(0.0, 1.0),
+        }
+    }
+
+    /// This player is being (or has just been) caught: the lunge owns the
+    /// moment, so the ordinary downed sound stays quiet.
+    pub fn caught_now(&self, status: u8) -> bool {
+        status != 0 && (self.lunge.is_some() || self.last_status == 0)
     }
 
     /// Multiplier for the night's ambience and rain during a silence.
@@ -443,6 +523,41 @@ pub fn frights(
                     stings.write(Sting::Phantom);
                 }
             }
+            Event::OmenFootsteps => {
+                // They start well behind you and come toward where you stood.
+                if let Some(p) = spot(layout, eye, -fwd, (9.0, 12.0), (0.0, 0.7), turn) {
+                    fright.steps = Some(PhantomSteps {
+                        at: p,
+                        toward: (eye - p).normalize_or(Vec2::X),
+                        taken: 0,
+                        total: 5 + turn % 3,
+                        next: 0.0,
+                    });
+                }
+            }
+            Event::OmenFalseMark => {
+                // In the colour of a teammate on their feet (never your own).
+                let me = net.id();
+                let mates: Vec<usize> = net.snapshot().map_or(Vec::new(), |s| {
+                    s.players
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, p)| Some(p.id) != me && p.status == 0 && !p.hauled)
+                        .map(|(i, _)| i)
+                        .collect()
+                });
+                let dir = Vec2::from_angle(turn as f32 * 2.39);
+                if !mates.is_empty()
+                    && let Some(p) = spot(layout, eye, dir, (14.0, 28.0), (0.0, 1.4), turn)
+                {
+                    fright.false_mark = Some(FalseMark {
+                        slot: mates[turn as usize % mates.len()],
+                        at: ground(p),
+                        left: tuning.0.ping_life,
+                    });
+                    stings.write(Sting::Mark(ground(p)));
+                }
+            }
             Event::OmenStolenLight => {
                 if let Some(p) = spot(layout, eye, fwd, (30.0, 42.0), (0.2, 1.0), turn) {
                     let across = Vec2::new(-fwd.y, fwd.x) * if turn.is_multiple_of(2) { 0.6 } else { -0.6 };
@@ -473,35 +588,94 @@ pub fn frights(
             stings.write(Sting::Clack(behind));
         }
     }
-    if let Some(s) = &mut fright.lunge {
-        *s += dt;
-        if *s >= LUNGE {
-            fright.lunge = None;
+    // The steps that are nobody's: one at a time, closer; turn to face them
+    // and there is nothing there.
+    if let Some(mut st) = fright.steps.take() {
+        st.next -= dt;
+        let mut going = true;
+        if st.next <= 0.0 {
+            let faced = (st.at - eye).normalize_or(fwd).dot(fwd) > 0.8;
+            if st.taken >= st.total || faced || st.at.distance(eye) < 3.5 {
+                going = false;
+            } else {
+                stings.write(Sting::Step(ground(st.at)));
+                st.taken += 1;
+                st.at += st.toward * 0.75;
+                st.next = 0.52 + 0.06 * ((fright.turn + st.taken) % 3) as f32;
+            }
+        }
+        if going {
+            fright.steps = Some(st);
+        }
+    }
+    if let Some(m) = &mut fright.false_mark {
+        m.left -= dt;
+        if m.left <= 0.0 {
+            fright.false_mark = None;
         }
     }
 
-    // Caught: this player just went down.
+    if let Some(s) = &mut fright.lunge {
+        let before = *s;
+        *s += dt;
+        let crossed = |at: f32| before < at && *s >= at;
+        if crossed(EAR_AT) {
+            stings.write(Sting::EarWhistle);
+        }
+        if crossed(0.0) {
+            stings.write(Sting::Caught);
+        }
+        if crossed(CUT_AT) {
+            stings.write(Sting::Cut);
+        }
+        if *s >= LUNGE {
+            fright.lunge = None;
+            fright.catch = None;
+        }
+    }
+
+    // Caught: this player just went down. Freeze the moment: where the eye
+    // stood and which way it looked; he comes from ahead or from either side.
     let status = net.status();
     if fright.last_status == 0 && status != 0 && net.snapshot().is_some_and(|s| s.started) {
-        fright.lunge = Some(0.0);
-        stings.write(Sting::Caught);
+        fright.turn = fright.turn.wrapping_add(1);
+        let variation = fright.turn % CATCH_WAYS;
+        let side = [0.0, 0.9, -0.9][variation as usize];
+        let floor = layout.surface_height(eye);
+        fright.catch = Some(Catch {
+            eye: Vec3::new(
+                eye3.x,
+                eye3.y.max(floor + tuning.0.eye_height - tuning.0.crouch_lower),
+                eye3.z,
+            ),
+            ground: floor,
+            dir: Vec2::from_angle(side).rotate(fwd),
+            forward: fwd,
+            variation,
+        });
+        fright.lunge = Some(-LUNGE_GAP);
     }
     fright.last_status = status;
 
-    // The torch catches him as he comes: a hard light just ahead of the eye.
+    // The torch finds his face and nothing else: a hard light between his
+    // face and the caught eye, only while the torch is lit.
     let (mut light, mut light_tf) = lunge_light.into_inner();
-    let want = match fright.lunge {
-        Some(s) => {
-            let fade = (1.0 - (s / LUNGE).powi(2)).max(0.0);
-            let stutter = if (s * 30.0).sin() > -0.6 { 1.0 } else { 0.35 };
-            60_000.0 * fade * stutter
+    let t = &tuning.0;
+    let frame = match (fright.lunge, fright.catch) {
+        (Some(s), Some(c)) if s >= 0.0 => {
+            Some(super::silbon::lunge_frame(s, &c, t.eye_height - t.downed_lower, &|p| {
+                layout.surface_height(p)
+            }))
         }
-        None => 0.0,
+        _ => None,
     };
+    let want = frame.map_or(0.0, |f| 70_000.0 * f.face_light);
     if light.intensity != want {
         light.intensity = want;
     }
-    light_tf.translation = eye3 + f3 * 0.6 - Vec3::Y * 0.2;
+    if let Some(f) = frame {
+        light_tf.translation = f.face + (f.eye - f.face).normalize_or(Vec3::Y) * 0.45;
+    }
 
     // A strike that shows him close.
     fright.reveal_cool = (fright.reveal_cool - dt).max(0.0);

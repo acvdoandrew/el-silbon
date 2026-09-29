@@ -160,10 +160,12 @@ pub enum Event {
     OmenHat,
     OmenPhantom,
     OmenStolenLight,
+    OmenFootsteps,
+    OmenFalseMark,
 }
 
 impl Event {
-    pub const ALL: [Event; 49] = [
+    pub const ALL: [Event; 51] = [
         Event::RelicTaken,
         Event::ThreatManifested,
         Event::WarningBegan,
@@ -213,6 +215,8 @@ impl Event {
         Event::OmenHat,
         Event::OmenPhantom,
         Event::OmenStolenLight,
+        Event::OmenFootsteps,
+        Event::OmenFalseMark,
     ];
 
     pub fn from_code(code: u8) -> Option<Event> {

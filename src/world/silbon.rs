@@ -839,6 +839,172 @@ pub fn spawn(ctx: &mut SpawnCtx) {
         });
 }
 
+/// One instant of the catch: where he stands and how he is bent, where the
+/// caught player's eye is and what it looks at, and the lights. A pure
+/// function of the lunge clock and the catch frozen when it happened, so the
+/// model, the camera and the lights agree without reading each other.
+#[derive(Clone, Copy, Debug)]
+pub struct LungeFrame {
+    /// His root and how far it is lowered below the ground (his legs bend
+    /// by as much, so his feet stay on the ground).
+    pub root: Vec3,
+    pub drop: f32,
+    pub yaw: f32,
+    pub torso: f32,
+    pub thigh: f32,
+    pub knee: f32,
+    pub head: Quat,
+    pub shoulders: (Quat, Quat),
+    pub elbows: (Quat, Quat),
+    pub visible: bool,
+    /// Between his eyes, and the way his face points.
+    pub face: Vec3,
+    pub facing: Vec3,
+    /// The caught eye, and what it looks at.
+    pub eye: Vec3,
+    pub look: Vec3,
+    /// The caught player's torch (0..1), the light on his face, the black
+    /// that falls over everything, and how hard the view shakes.
+    pub torch: f32,
+    pub face_light: f32,
+    pub black: f32,
+    pub shake: f32,
+}
+
+fn smooth(a: f32, b: f32, x: f32) -> f32 {
+    let k = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    k * k * (3.0 - 2.0 * k)
+}
+
+/// The torch strobes back four times; each time he is closer: start and end
+/// of each flash, and how far out he stands (metres from the caught eye).
+const FLASHES: [(f32, f32, f32); 4] = [
+    (0.0, 0.07, 5.0),
+    (0.2, 0.27, 3.0),
+    (0.4, 0.48, 1.7),
+    (0.62, CUT_AT, 0.85),
+];
+use super::omen::{CUT_AT, Catch, LUNGE, LUNGE_GAP};
+
+/// The black: falls at the cut, lifts at the end.
+pub fn lunge_black(s: f32) -> f32 {
+    if s < CUT_AT {
+        0.0
+    } else {
+        1.0 - smooth(LUNGE - 0.5, LUNGE, s)
+    }
+}
+
+pub fn lunge_frame(s: f32, c: &Catch, downed_eye: f32, ground: &dyn Fn(Vec2) -> f32) -> LungeFrame {
+    let at0 = Vec2::new(c.eye.x, c.eye.z);
+    // The caught eye: knocked back onto the ground as he comes.
+    let fall = smooth(0.1, 0.5, s);
+    let standing = (c.eye.y - c.ground).max(0.9);
+    let eye_at = at0 - c.dir * 0.35 * fall;
+    let eye = Vec3::new(
+        eye_at.x,
+        ground(eye_at) + standing + (downed_eye - standing) * fall,
+        eye_at.y,
+    );
+
+    // Which flash we are in, and whether it is lit.
+    let station = FLASHES.iter().rposition(|f| s >= f.0).unwrap_or(0);
+    let (from, to, dist) = FLASHES[station];
+    let lit = s >= 0.0 && s >= from && s < to;
+    let over = smooth(FLASHES[3].0, CUT_AT - 0.05, s);
+    let grab = smooth(CUT_AT - 0.08, CUT_AT, s);
+    let lead: f32 = if c.variation.is_multiple_of(2) { 1.0 } else { -1.0 };
+    let x = Quat::from_rotation_x;
+    let z = Quat::from_rotation_z;
+    // Standing tall with the arms thrown wide, then leaning in and reaching,
+    // then bent over you, claws closing.
+    let (torso, drop, sh_x, sh_z, elbow) = match station {
+        0 => (-0.1, 0.0, -0.7, 1.2, 0.6),
+        1 => (-0.35, 0.0, -1.2, 0.7, 0.4),
+        2 => (-0.6, 0.0, -1.5, 0.35, 0.2),
+        // Crouched and bent nearly flat over you: at the grab his face is a
+        // hand's breadth from yours.
+        _ => (
+            -0.95 - 0.55 * over - 0.2 * grab,
+            0.8 * over,
+            -1.4 + 0.4 * over,
+            0.45 - 0.25 * over,
+            0.3 + 0.8 * over + 0.5 * grab,
+        ),
+    };
+    // Thighs forward, knees back by twice as much: the hips come down by
+    // `drop` and the feet stay on the ground.
+    let leg = THIGH + SHIN;
+    let thigh = ((HIP_Y - drop) / leg).clamp(-1.0, 1.0).acos();
+    let at = at0 + c.dir * dist;
+    let root = Vec3::new(at.x, ground(at) - drop, at.y);
+    let yaw = c.dir.x.atan2(c.dir.y);
+    let body = Quat::from_rotation_y(yaw);
+    let torso_q = x(torso);
+    // His head turns to stare straight into the caught eye, upright in that
+    // eye's view however his body is bent (the neck twists to do it), and
+    // tips back a little so the brim lifts off the face; it snaps from side
+    // to side like a bird's.
+    let head_at = root + body * (Vec3::new(0.0, HIP_Y, 0.0) + torso_q * Vec3::new(0.0, CHEST + 0.16, -0.01));
+    let ahead = eye + Vec3::new(c.forward.x, 0.0, c.forward.y) * 5.0;
+    let find = smooth(0.0, 0.12, s);
+    let k = (s / 0.11).floor() as u32;
+    let r = ((k.wrapping_mul(2654435761) ^ c.variation.wrapping_mul(97)) % 1000) as f32 / 1000.0;
+    let twitch = (2.0 * r - 1.0) * if station == 3 { 0.25 } else { 0.1 };
+    // Upright as the view aimed at his head sees it; the view then settles
+    // on his face (a hair's difference in roll, never a chase).
+    let view_up = Transform::from_translation(eye).looking_at(head_at, Vec3::Y).rotation * Vec3::Y;
+    let head_world = Transform::IDENTITY.looking_to(eye - head_at, view_up).rotation * x(0.22) * z(twitch);
+    let face = head_at + head_world * Vec3::new(0.0, 0.165, -0.1);
+    let look = ahead.lerp(face, find);
+    let facing = head_world * Vec3::NEG_Z;
+    let head = (body * torso_q).inverse() * head_world;
+    // The torch gutters out in the silence, bursts back with each flash,
+    // and is gone again in the black.
+    let torch = if s < -LUNGE_GAP + 0.3 {
+        let t = s + LUNGE_GAP;
+        (1.0 - t / 0.3) * if (t * 41.0).sin() > 0.0 { 1.0 } else { 0.2 }
+    } else if s < 0.0 {
+        0.0
+    } else if s < CUT_AT {
+        if lit { 1.0 } else { 0.0 }
+    } else {
+        smooth(LUNGE - 0.5, LUNGE, s)
+    };
+    let kick = FLASHES
+        .iter()
+        .map(|f| (-(s - f.0) * 7.0).exp() * f32::from(s >= f.0))
+        .fold(0.0, f32::max);
+    let shake = if (0.0..CUT_AT).contains(&s) {
+        (0.8 * kick + 0.25 * over + grab).min(1.2)
+    } else {
+        0.0
+    };
+    LungeFrame {
+        root,
+        drop,
+        yaw,
+        torso,
+        thigh,
+        knee: -2.0 * thigh,
+        head,
+        shoulders: (
+            x(sh_x - 0.3 * lead.max(0.0)) * z(-sh_z),
+            x(sh_x - 0.3 * (-lead).max(0.0)) * z(sh_z),
+        ),
+        elbows: (x(elbow), x(elbow)),
+        visible: lit,
+        face,
+        facing,
+        eye,
+        look,
+        torch,
+        face_light: if lit { 1.0 } else { 0.0 },
+        black: lunge_black(s),
+        shake,
+    }
+}
+
 /// Pose the model from the truth layer every frame.
 pub fn animate_silbon(
     time: Res<Time>,
@@ -849,48 +1015,39 @@ pub fn animate_silbon(
     mut bodies: Query<&mut Transform, (With<SilbonBody>, Without<SilbonRoot>, Without<Joint>)>,
     mut joints: Query<(&Joint, &mut Transform), (Without<SilbonRoot>, Without<SilbonBody>)>,
     fright: Res<super::omen::Fright>,
-    camera: Single<
-        &Transform,
-        (
-            With<crate::player::Player>,
-            Without<SilbonRoot>,
-            Without<SilbonBody>,
-            Without<Joint>,
-        ),
-    >,
 ) {
     let dt = time.delta_secs();
     let th = &truth.encounter.threat;
     let Ok((mut root, mut vis, mut anim)) = roots.single_mut() else {
         return;
     };
-    // Caught: he is in your face, arms up, whatever the snapshot says.
-    if let Some(s) = fright.lunge {
-        let k = (s / super::omen::LUNGE_IN).min(1.0);
-        let ease = k * k * (3.0 - 2.0 * k);
-        let f3 = camera.rotation * Vec3::NEG_Z;
-        let fwd = Vec3::new(f3.x, 0.0, f3.z).normalize_or(Vec3::NEG_Z);
-        // He looms at arm's length, his face a little above the eye; from the
-        // ground he rises out of the earth to meet it.
-        let (near, lift, torso, head) = (1.7, HIP_Y + CHEST + 0.25, -0.15, 0.6);
-        let dist = 3.6 + (near - 3.6) * ease;
-        let shake = 0.025 * (s * 61.0).sin() * (1.0 - (s / super::omen::LUNGE).min(1.0));
-        root.translation = camera.translation + fwd * dist - Vec3::Y * lift + Vec3::X * shake;
-        root.rotation = Quat::from_rotation_y(fwd.x.atan2(fwd.z));
-        if *vis != Visibility::Visible {
-            *vis = Visibility::Visible;
+    // Caught: the catch owns him until its black falls, whatever the
+    // snapshot says. In the silence before, he is nowhere at all.
+    if let (Some(s), Some(c)) = (fright.lunge, fright.catch) {
+        let t = &tuning.0;
+        let f = lunge_frame(s, &c, t.eye_height - t.downed_lower, &|p| layout.0.surface_height(p));
+        let want = if f.visible {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+        if *vis != want {
+            *vis = want;
         }
+        root.translation = f.root;
+        root.rotation = Quat::from_rotation_y(f.yaw);
         anim.placed = false;
         for (joint, mut tf) in &mut joints {
             tf.translation = joint.rest;
             tf.rotation = match joint.kind {
-                // The head snaps back: the brim lifts off the face. Arms thrown
-                // wide, the hooked hands at the edges of sight.
-                JointKind::Torso => Quat::from_rotation_x(torso),
-                JointKind::Head => Quat::from_rotation_x(head) * Quat::from_rotation_z(0.2 * (s * 9.0).sin()),
-                JointKind::ShoulderL => Quat::from_rotation_x(-0.7) * Quat::from_rotation_z(-1.1),
-                JointKind::ShoulderR => Quat::from_rotation_x(-0.7) * Quat::from_rotation_z(1.1),
-                JointKind::ElbowL | JointKind::ElbowR => Quat::from_rotation_x(0.7),
+                JointKind::Torso => Quat::from_rotation_x(f.torso),
+                JointKind::Head => f.head,
+                JointKind::HipL | JointKind::HipR => Quat::from_rotation_x(f.thigh),
+                JointKind::KneeL | JointKind::KneeR => Quat::from_rotation_x(f.knee),
+                JointKind::ShoulderL => f.shoulders.0,
+                JointKind::ShoulderR => f.shoulders.1,
+                JointKind::ElbowL => f.elbows.0,
+                JointKind::ElbowR => f.elbows.1,
                 _ => Quat::IDENTITY,
             };
         }
@@ -1005,5 +1162,65 @@ pub fn animate_silbon(
             // The coat trails behind him as he walks and stirs in the wind.
             JointKind::Coat => Quat::from_rotation_x(0.1 * w + 0.045 * (2.0 * p).sin() * w + 0.02 * (t * 0.8).sin()),
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::world::omen::{CATCH_WAYS, CUT_AT, Catch};
+
+    /// The bug that was seen: he must never stand inside the ground. Over
+    /// the whole catch, on uneven ground, from every side: his feet are on
+    /// the ground, the caught eye is above it, and whenever he is shown his
+    /// face is in front of the eye, turned to it, and in the middle of the
+    /// view.
+    #[test]
+    fn the_catch_stands_on_the_ground_and_shows_his_face_to_the_caught() {
+        let ground = |p: Vec2| 0.35 * (p.x * 0.23).sin() + 0.2 * (p.y * 0.31).cos();
+        let downed_eye = 1.62 - 1.28;
+        for variation in 0..CATCH_WAYS {
+            for (k, forward) in [Vec2::NEG_Y, Vec2::X, Vec2::new(0.6, 0.8)].into_iter().enumerate() {
+                let at = Vec2::new(3.0 * k as f32, -2.0);
+                let side = [0.0, 0.9, -0.9][variation as usize];
+                let c = Catch {
+                    eye: Vec3::new(at.x, ground(at) + 1.62, at.y),
+                    ground: ground(at),
+                    dir: Vec2::from_angle(side).rotate(forward),
+                    forward,
+                    variation,
+                };
+                let mut shown = 0;
+                for step in 0..=((CUT_AT + 1.0) / 0.01) as i32 {
+                    let s = step as f32 * 0.01 - 1.0;
+                    let f = lunge_frame(s, &c, downed_eye, &ground);
+                    let feet = Vec2::new(f.root.x, f.root.z);
+                    let foot_y = f.root.y + HIP_Y - (THIGH + SHIN) * f.thigh.cos();
+                    assert!(
+                        (foot_y - ground(feet)).abs() < 0.02,
+                        "s {s}: feet at {foot_y}, ground {}",
+                        ground(feet)
+                    );
+                    assert!(
+                        f.root.y + HIP_Y > ground(feet) + 0.7,
+                        "s {s}: his hips are in the earth"
+                    );
+                    let eye_at = Vec2::new(f.eye.x, f.eye.z);
+                    assert!(f.eye.y > ground(eye_at) + 0.25, "s {s}: the eye is in the earth");
+                    if f.visible {
+                        shown += 1;
+                        let to_face = f.face - f.eye;
+                        let d = to_face.length();
+                        assert!((0.3..6.0).contains(&d), "s {s}: face {d} m away");
+                        assert!(f.facing.dot(-to_face / d) > 0.7, "s {s}: he looks away");
+                        if s > 0.15 {
+                            let look = (f.look - f.eye).normalize();
+                            assert!(look.dot(to_face / d) > 0.97, "s {s}: the view misses his face");
+                        }
+                    }
+                }
+                assert!(shown > 50, "he is seen: {shown} steps");
+            }
+        }
     }
 }

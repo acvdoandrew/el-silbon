@@ -81,6 +81,8 @@ struct Sounds {
     dog_growl: Handle<AudioSource>,
     dog_bark: Handle<AudioSource>,
     theme: Handle<AudioSource>,
+    ear_whistle: Handle<AudioSource>,
+    ringing: Handle<AudioSource>,
 }
 
 /// Where a placed sound truly comes from.
@@ -153,13 +155,15 @@ enum VoiceKind {
     Frogs,
     Windmill,
     Hum,
+    /// The catch's own sounds: heard through its silence and its black.
+    Catch,
     Whistle,
     Effect,
 }
 
 impl VoiceKind {
     fn is_loop(self) -> bool {
-        !matches!(self, Self::Whistle | Self::Effect)
+        !matches!(self, Self::Whistle | Self::Effect | Self::Catch)
     }
 }
 
@@ -269,6 +273,8 @@ fn load_sounds(
         counting: a("counting"),
         ping: a("ping"),
         theme: a("title_theme"),
+        ear_whistle: a("whistle_ear"),
+        ringing: a("ringing"),
     };
     let frogs = a("frogs_loop");
     let windmill = a("windmill_creak");
@@ -435,6 +441,16 @@ fn placed_shot(
     ));
 }
 
+/// A mark carries farther than other placed sounds: lifted up to threefold,
+/// so it still says where it is.
+fn mark_lift(heard: f32) -> f32 {
+    if heard > 0.0 {
+        (0.35 / heard).clamp(1.0, 3.0)
+    } else {
+        1.0
+    }
+}
+
 /// The camera carries the listener's ears — deliberately swapped. rodio
 /// 0.22's `Spatial::set_positions` gives each channel
 /// `((own_dist - other_dist) / gap + 1) / 4 + 0.5`, i.e. *more* volume to
@@ -512,17 +528,52 @@ fn play_stings(
         // placed clatter is louder at its source, so it lands at the level
         // it had unplaced.
         let (clip, gain, speed, at) = match *sting {
-            Sting::Caught => (&sounds.sting_caught, g * 1.5, 1.0, None),
+            // The catch's own sounds go through its silence and its black.
+            Sting::EarWhistle | Sting::Cut | Sting::Caught => {
+                let catch = |commands: &mut Commands, clip: &Handle<AudioSource>, gain: f32| {
+                    one_shot(commands, clip, gain, 1.0, VoiceKind::Catch, settings.volume)
+                };
+                match *sting {
+                    Sting::EarWhistle => catch(&mut commands, &sounds.ear_whistle, g * 1.7),
+                    Sting::Caught => catch(&mut commands, &sounds.sting_caught, g * 1.6),
+                    _ => {
+                        catch(&mut commands, &sounds.bones, g * 1.4);
+                        catch(&mut commands, &sounds.ringing, g * 0.9);
+                    }
+                }
+                continue;
+            }
             Sting::Reveal => (&sounds.sting_reveal, g * 1.1, 1.0, None),
             Sting::Phantom => (&sounds.sting_phantom, g * 0.8, 1.0, None),
             Sting::Bones(at) => (&sounds.omen_bones, g * 0.7, 1.0, at),
             Sting::Lamps => (&sounds.omen_lamps, g * 0.6, 1.0, None),
             Sting::Swell => (&sounds.omen_swell, g * 0.8, 1.0, None),
             Sting::Clack(at) => (&sounds.omen_bones, g * 0.45, 1.25, at),
+            // Nobody's step, at a walker's weight on whatever ground it is.
+            Sting::Step(at) => {
+                let surface = surface_at(&ears.layout.0, Vec2::new(at.x, at.z));
+                let k = (at.x * 7.3 + at.z * 3.1).abs() as usize;
+                placed_shot(
+                    &mut commands,
+                    &ears,
+                    &sounds.steps[surface as usize][k % 3],
+                    (g * 0.62 * 0.8, [0.97, 1.03, 0.94][k % 3]),
+                    Some(Anchor::at(at)),
+                    settings.volume,
+                );
+                continue;
+            }
+            // A mark's tick, carried like a real one.
+            Sting::Mark(at) => (&sounds.ping, g * 0.7, 1.0, Some(at)),
         };
         let lift = at.map_or(1.0, |at| {
             let h = heard_at(&ears.layout.0, &ears.tuning.0, ears.eye(), at);
-            if h > 0.0 { (1.0 / h).min(4.0) } else { 1.0 }
+            match sting {
+                // A false mark must sound exactly like a real one.
+                Sting::Mark(_) => mark_lift(h),
+                _ if h > 0.0 => (1.0 / h).min(4.0),
+                _ => 1.0,
+            }
         });
         placed_shot(
             &mut commands,
@@ -541,14 +592,20 @@ fn play_effects(
     sounds: Res<Sounds>,
     settings: Res<Settings>,
     net: Res<Network>,
+    fright: Res<crate::world::omen::Fright>,
     ears: Ears,
 ) {
+    // When this player is the one caught, the lunge owns the moment.
+    let caught = fright.caught_now(net.status());
     let g = ears.tuning.0.sfx_gain;
     let l = &ears.layout.0;
     let d = &l.district;
     let on_ground = |p: Vec2, up: f32| Vec3::new(p.x, l.surface_height(p) + up, p.y);
     let dog = net.snapshot().map(|s| on_ground(Vec2::from_array(s.dog.pos), 0.5));
     for EncounterMsg(e) in events.read() {
+        if caught && matches!(e, Event::Downed | Event::Died) {
+            continue;
+        }
         // Where it happens, when that is a thing of the llano's (the actor
         // of a pickup or a revive is not known here: those stay unplaced).
         let at = match e {
@@ -631,8 +688,7 @@ fn play_pings(
             // A mark is a signal to the party: it carries farther than other
             // placed sounds (lifted up to threefold) and still says where it is.
             let at = Vec3::from_array(p.pos);
-            let h = heard_at(&ears.layout.0, &ears.tuning.0, ears.eye(), at);
-            let lift = if h > 0.0 { (0.35 / h).clamp(1.0, 3.0) } else { 1.0 };
+            let lift = mark_lift(heard_at(&ears.layout.0, &ears.tuning.0, ears.eye(), at));
             placed_shot(
                 &mut commands,
                 &ears,
@@ -893,13 +949,27 @@ fn mix(
             VoiceKind::Crank => v *= if crank_on { 1.0 } else { 0.0 },
             VoiceKind::Radio => v *= if radio_on { 1.0 } else { 0.0 },
             VoiceKind::Whistle if net.status() == 2 => v = 0.0,
-            VoiceKind::Whistle | VoiceKind::Effect => {}
+            VoiceKind::Whistle | VoiceKind::Effect | VoiceKind::Catch => {}
         }
         v
     };
+    // The catch holds the world: silent before him, a murmur in the black.
+    // Its own sounds are heard through all of it.
+    let world_level = fright.world_level();
     let apply = |voice: &Voice, sink: &mut dyn AudioSinkPlayback, v: f32| {
         if paused {
             sink.pause();
+        }
+        let v = if voice.kind == VoiceKind::Catch {
+            v
+        } else {
+            v * world_level
+        };
+        if world_level == 0.0 && voice.kind != VoiceKind::Catch {
+            if sink.volume().to_linear() != 0.0 {
+                sink.set_volume(Volume::Linear(0.0));
+            }
+            return;
         }
         let now = sink.volume().to_linear();
         // Loops glide to their level; one-shots keep theirs.

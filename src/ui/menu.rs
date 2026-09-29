@@ -235,9 +235,10 @@ break his sight; crouch to move quietly, running is heard far away. Your torch r
 draws him. Lamplight and company calm fear; the dark and being alone feed it.\n\n\
 While you lay bones, crank or turn the engine over, press Space as the needle crosses the marked zone. \
 Ají stops him to count his bones. Tureco, tied behind the house, knows where he truly is. Caught with \
-friends standing, you are carried off in his sack: pepper in his path drops you.\n\n\
+friends standing, you are carried off in his sack: pepper in his path drops you. With friends, whoever \
+is aboard the ready truck can drive off without the others (X).\n\n\
 WASD move · mouse look · Shift run · Ctrl/C crouch · E use (hold at sites) · F torch · Space rhythm · \
-G drop a bundle · Q ají · V mark · M map · N name him · Esc menu · F12 screenshot";
+G drop a bundle · Q ají · V mark · M map · N name him · X drive off · Esc menu · F12 screenshot";
 
 const CREDITS: &str = "\
 EL SILBÓN — The Return\n\n\
@@ -774,7 +775,11 @@ fn draw(
     let up = menu_up(state.get());
     set_vis(&mut vis, up);
     if !up {
-        menu.built = None;
+        // Closed menus keep no rows around (a night's entity count must not
+        // grow with every outcome or pause).
+        if menu.built.take().is_some() {
+            commands.entity(root).despawn_children();
+        }
         return;
     }
     menu.caret += time.delta_secs();
@@ -1127,7 +1132,8 @@ fn remember(
     {
         {
             let seconds = truth.encounter.elapsed;
-            let ending = if s.outcome() == crate::sim::Outcome::Failed {
+            let left_behind = net.id().is_some_and(|me| s.left_behind.contains(&me));
+            let ending = if s.outcome() == crate::sim::Outcome::Failed || left_behind {
                 crate::profile::Ending::Caught
             } else if s.world.banished {
                 crate::profile::Ending::Banished { seconds }

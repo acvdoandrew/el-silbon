@@ -21,6 +21,7 @@
 
 pub mod app;
 pub mod audio;
+pub mod awards;
 pub mod body;
 pub mod control;
 pub mod debug;

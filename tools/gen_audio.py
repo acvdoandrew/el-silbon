@@ -1607,6 +1607,51 @@ def make_hum(rng):
     return normalize(loop_crossfade(out, loop, xfade), 0.5)
 
 
+def make_ear_whistle(rng):
+    """The whistle as it has never been heard all night: right in your ear.
+    Two quick breathy notes and the held note tearing upward into a shriek,
+    dry, overdriven, cut off dead. Only when he has you."""
+    n = int(0.62 * SR)
+    out = [0.0] * n
+    breath = one_pole_lowpass(one_pole_highpass(noise(rng, n), 1200.0), 9000.0)
+    ph = 0.0
+    for i in range(n):
+        t = i / SR
+        if t < 0.1:
+            f, amp = 1244.0, min(1.0, t / 0.01)
+        elif t < 0.2:
+            f, amp = 1396.0, 1.0
+        else:
+            u = (t - 0.2) / 0.42
+            f = 1480.0 * (1.0 + 1.4 * u * u)
+            amp = 1.0 + 0.4 * u
+        f *= 1.0 + 0.012 * math.sin(TAU * 7.0 * t)
+        ph += TAU * f / SR
+        tone = math.sin(ph) + 0.25 * math.sin(2.0 * ph) + 0.1 * math.sin(3.0 * ph)
+        v = tone * amp * 0.8 + breath[i] * amp * 0.9
+        out[i] = math.tanh(2.2 * v)
+    # Cut off dead: no tail, no room. Only the shortest click-free release.
+    for i in range(int(0.004 * SR)):
+        out[n - 1 - i] *= i / (0.004 * SR)
+    return normalize(out, 0.95)
+
+
+def make_ringing(rng):
+    """After the blow: the ears ring. A thud, then a high whine that beats
+    against itself and fades over about three seconds."""
+    n = int(3.2 * SR)
+    out = [0.0] * n
+    for i in range(n):
+        t = i / SR
+        thud = math.sin(TAU * 48.0 * t) * math.exp(-t / 0.18) * 0.9
+        ring = (math.sin(TAU * 3150.0 * t) + 0.6 * math.sin(TAU * 3163.0 * t)) * 0.18
+        ring_env = min(1.0, t / 0.25) * math.exp(-max(0.0, t - 0.4) / 1.1)
+        out[i] = thud + ring * ring_env
+    rumble = one_pole_lowpass(noise(rng, n), 200.0)
+    out = [v + r * 0.6 * math.exp(-i / SR / 0.5) for i, (v, r) in enumerate(zip(out, rumble))]
+    return normalize(fade(out, 0.002, 0.3), 0.8)
+
+
 def make_horror():
     """Sounds added after the first two streams, each on its own seed so
     adding or changing one never changes another."""
@@ -1635,6 +1680,8 @@ def make_horror():
         "frogs_loop.wav": make_frogs(random.Random(SEED + 122)),
         "windmill_creak.wav": make_windmill(random.Random(SEED + 123)),
         "dynamo_hum.wav": make_hum(random.Random(SEED + 124)),
+        "whistle_ear.wav": make_ear_whistle(random.Random(SEED + 125)),
+        "ringing.wav": make_ringing(random.Random(SEED + 126)),
     }
 
 

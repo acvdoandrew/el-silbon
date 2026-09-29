@@ -69,6 +69,10 @@ pub(crate) struct RosterLine(pub usize);
 #[derive(Component)]
 pub(crate) struct BriefingNight;
 
+/// The black that falls at the end of the catch (spawned once).
+#[derive(Component)]
+pub(crate) struct CatchVeil;
+
 #[derive(Component)]
 pub(crate) struct FearOuter;
 #[derive(Component)]
@@ -314,6 +318,19 @@ fn fill_node(color: Color) -> impl Bundle {
 }
 
 fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, map_image: Res<map::MapImage>, layout: Res<LayoutRes>) {
+    commands.spawn((
+        Name::new("catch veil"),
+        CatchVeil,
+        Node {
+            position_type: PositionType::Absolute,
+            width: percent(100),
+            height: percent(100),
+            ..default()
+        },
+        BackgroundColor(Color::BLACK.with_alpha(0.0)),
+        GlobalZIndex(18),
+        Visibility::Hidden,
+    ));
     let fonts = Fonts {
         sans: assets.load("fonts/NotoSans-Regular.ttf"),
         serif: assets.load("fonts/NotoSerif-Regular.ttf"),
@@ -651,7 +668,7 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, map_image: Res<map
                         c.spawn((
                             Text::new(
                                 "WASD move · Mouse look · Shift run · Ctrl/C crouch · E or click use (hold at sites) · F flashlight\n\
-                                 Space skill check · G put a bundle down · Q scatter ají · V mark a spot · N name him (at the ceiba)\n\
+                                 Space skill check · G put a bundle down · Q scatter ají · V mark a spot · N name him (at the ceiba) · X drive off (with friends)\n\
                                  M map · Esc pause · F12 screenshot",
                             ),
                             font(&f.sans, 14.0),
@@ -834,17 +851,29 @@ fn buttons(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn panels(
     state: Res<State<Flow>>,
     menu: Res<menu::Menu>,
     launch: Res<Launch>,
+    fright: Res<crate::world::omen::Fright>,
     mut q: ParamSet<(
         Query<&mut Visibility, With<BriefingPanel>>,
         Query<&mut Visibility, With<HudRoot>>,
         Query<&mut Visibility, With<OutcomePanel>>,
+        Query<(&mut BackgroundColor, &mut Visibility), With<CatchVeil>>,
     )>,
     mut night: Query<&mut Text, With<BriefingNight>>,
 ) {
+    // The catch has the screen: no HUD over him, and its black at the end.
+    let black = fright.lunge.map_or(0.0, crate::world::silbon::lunge_black);
+    let want = Color::BLACK.with_alpha(black);
+    for (mut veil_bg, mut veil_vis) in &mut q.p3() {
+        set_vis(&mut veil_vis, black > 0.0);
+        if veil_bg.0 != want {
+            veil_bg.0 = want;
+        }
+    }
     let s = *state.get();
     for mut v in &mut q.p0() {
         set_vis(&mut v, s == Flow::Briefing);
@@ -863,12 +892,66 @@ fn panels(
     // driver manages the HUD itself).
     if !launch.photos {
         for mut v in &mut q.p1() {
-            set_vis(&mut v, s != Flow::Title);
+            set_vis(&mut v, s != Flow::Title && fright.lunge.is_none());
         }
     }
     // The outcome card steps aside for a confirmation.
     for mut v in &mut q.p2() {
         set_vis(&mut v, s == Flow::Outcome && menu.page == menu::Page::Outcome);
+    }
+}
+
+/// The night's awards, one line per player who earned any.
+fn night_awards(net: &Network) -> String {
+    use crate::awards::Award;
+    let Some(s) = net.snapshot().filter(|s| !s.deeds.is_empty()) else {
+        return String::new();
+    };
+    let night = crate::awards::Night {
+        party: &s.deeds,
+        left_behind: &s.left_behind,
+        dog_friend: (s.dog.owner != 0).then_some(s.dog.owner),
+    };
+    let given = crate::awards::awards(&night);
+    let label = |a: Award| match a {
+        Award::LeftBehind => "Left behind on the llano",
+        Award::SackRider => "Rode in his sack",
+        Award::FirstToFall => "First to fall",
+        Award::Screamer => "Screamed the most",
+        Award::Butterfingers => "Butterfingers (dropped the bones)",
+        Award::HisFavourite => "His favourite (warned the most)",
+        Award::GuardianAngel => "Guardian angel (got someone up)",
+        Award::BoneBearer => "Bone bearer (laid the most)",
+        Award::PepperHand => "Ají in every pocket",
+        Award::Stampede => "Started a stampede",
+        Award::TurecosFriend => "Tureco's friend",
+        Award::Untouched => "Untouched (never warned, never scared)",
+    };
+    let me = net.id();
+    let solo = s.deeds.len() < 2;
+    let mut lines = Vec::new();
+    for (slot, p) in s.players.iter().enumerate() {
+        let mine: Vec<&str> = given
+            .iter()
+            .filter(|(id, _)| *id == p.id)
+            .map(|(_, a)| label(*a))
+            .collect();
+        if mine.is_empty() {
+            continue;
+        }
+        let who = if solo {
+            "You".to_string()
+        } else if Some(p.id) == me {
+            format!("P{} (you)", slot + 1)
+        } else {
+            format!("P{}", slot + 1)
+        };
+        lines.push(format!("{who}: {}", mine.join("  ·  ")));
+    }
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("\n\nTonight's awards\n{}", lines.join("\n"))
     }
 }
 
@@ -908,6 +991,12 @@ fn fill_outcome(
         stats
     };
     let banished = net.snapshot().is_some_and(|s| s.world.banished);
+    // Someone drove off early: who was left, and was it me.
+    let left = net.snapshot().map_or(0, |s| s.left_behind.len());
+    let abandoned = net
+        .snapshot()
+        .zip(net.id())
+        .is_some_and(|(s, me)| s.left_behind.contains(&me));
     // Who walked tonight, told afterwards: the signs are there to learn.
     let who = match crate::sim::Variant::of(tuning.0.seed) {
         crate::sim::Variant::Borracho => "the drunkard's return (El Borracho)",
@@ -934,18 +1023,41 @@ fn fill_outcome(
     if read.0.len() >= crate::lore::PAGES as usize {
         marks.push("Keeper of the tale (every page read)");
     }
+    if won && left > 0 && !abandoned {
+        marks.push("Every one for themselves (drove off early)");
+    }
     let marks = if marks.is_empty() {
         String::new()
     } else {
         format!("\n\n{}", marks.join("  ·  "))
     };
-    let stats = format!("{stats}\n\nTonight it was {who}. Night #{}.{marks}", tuning.0.seed);
+    let stats = format!(
+        "{stats}\n\nTonight it was {who}. Night #{}.{marks}{}",
+        tuning.0.seed,
+        night_awards(&net)
+    );
     let (title, body) = if enc.outcome == crate::sim::Outcome::Won && banished {
         (
             "He is laid to rest.",
             format!(
                 "You named him at the roots of the ceiba, with his father's bones all home. The whistle unwinds, \
                  lower and lower, into the rain, and the llano is only the llano again.\n\n{stats}"
+            ),
+        )
+    } else if won && abandoned {
+        (
+            "They left without you.",
+            format!(
+                "The truck's lights shrink down the road and the engine fades into the rain. The llano is very \
+                 quiet. Somewhere a whistle starts, thin and far away…\n\n{stats}"
+            ),
+        )
+    } else if won && left > 0 {
+        (
+            "The truck pulls away.",
+            format!(
+                "You did not wait. In the mirror the llano closes over the ones you left, and somewhere out there \
+                 a whistle goes thin and far away…\n\n{stats}"
             ),
         )
     } else if enc.outcome == crate::sim::Outcome::Won {

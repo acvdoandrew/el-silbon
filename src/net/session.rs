@@ -5,6 +5,7 @@
 //! accepted interaction, noise, the one threat and the outcome. Clients send
 //! inputs and actions; they never write truth.
 use super::protocol::*;
+use crate::awards::Deeds;
 use crate::{
     body::{Body, BodyInput, FearInput, Ground, Status},
     control::{Pose, SceneData, TargetKind, evaluate_target},
@@ -53,6 +54,8 @@ pub struct Participant {
     /// Pulse timers: pump, ignition, prayer and revive noises, and the torch
     /// catching his eye.
     pulse: [f32; 5],
+    /// What they did tonight, for the awards.
+    pub deeds: Deeds,
 }
 
 impl Participant {
@@ -78,6 +81,7 @@ impl Participant {
             prayed: false,
             praying: false,
             pulse: [0.0; 5],
+            deeds: Deeds::default(),
         }
     }
 
@@ -134,6 +138,8 @@ pub struct Session {
     target: Option<PlayerId>,
     /// The fallen player in his sack, if any.
     captive: Option<PlayerId>,
+    /// Who the truck left behind when someone drove off without them.
+    left_behind: Vec<PlayerId>,
     pub dog: Dog,
     serial: u64,
     beacon_pulse: f32,
@@ -156,6 +162,7 @@ impl Session {
             started: false,
             target: None,
             captive: None,
+            left_behind: Vec::new(),
             dog: Dog::tied(layout),
             serial: 0,
             beacon_pulse: 0.0,
@@ -283,6 +290,7 @@ impl Session {
                     Action::Skill { id: check, needle } => self.skill(id, check, needle, layout, tuning),
                     Action::TryCode { code } => self.try_code(id, code, layout, tuning),
                     Action::Name { variant } => self.name(id, variant, layout, tuning),
+                    Action::DriveOff => self.drive_off(id, layout, tuning),
                     _ => self.interact(id, layout, tuning),
                 }
             }
@@ -411,7 +419,11 @@ impl Session {
         if !self.encounter.drop_relic(id, at, &mut ev) {
             return Err("You carry nothing to put down.".into());
         }
-        self.noises.push((p.pose.pos, tuning.noise_drop));
+        let pos = p.pose.pos;
+        if let Some(p) = self.players.get_mut(&id) {
+            p.deeds.drops += 1;
+        }
+        self.noises.push((pos, tuning.noise_drop));
         self.events.extend(ev.into_iter().map(|e| (None, e)));
         self.flush_events();
         Ok(())
@@ -423,6 +435,7 @@ impl Session {
             return Err("You have no pepper.".into());
         }
         p.aji -= 1;
+        p.deeds.aji += 1;
         let at = p.pose.pos + p.pose.forward2() * 1.6;
         let pos = p.pose.pos;
         let mut ev = Vec::new();
@@ -548,6 +561,7 @@ impl Session {
         self.encounter.reset(layout);
         self.target = None;
         self.captive = None;
+        self.left_behind.clear();
         self.dog = Dog::tied(layout);
         self.outbox.clear();
         self.pings.clear();
@@ -852,6 +866,15 @@ impl Session {
                 self.encounter.rouse(layout, tuning, &watchers, &mut more);
                 ev.extend(more);
             }
+            if let Some(p) = self.players.get_mut(&id) {
+                for e in &ev {
+                    match e {
+                        Event::RelicDelivered => p.deeds.delivered += 1,
+                        Event::Revived => p.deeds.revives += 1,
+                        _ => {}
+                    }
+                }
+            }
             self.events.extend(ev.into_iter().map(|e| (None, e)));
         }
         for (id, p) in &mut self.players {
@@ -867,6 +890,7 @@ impl Session {
         if !cows.is_empty() {
             let herd = cows.iter().copied().sum::<Vec2>() / cows.len() as f32;
             let mut unrest = 0.0;
+            let mut stirred: Option<(PlayerId, f32)> = None;
             for (&id, p) in &self.players {
                 if !p.status.is_active() || p.body.crouching || p.pose.pos.distance(herd) > tuning.cattle_radius {
                     continue;
@@ -876,7 +900,11 @@ impl Session {
                     continue;
                 }
                 let carried = self.encounter.progress.carried_by(id) as f32;
-                unrest += if p.body.sprinting { 1.6 } else { 0.4 } + 0.3 * carried;
+                let stir = if p.body.sprinting { 1.6 } else { 0.4 } + 0.3 * carried;
+                unrest += stir;
+                if stirred.is_none_or(|(_, most)| stir > most) {
+                    stirred = Some((id, stir));
+                }
             }
             // The Drover's return: the herd knows him and bellows as he passes.
             let th = &self.encounter.threat;
@@ -895,6 +923,11 @@ impl Session {
                 prog.cattle_cooldown = tuning.cattle_cooldown;
                 self.noises.push((herd, tuning.noise_cattle));
                 self.events.push((None, Event::CattleSpooked));
+                if let Some((id, _)) = stirred
+                    && let Some(p) = self.players.get_mut(&id)
+                {
+                    p.deeds.cattle += 1;
+                }
             } else if prog.cattle_cooldown > 0.0 {
                 prog.cattle_spook = prog.cattle_spook.min(0.9);
             }
@@ -1015,6 +1048,9 @@ impl Session {
                         let standing = self.active_positions();
                         if !standing.is_empty() && self.captive.is_none() {
                             self.captive = Some(id);
+                            if let Some(p) = self.players.get_mut(&id) {
+                                p.deeds.sacked += 1;
+                            }
                             self.encounter.haul(layout, &standing, &mut hauled);
                         }
                     }
@@ -1035,6 +1071,9 @@ impl Session {
                 }
                 Event::WarningBegan => {
                     if let Some(id) = target {
+                        if let Some(p) = self.players.get_mut(&id) {
+                            p.deeds.warned += 1;
+                        }
                         self.startle(id, tuning, tuning.fear_warn);
                         self.events.push((Some(id), e));
                     }
@@ -1145,9 +1184,14 @@ impl Session {
 
     /// The hunted player falls: they drop what they carry and wait for help.
     fn down(&mut self, id: PlayerId, tuning: &Tuning) {
+        let carried = self.encounter.progress.carried_by(id) as u16;
+        let elapsed = self.encounter.elapsed;
         let Some(p) = self.players.get_mut(&id) else {
             return;
         };
+        p.deeds.downs += 1;
+        p.deeds.drops += carried;
+        p.deeds.first_down.get_or_insert(elapsed);
         let at = Vec3::new(p.pose.pos.x, p.ground_height, p.pose.pos.y);
         p.status = Status::Downed {
             bleed: tuning.bleed_out,
@@ -1170,7 +1214,8 @@ impl Session {
     }
 
     fn susto(&mut self, id: PlayerId, tuning: &Tuning) {
-        if let Some(p) = self.players.get(&id) {
+        if let Some(p) = self.players.get_mut(&id) {
+            p.deeds.sustos += 1;
             self.noises.push((p.pose.pos, tuning.noise_susto));
         }
         self.events.push((Some(id), Event::Susto));
@@ -1225,6 +1270,7 @@ impl Session {
             .then_some(self.target)
             .flatten();
         let pressure = self.encounter.pressure;
+        let company = self.players.len() > 1;
         let mut sent = Vec::new();
         for (&id, p) in &mut self.players {
             let mood = Mood {
@@ -1233,6 +1279,7 @@ impl Session {
                 able: p.status.is_active(),
                 fear: p.body.fear,
                 pressure,
+                company,
             };
             if let Some(omen) = p.director.tick(mood, tuning, dt) {
                 sent.push((
@@ -1245,11 +1292,42 @@ impl Session {
                         Omen::Hat => Event::OmenHat,
                         Omen::Phantom => Event::OmenPhantom,
                         Omen::StolenLight => Event::OmenStolenLight,
+                        Omen::Footsteps => Event::OmenFootsteps,
+                        Omen::FalseMark => Event::OmenFalseMark,
                     },
                 ));
             }
         }
         self.events.extend(sent.into_iter().map(|(id, e)| (Some(id), e)));
+    }
+
+    /// Someone aboard the ready truck drives off without waiting: those
+    /// aboard escape, everyone else (down, in his sack, or simply not there)
+    /// is left behind. Only when there is someone to leave.
+    fn drive_off(&mut self, id: PlayerId, layout: &Layout, tuning: &Tuning) -> Result<(), String> {
+        if self.players.len() < 2 {
+            return Err("There is nobody to leave behind.".into());
+        }
+        if !self.encounter.progress.truck_ready(tuning) {
+            return Err("The truck is not ready to go.".into());
+        }
+        let zone = layout.district.truck;
+        let aboard =
+            |p: &Participant| p.status.is_active() && p.pose.pos.distance(zone.zone_center) <= zone.zone_radius;
+        if !aboard(&self.players[&id]) {
+            return Err("Get to the truck first.".into());
+        }
+        self.left_behind = self
+            .players
+            .iter()
+            .filter(|(_, p)| !aboard(p))
+            .map(|(&pid, _)| pid)
+            .collect();
+        self.encounter.outcome = Outcome::Won;
+        self.events.push((None, Event::Escaped));
+        // The run is over, so no step will send it: send it now.
+        self.flush_events();
+        Ok(())
     }
 
     fn outcome_step(&mut self, layout: &Layout, tuning: &Tuning) {
@@ -1444,6 +1522,13 @@ impl Session {
                     1
                 },
                 owner: self.dog.owner.unwrap_or(0),
+            },
+            left_behind: self.left_behind.clone(),
+            // What everyone did, once the night is over (for the awards).
+            deeds: if self.encounter.outcome.is_over() {
+                self.players.iter().map(|(&pid, p)| (pid, p.deeds)).collect()
+            } else {
+                Vec::new()
             },
         }
     }

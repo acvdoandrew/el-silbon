@@ -1670,9 +1670,12 @@ fn fail_run(s: &mut Vec<Step>, layout: &Layout) {
             guard: false,
             leash: Leash::Free,
         },
-        Wait(0.8),
+        // The catch: a second of silence and his whistle, then him; capture
+        // him over the caught player, and let the black lift before the
+        // restart.
+        Wait(1.9),
         Capture("08_caught"),
-        Wait(0.6),
+        Wait(2.5),
         Restart,
         ExpectReset,
         Log("route: restart ok"),

@@ -32,6 +32,11 @@ pub enum Omen {
     Phantom,
     /// A torch far off that is nobody's (late in the night only).
     StolenLight,
+    /// Footsteps in the grass behind you, coming closer; nobody's (fear
+    /// only).
+    Footsteps,
+    /// A teammate's mark where nobody marked (fear only, in company).
+    FalseMark,
 }
 
 /// What the director knows about one player this tick.
@@ -46,6 +51,8 @@ pub struct Mood {
     pub fear: f32,
     /// The night's pressure, 0..1.
     pub pressure: f32,
+    /// Others share the night (a mark can seem to be theirs).
+    pub company: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -97,7 +104,10 @@ impl Director {
         if mood.awake {
             pool.extend([(Omen::LampsDie, 1.2), (Omen::Drag, 1.0), (Omen::Hat, 0.8)]);
             if mood.fear >= tuning.phantom_fear {
-                pool.push((Omen::Phantom, 1.6));
+                pool.extend([(Omen::Phantom, 1.6), (Omen::Footsteps, 1.3)]);
+                if mood.company {
+                    pool.push((Omen::FalseMark, 1.0));
+                }
             }
             if p >= tuning.stolen_light_pressure {
                 pool.push((Omen::StolenLight, 1.2));
@@ -130,6 +140,7 @@ mod tests {
             able: true,
             fear,
             pressure,
+            company: false,
         }
     }
 
@@ -161,8 +172,19 @@ mod tests {
         let t = Tuning::default();
         let calm: Vec<Omen> = omens(&mut Director::new(3), mood(true, 0.1, 0.1), &t, 3000.0);
         assert!(!calm.contains(&Omen::Phantom) && !calm.contains(&Omen::StolenLight));
+        assert!(!calm.contains(&Omen::Footsteps) && !calm.contains(&Omen::FalseMark));
         let late: Vec<Omen> = omens(&mut Director::new(3), mood(true, 0.9, 0.9), &t, 3000.0);
         assert!(late.contains(&Omen::Phantom) && late.contains(&Omen::StolenLight));
+        assert!(late.contains(&Omen::Footsteps), "fear hears steps behind it");
+        assert!(!late.contains(&Omen::FalseMark), "alone, nobody else marks anything");
+        let mut together = mood(true, 0.9, 0.9);
+        together.company = true;
+        let shared: Vec<Omen> = omens(&mut Director::new(3), together, &t, 3000.0);
+        assert!(
+            shared.contains(&Omen::FalseMark),
+            "in company a mark can seem to be a friend's"
+        );
+        assert!(shared.windows(2).all(|w| w[0] != w[1]));
         let asleep: Vec<Omen> = omens(&mut Director::new(3), mood(false, 0.9, 0.9), &t, 3000.0);
         assert!(!asleep.is_empty(), "the night whispers before he wakes");
         assert!(

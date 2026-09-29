@@ -123,6 +123,11 @@ impl Plugin for DebugPlugin {
                     world.resource::<Launch>().size,
                 )
             };
+            // DEBUG: `PHOTOS_ONLY=lunge` keeps only the frames whose names
+            // contain it (quick iteration on a few views).
+            if let Ok(only) = std::env::var("PHOTOS_ONLY") {
+                shots.retain(|s| s.name.contains(&only));
+            }
             let play_fog = crate::world::land::fog_visibility(&app.world().resource::<LayoutRes>().0);
             for shot in shots.iter_mut().filter(|s| widens_fog(&s.name)) {
                 // Written on the image and in the manifest's `altered` column.
@@ -861,8 +866,22 @@ fn photo_drive(
             *v = want_hud;
         }
     }
-    // The caught lunge, held where he has closed in.
-    fright.lunge = (shot.surface == Surface::Lunge).then_some(0.6);
+    // The catch, held at one instant of its clock, caught where the shot
+    // stands and looking where it looks.
+    fright.lunge = None;
+    fright.catch = None;
+    if let Surface::Lunge(at) = shot.surface {
+        let eye = Vec2::new(shot.pos.x, shot.pos.z);
+        let ahead = Vec2::new(shot.target.x - shot.pos.x, shot.target.z - shot.pos.z).normalize_or(Vec2::NEG_Y);
+        fright.lunge = Some(at);
+        fright.catch = Some(crate::world::omen::Catch {
+            eye: shot.pos,
+            ground: layout.0.surface_height(eye),
+            dir: ahead,
+            forward: ahead,
+            variation: 0,
+        });
+    }
     let want_map = shot.surface == Surface::Map;
     if map.0 != want_map {
         map.0 = want_map;

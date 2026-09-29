@@ -38,13 +38,13 @@ pub enum Surface {
     Note(u8),
     /// The downed panel over the real HUD. Mirror only: no outcome is set.
     Downed,
-    /// The caught jump scare held at full reach (world only, HUD hidden).
-    Lunge,
+    /// The catch held at this instant of its clock (world only, HUD hidden).
+    Lunge(f32),
 }
 
 impl Surface {
     pub fn is_ui(self) -> bool {
-        !matches!(self, Surface::World | Surface::Lunge)
+        !matches!(self, Surface::World | Surface::Lunge(_))
     }
 }
 
@@ -354,7 +354,7 @@ fn label(shot: &Shot, moved_camera: bool) -> String {
         Surface::Downed => {
             parts.push("DOWNED panel mirrored, camera lowered as when down (no outcome set; not a real down)")
         }
-        Surface::Lunge => parts.push("caught jump scare held by the debug driver (not a real catch); HUD hidden"),
+        Surface::Lunge(_) => parts.push("caught jump scare held by the debug driver (not a real catch); HUD hidden"),
     }
     if !shot.clear {
         parts.push("NO CLEAR VIEW FOUND: fallback camera, may be obstructed");
@@ -684,13 +684,18 @@ pub fn shots(layout: &Layout, tuning: &Tuning) -> Vec<Shot> {
         ),
         false,
     );
-    for (name, eye) in [
-        ("53_caught_lunge_down", lowered),
-        ("54_caught_lunge_standing", standing),
+    // The catch at four instants: the first flash far off, the third close,
+    // on the ground under him, the grab just before the black.
+    for (name, at) in [
+        ("53_caught_lunge_first_flash", 0.03),
+        ("54_caught_lunge_third_flash", 0.44),
+        ("58_caught_lunge_over_you", 1.1),
+        ("59_caught_lunge_grab", 1.72),
     ] {
+        let eye = standing;
         push(
             Shot {
-                surface: Surface::Lunge,
+                surface: Surface::Lunge(at),
                 ..base(name.into(), eye, eye + forward * 10.0, 68.0)
             },
             false,

@@ -448,6 +448,7 @@ fn read_devices(
         sprint: keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]),
         drop: keys.just_pressed(KeyCode::KeyG),
         use_aji: keys.just_pressed(KeyCode::KeyQ),
+        drive_off: keys.just_pressed(KeyCode::KeyX),
         ping: keys.just_pressed(KeyCode::KeyV) || mouse.just_pressed(MouseButton::Middle),
         skill: if keys.just_pressed(KeyCode::Space) {
             net.needle(&tuning.0)
@@ -486,27 +487,51 @@ fn apply_motion(
 fn view_settings(
     settings: Res<Settings>,
     launch: Res<Launch>,
+    fright: Res<crate::world::omen::Fright>,
     camera: Single<(&mut Projection, &mut ColorGrading), With<Player>>,
     mut applied: Local<bool>,
+    mut punching: Local<bool>,
 ) {
-    if *applied && !settings.is_changed() {
+    // The catch: the world dims in its silence; each time the torch bursts
+    // back on him the view flares and punches in (never in a photo, which
+    // holds its own view).
+    let lunge = if launch.photos { None } else { fright.lunge };
+    if *applied && !settings.is_changed() && lunge.is_none() && !*punching {
         return;
     }
     *applied = true;
+    *punching = lunge.is_some();
+    let (fov_add, exposure_add) = lunge.map_or((0.0, 0.0), |s| {
+        use crate::world::omen::{CUT_AT, LUNGE_GAP};
+        if s < 0.0 {
+            (0.0, -0.9 * ((s + LUNGE_GAP) / 0.3).clamp(0.0, 1.0))
+        } else if s < CUT_AT {
+            let flare = [0.0, 0.2, 0.4, 0.62]
+                .iter()
+                .map(|&at| if s >= at { (-(s - at) * 22.0).exp() } else { 0.0 })
+                .fold(0.0, f32::max);
+            (-12.0 * flare, 1.1 * flare)
+        } else {
+            (0.0, 0.0)
+        }
+    });
     let (mut projection, mut grading) = camera.into_inner();
     if !launch.photos
         && let Projection::Perspective(p) = &mut *projection
     {
-        p.fov = settings.fov.to_radians();
+        p.fov = (settings.fov + fov_add).to_radians();
     }
-    grading.global.exposure = 0.3 + 0.7 * settings.brightness;
+    grading.global.exposure = 0.3 + 0.7 * settings.brightness + exposure_add;
 }
 
 /// The torch's lights and lens follow its switch and its charge: a dead
 /// battery gives nothing, a weak one gutters and catches.
+#[allow(clippy::too_many_arguments)]
 fn torch_light(
     time: Res<Time>,
     state: Res<State<Flow>>,
+    fright: Res<crate::world::omen::Fright>,
+    layout: Res<LayoutRes>,
     torch: Single<(&Flashlight, &mut Visibility)>,
     net: Res<crate::net::Network>,
     tuning: Res<TuningRes>,
@@ -541,6 +566,18 @@ fn torch_light(
         let drop = if (t * 1.9).sin() > 0.55 + 0.4 * weak { 0.12 } else { 1.0 };
         (0.35 + 0.55 * weak + 0.1 * beat).clamp(0.05, 1.0) * drop
     };
+    // The catch has the torch: it dies in the silence, strobes back on him.
+    let level = match (fright.lunge, fright.catch) {
+        (Some(s), Some(c)) => {
+            let t = &tuning.0;
+            let f = crate::world::silbon::lunge_frame(s, &c, t.eye_height - t.downed_lower, &|p| {
+                layout.0.surface_height(p)
+            });
+            // Whatever it had left, it has now.
+            f.torch
+        }
+        _ => level,
+    };
     // Quantized so a steady beam writes nothing.
     let key = (level * 200.0).round() as u16;
     if *shown == Some(key) {
@@ -559,10 +596,14 @@ fn torch_light(
 /// sight and targeting read the pose, never the camera. Whoever last placed
 /// the camera (the session each frame, a photo or debug view) is respected:
 /// the bob is laid on top of that placement and taken off again next frame.
+#[allow(clippy::too_many_arguments)]
 fn head_bob(
     time: Res<Time>,
     settings: Res<Settings>,
     state: Res<State<Flow>>,
+    fright: Res<crate::world::omen::Fright>,
+    layout: Res<LayoutRes>,
+    tuning: Res<TuningRes>,
     mut gait: ResMut<Gait>,
     mut camera: Single<&mut Transform, With<Player>>,
     mut placed: Local<Option<(Transform, Transform)>>,
@@ -600,6 +641,21 @@ fn head_bob(
         let sway = gait.phase.sin() * BOB_SWAY * a;
         tf.translation += Vec3::Y * rise + right * sway;
         tf.rotation *= Quat::from_rotation_z(gait.phase.sin() * BOB_ROLL * a);
+    }
+    // Caught: the catch owns the view until its black falls. From the eye
+    // that was caught it falls to the ground and finds his face, shaking.
+    // (Replaced, not laid on, so a haul moving the body underneath never
+    // shows; the black covers the hand-back.)
+    if let (Some(s), Some(c)) = (fright.lunge, fright.catch)
+        && s < crate::world::omen::CUT_AT
+    {
+        let t = &tuning.0;
+        let f =
+            crate::world::silbon::lunge_frame(s, &c, t.eye_height - t.downed_lower, &|p| layout.0.surface_height(p));
+        let jitter = |k: f32| (s * k).sin() * (s * k * 0.37 + 1.3).sin();
+        let shake = Vec3::new(jitter(71.0), jitter(59.0), 0.0) * 0.025 * f.shake;
+        tf = Transform::from_translation(f.eye + shake).looking_at(f.look, Vec3::Y);
+        tf.rotation *= Quat::from_rotation_z(0.18 * f.shake * jitter(23.0) + 0.12 * (s / 0.5).clamp(0.0, 1.0));
     }
     **camera = tf;
     *placed = Some((base, tf));
