@@ -266,7 +266,7 @@ fn smoke_drive(
         Res<Network>,
         Res<crate::player::LightOn>,
     ),
-    probe: Res<PipelineProbe>,
+    (probe, models): (Res<PipelineProbe>, Res<crate::world::models::ModelsPending>),
     (fonts, text_fonts): (Res<Assets<Font>>, Query<&TextFont>),
     screenshots: Query<(), With<Screenshot>>,
     mut intent: ResMut<CurrentIntent>,
@@ -285,7 +285,7 @@ fn smoke_drive(
         FontSource::Handle(h) => fonts.contains(h.id()),
         _ => true,
     });
-    if probe.0.load(Ordering::Relaxed) == 0 && fonts_loaded {
+    if probe.0.load(Ordering::Relaxed) == 0 && fonts_loaded && models.settled() {
         smoke.idle_frames += 1;
     } else {
         smoke.idle_frames = 0;
@@ -803,7 +803,7 @@ fn photo_drive(
         ResMut<crate::world::omen::Fright>,
     ),
     virtual_time: Res<Time<Virtual>>,
-    layout: Res<LayoutRes>,
+    (layout, models): (Res<LayoutRes>, Res<crate::world::models::ModelsPending>),
     mut exit: MessageWriter<AppExit>,
 ) {
     use crate::photos::{PAIR_GAP_SECS, PHOTO_PLAYER_BASE, Surface};
@@ -843,7 +843,7 @@ fn photo_drive(
         FontSource::Handle(h) => fonts.contains(h.id()),
         _ => true,
     });
-    if probe.0.load(Ordering::Relaxed) == 0 && fonts_loaded {
+    if probe.0.load(Ordering::Relaxed) == 0 && fonts_loaded && models.settled() {
         photos.idle += 1;
     } else {
         photos.idle = 0;
@@ -1099,7 +1099,7 @@ fn menu_shots_drive(
     (state, mut next): (Res<State<Flow>>, ResMut<NextState<Flow>>),
     (mut menu, mut night): (ResMut<crate::ui::menu::Menu>, ResMut<crate::ui::title::TitleNight>),
     (mut starts, mut leaves): (MessageWriter<crate::net::StartRun>, MessageWriter<crate::net::LeaveRun>),
-    mut exit: MessageWriter<AppExit>,
+    (mut exit, models): (MessageWriter<AppExit>, Res<crate::world::models::ModelsPending>),
 ) {
     use crate::ui::menu::Page;
     let shots = &mut *shots;
@@ -1191,7 +1191,7 @@ fn menu_shots_drive(
         }
     };
     shots.frames += 1;
-    if probe.0.load(Ordering::Relaxed) == 0 && ready {
+    if probe.0.load(Ordering::Relaxed) == 0 && ready && models.settled() {
         shots.idle += 1;
     } else {
         shots.idle = 0;

@@ -876,6 +876,9 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
     k * k * (3.0 - 2.0 * k)
 }
 
+/// Between his eyes, from the head joint (the model's `Silbon_Eyes`).
+const FACE: Vec3 = Vec3::new(0.0, 0.109, -0.063);
+
 /// The torch strobes back four times; each time he is closer: start and end
 /// of each flash, and how far out he stands (metres from the caught eye).
 const FLASHES: [(f32, f32, f32); 4] = [
@@ -955,7 +958,7 @@ pub fn lunge_frame(s: f32, c: &Catch, downed_eye: f32, ground: &dyn Fn(Vec2) -> 
     // on his face (a hair's difference in roll, never a chase).
     let view_up = Transform::from_translation(eye).looking_at(head_at, Vec3::Y).rotation * Vec3::Y;
     let head_world = Transform::IDENTITY.looking_to(eye - head_at, view_up).rotation * x(0.22) * z(twitch);
-    let face = head_at + head_world * Vec3::new(0.0, 0.165, -0.1);
+    let face = head_at + head_world * FACE;
     let look = ahead.lerp(face, find);
     let facing = head_world * Vec3::NEG_Z;
     let head = (body * torso_q).inverse() * head_world;

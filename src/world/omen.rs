@@ -348,9 +348,9 @@ pub fn spawn_frights(
         Name::new("omen: lunge light"),
         LungeLight,
         PointLight {
-            color: Color::srgb(1.0, 0.86, 0.72),
+            color: Color::srgb(1.0, 0.78, 0.55),
             intensity: 0.0,
-            range: 6.0,
+            range: 3.0,
             radius: 0.05,
             shadow_maps_enabled: false,
             ..default()
@@ -669,7 +669,7 @@ pub fn frights(
         }
         _ => None,
     };
-    let want = frame.map_or(0.0, |f| 70_000.0 * f.face_light);
+    let want = frame.map_or(0.0, |f| 14_000.0 * f.face_light);
     if light.intensity != want {
         light.intensity = want;
     }

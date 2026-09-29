@@ -33,6 +33,11 @@ const MAX_PINGS: usize = 4;
 
 #[derive(Component)]
 pub struct BundleView(usize);
+
+/// The shelf radio: its procedural set is a child, and the model sits at
+/// this transform (facing the room) once it loads.
+#[derive(Component)]
+pub struct RadioSpot(pub Transform);
 #[derive(Component)]
 pub struct AjiView(usize);
 #[derive(Component)]
@@ -505,13 +510,17 @@ pub fn spawn(
     // The radio and the photograph stand on the house shelf; a dark box with
     // a glowing dial, and a small frame.
     let mut sets = MeshBuilder::new();
-    let mut dials = MeshBuilder::new();
     let mut photos = MeshBuilder::new();
+    let mut radio_sets = MeshBuilder::new();
+    let mut radio_dials = MeshBuilder::new();
+    let mut radio_at = None;
     for n in &d.notes {
         let facing = Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2);
         match crate::lore::note(n.id).medium {
             crate::lore::Medium::Radio => {
                 let base = n.pos - Vec3::Y * 0.02;
+                let (sets, dials) = (&mut radio_sets, &mut radio_dials);
+                radio_at = Some(base);
                 sets.cuboid(
                     base + Vec3::Y * 0.12,
                     facing,
@@ -596,7 +605,6 @@ pub fn spawn(
         ("perches", perches, palette.wood.clone()),
         ("field notes", papers, palette.paper_note.clone()),
         ("radio and frame", sets, palette.wood_dark.clone()),
-        ("radio dial", dials, palette.lamp_glass.clone()),
         ("photograph", photos, palette.paper_note.clone()),
     ] {
         if !mb.is_empty() {
@@ -607,6 +615,31 @@ pub fn spawn(
                 NotShadowCaster,
             ));
         }
+    }
+
+    // The radio stands apart so its model can replace it.
+    if let Some(base) = radio_at {
+        let facing_room = Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2);
+        commands
+            .spawn((
+                Name::new("shelf radio"),
+                RadioSpot(Transform::from_translation(base).with_rotation(facing_room)),
+                Transform::IDENTITY,
+                Visibility::default(),
+            ))
+            .with_children(|r| {
+                for (mb, material) in [
+                    (radio_sets, palette.wood_dark.clone()),
+                    (radio_dials, palette.lamp_glass.clone()),
+                ] {
+                    r.spawn((
+                        super::models::Procedural,
+                        Mesh3d(meshes.add(mb.build())),
+                        MeshMaterial3d(material),
+                        NotShadowCaster,
+                    ));
+                }
+            });
     }
 
     // ---- Peppers.

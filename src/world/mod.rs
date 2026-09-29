@@ -12,6 +12,7 @@ pub mod herd;
 pub mod house;
 pub mod land;
 pub mod mesh;
+pub mod models;
 pub mod omen;
 pub mod props;
 pub mod silbon;
@@ -94,6 +95,9 @@ impl Plugin for WorldPlugin {
             wet::WetPlugin,
         ))
         .init_resource::<omen::Fright>()
+        .init_resource::<models::ModelsPending>()
+        .add_observer(models::ready)
+        .add_systems(PostStartup, models::attach)
         .add_message::<omen::Sting>()
         .add_systems(
             Startup,
@@ -129,6 +133,7 @@ impl Plugin for WorldPlugin {
                 weather::rain_swell,
                 weather::lightning,
                 omen::frights.before(dynamic::lamp_lights).before(flicker_lights),
+                models::watch_failures,
             )
                 .in_set(crate::app::GameSet::Present),
         );

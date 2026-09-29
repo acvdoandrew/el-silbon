@@ -21,7 +21,13 @@ pub struct DogRoot {
 pub struct DogHead;
 
 #[derive(Component)]
-pub struct DogLeg(f32);
+pub struct DogLeg(pub f32);
+
+/// The model's jaw and tail (the procedural dog has neither).
+#[derive(Component)]
+pub struct DogJaw;
+#[derive(Component)]
+pub struct DogTail;
 
 #[derive(Component)]
 pub struct DogRope;
@@ -231,10 +237,32 @@ pub fn spawn_dog(
         });
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn animate_dog(
     time: Res<Time>,
     net: Res<Network>,
     layout: Res<LayoutRes>,
+    mut jaw: Query<
+        &mut Transform,
+        (
+            With<DogJaw>,
+            Without<DogRoot>,
+            Without<DogHead>,
+            Without<DogLeg>,
+            Without<DogRope>,
+        ),
+    >,
+    mut tail: Query<
+        &mut Transform,
+        (
+            With<DogTail>,
+            Without<DogJaw>,
+            Without<DogRoot>,
+            Without<DogHead>,
+            Without<DogLeg>,
+            Without<DogRope>,
+        ),
+    >,
     root: Single<(&mut DogRoot, &mut Transform), (Without<DogHead>, Without<DogLeg>, Without<DogRope>)>,
     mut head: Query<&mut Transform, (With<DogHead>, Without<DogLeg>, Without<DogRope>)>,
     mut legs: Query<(&DogLeg, &mut Transform), (Without<DogHead>, Without<DogRope>)>,
@@ -273,6 +301,24 @@ pub fn animate_dog(
             _ => (0.05 * (t * 1.3).sin(), 0.0),
         };
         h.rotation = Quat::from_rotation_x(dip + jerk);
+    }
+    // He snaps his jaws when he barks; his tail wags when he follows and
+    // drops, stiff, when he growls.
+    for mut j in &mut jaw {
+        let open = if view.mood == 3 {
+            0.35 * (t * 18.0).sin().max(0.0)
+        } else {
+            0.0
+        };
+        j.rotation = Quat::from_rotation_x(open);
+    }
+    for mut tl in &mut tail {
+        let (lift, wag) = match view.mood {
+            1 => (0.5, 0.6 * (t * 11.0).sin() * (0.4 + 0.6 * pace)),
+            2 | 3 => (-0.3, 0.05 * (t * 30.0).sin()),
+            _ => (0.1, 0.15 * (t * 2.0).sin()),
+        };
+        tl.rotation = Quat::from_rotation_y(wag) * Quat::from_rotation_x(lift);
     }
     for (leg, mut l) in &mut legs {
         let swing = if tied {

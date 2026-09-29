@@ -701,6 +701,44 @@ pub fn shots(layout: &Layout, tuning: &Tuning) -> Vec<Shot> {
             false,
         );
     }
+    // The Blender models close up: a bundle on the ground, the shelf radio
+    // (from the room side), the herd.
+    let d = &layout.district;
+    if let Some(r) = d.relics.get(1).copied() {
+        push(
+            base(
+                "60_model_bundle".into(),
+                r + Vec3::new(1.3, 0.8, 0.9),
+                r + Vec3::Y * 0.25,
+                45.0,
+            ),
+            false,
+        );
+    }
+    if let Some(n) = d
+        .notes
+        .iter()
+        .find(|n| crate::lore::note(n.id).medium == crate::lore::Medium::Radio)
+    {
+        push(
+            base(
+                "61_model_radio".into(),
+                n.pos + Vec3::new(1.1, 0.3, 0.25),
+                n.pos + Vec3::Y * 0.2,
+                45.0,
+            ),
+            false,
+        );
+    }
+    let cows: Vec<Vec2> = d.cows().map(|c| c.center).collect();
+    if !cows.is_empty() {
+        let c = cows.iter().copied().sum::<Vec2>() / cows.len() as f32;
+        let herd = Vec3::new(c.x, layout.surface_height(c) + 0.8, c.y);
+        push(
+            base("62_model_herd".into(), herd + Vec3::new(-9.0, 2.2, 6.0), herd, 50.0),
+            false,
+        );
+    }
     out
 }
 
