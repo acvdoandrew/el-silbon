@@ -5,7 +5,7 @@
    (`gh run watch`), and download it: `gh run download <run id> -n
    el_silbon-windows-x86_64 -D dist/windows`.
 2. Build Linux here: `cargo build --release --locked`.
-3. Package each as `el_silbon-<version>-<os>.zip`: the executable next to
+3. Package each with `tools/package.sh EXE OS VERSION` (into `target/dist/`): the executable next to
    a copy of `assets/` (the game loads `assets/` beside the executable)
    and `docs/PLAYING.txt`.
 4. `gh release create <tag> --prerelease --title ... --notes ... <zips>`.
