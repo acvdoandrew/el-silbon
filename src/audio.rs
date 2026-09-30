@@ -1108,8 +1108,10 @@ fn mix(
 
     let snap = net.snapshot();
     let me = snap.map(|s| s.me).unwrap_or_default();
+    // Watching a friend, their heart and their fright (see `net::felt`).
+    let felt = net.felt().unwrap_or_default();
     let world = snap.map(|s| s.world).unwrap_or_default();
-    let dazed = net.status() == 1 || me.stun > 0.0;
+    let dazed = net.status() == 1 || felt.stun > 0.0;
     let rain = storm::rain(tuning.0.seed, clock.t);
     let over = truth.encounter.outcome.is_over();
 
@@ -1117,12 +1119,12 @@ fn mix(
     let heart_level = if net.status() == 1 {
         1.0
     } else {
-        ((me.fear - 0.3) / 0.55).clamp(0.0, 1.0)
+        ((felt.fear - 0.3) / 0.55).clamp(0.0, 1.0)
     };
     let heart_speed = if net.status() == 1 {
         0.7
     } else {
-        0.85 + 0.85 * me.fear.clamp(0.0, 1.0)
+        0.85 + 0.85 * felt.fear.clamp(0.0, 1.0)
     };
     let engine_on = world.truck >= 1.0 && !over;
     let crank_on = me.hold_kind == 3;

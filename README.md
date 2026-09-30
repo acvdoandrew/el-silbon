@@ -159,7 +159,7 @@ Surviving him:
 | Q | scatter ají |
 | X | with friends, aboard the ready truck: drive off now, leaving whoever is not aboard |
 | V or middle click | mark a spot for the party; down, a hoarse cry for help from where you lie (he may hear it too) |
-| A / D, arrows or left / right click | gone for the night with friends: watch the previous / next friend on their feet (you see and hear only what they do) |
+| A / D or arrows | gone for the night with friends: watch the previous / next friend on their feet (you see and hear only what they do, and feel their fear) |
 | M | map |
 | Esc | pause (solo) / local menu (shared); releases the cursor |
 | F12 | screenshot of the game window |

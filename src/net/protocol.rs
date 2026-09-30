@@ -315,6 +315,11 @@ pub struct Snapshot {
     /// Calls still in the air.
     #[serde(default)]
     pub calls: Vec<CallView>,
+    /// Gone for the night: the body of the friend on their feet this
+    /// listener watches (their fear, breath and hands), while they watch.
+    /// Only that friend's own vitals, never anything of him.
+    #[serde(default)]
+    pub watched: Option<Vitals>,
 }
 
 impl Snapshot {

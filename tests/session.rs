@@ -4,7 +4,7 @@ use el_silbon::{
     control::{Intent, Pose, Target},
     geometry::{Layout, ground},
     net::{
-        Wire, controls_live, cycle_watch, follow_body, mirror,
+        Wire, controls_live, cycle_watch, felt, follow_body, mirror,
         protocol::{Action, CallKind, HOST, Input, SEND_INTERVAL, STEP, ServerMessage, Snapshot},
         session::Session,
         status_of, watched,
@@ -1324,6 +1324,102 @@ fn the_fallen_hear_the_whistle_their_friend_hears() {
         friend,
         "the fallen hear exactly what their friend hears"
     );
+}
+
+/// Three friends: the host gone for the night, lying beside player 3 but
+/// watching player 2 (60 m away). He comes, present and eager, at `prey`
+/// from half his notice away in the open, until his hunt begins. Returns
+/// what the host and the prey were each sent.
+fn hunted_while_watched(prey: u64) -> (Vec<Event>, Vec<Event>) {
+    let mut r = Rig::new(3);
+    r.put(2, Vec2::new(-30.0, 20.0));
+    r.put(3, Vec2::new(30.0, 20.0));
+    r.put(HOST, Vec2::new(27.0, 20.0));
+    r.s.players.get_mut(&HOST).unwrap().status = Status::Dead;
+    r.act(HOST, Action::Watch { id: 2 }).expect("a friend on their feet");
+    let at = r.pose(prey).pos;
+    let him = at + Vec2::new(0.0, r.t.warn_distance * 0.5);
+    assert!(r.l.line_of_sight(at, him), "open ground between them");
+    let th = &mut r.s.encounter.threat;
+    th.state = ThreatState::Stalking;
+    th.presence = Presence::Present;
+    th.pos = him;
+    th.movement = el_silbon::sim::Movement::AtAnchor(r.l.patrol.nearest(him));
+    th.cooldown = 0.0;
+    let (mut host, mut hunted) = (Vec::new(), Vec::new());
+    for _ in 0..(12.0 / STEP) as usize {
+        for id in [HOST, 2, 3] {
+            r.send(id, [0.0; 2], false, false, false);
+        }
+        r.tick();
+        host.extend(r.events(HOST));
+        hunted.extend(r.events(prey));
+        if hunted.contains(&Event::HuntBegan) {
+            break;
+        }
+    }
+    assert_eq!(watching(&r, HOST), 2, "still watching the same friend");
+    (host, hunted)
+}
+
+#[test]
+fn the_fallen_live_the_hunt_on_the_friend_they_watch_and_no_other() {
+    // He comes for the friend beside whose body the host lies, not the one
+    // they watch: none of it reaches the host.
+    let (host, other) = hunted_while_watched(3);
+    assert!(
+        other.contains(&Event::WarningBegan) && other.contains(&Event::HuntBegan),
+        "the other friend is warned and hunted: {other:?}"
+    );
+    assert!(
+        !host.contains(&Event::WarningBegan) && !host.contains(&Event::HuntBegan),
+        "nothing of another friend's hunt reaches the fallen: {host:?}"
+    );
+    // He comes for the friend they watch: they live it with them.
+    let (host, friend) = hunted_while_watched(2);
+    for e in [Event::WarningBegan, Event::HuntBegan] {
+        assert!(friend.contains(&e), "the friend: {friend:?}");
+        assert!(host.contains(&e), "the fallen live their friend's {e:?}: {host:?}");
+    }
+}
+
+#[test]
+fn the_fallen_feel_the_fright_of_the_friend_they_watch() {
+    let mut r = Rig::new(3);
+    r.put(2, Vec2::new(-20.0, 20.0));
+    r.put(3, Vec2::new(30.0, 20.0));
+    r.put(HOST, Vec2::new(28.0, 20.0));
+    // Gone for the night terrified; the friends are not.
+    let fallen = r.s.players.get_mut(&HOST).unwrap();
+    fallen.status = Status::Dead;
+    fallen.body.fear = 0.95;
+    r.s.players.get_mut(&2).unwrap().body.fear = 0.2;
+    r.s.players.get_mut(&3).unwrap().body.fear = 0.6;
+    r.s.players.get_mut(&3).unwrap().body.stamina = 0.3;
+    r.act(HOST, Action::Watch { id: 2 }).unwrap();
+    let felt_by = |r: &Rig, id: u64| felt(&r.s.snapshot(id, &r.l, &r.t), Some(id));
+    let own = |r: &Rig, id: u64| r.s.snapshot(id, &r.l, &r.t).me;
+    assert_eq!(
+        felt_by(&r, HOST).fear,
+        own(&r, 2).fear,
+        "their heart beats with the friend's"
+    );
+    assert_eq!(felt_by(&r, HOST).stamina, own(&r, 2).stamina);
+    r.act(HOST, Action::Watch { id: 3 }).unwrap();
+    let (theirs, friend) = (felt_by(&r, HOST), own(&r, 3));
+    assert_eq!(
+        (theirs.fear, theirs.stamina),
+        (friend.fear, friend.stamina),
+        "another friend, another heart"
+    );
+    // The living feel only their own body.
+    assert!(r.s.snapshot(2, &r.l, &r.t).watched.is_none());
+    assert_eq!(felt_by(&r, 2).fear, own(&r, 2).fear);
+    // The friend watched falls: the watch moves on, and the heartbeat with it.
+    doom(&mut r, 3, Vec2::new(30.0, 20.0));
+    r.idle(0.05);
+    assert_eq!(watching(&r, HOST), 2);
+    assert_eq!(felt_by(&r, HOST).fear, own(&r, 2).fear);
 }
 
 #[test]

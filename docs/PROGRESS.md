@@ -231,6 +231,46 @@
 - Bounds moved: none. The only test change is a new assertion in `protocol.rs`; invariant tests are untouched.
 - The commit holds exactly three files: `docs/PROGRESS.md`, `src/net/protocol.rs` and `src/net/transport.rs`. No asset touched. `target\fp.py`, `target\fp11\*` and `target\fp12\*` are gitignored evidence. Committed on m1b; not pushed.
 
+**Spectator follow-up: the watcher lives the friend's night (branch m1b-spec, from fb6c1ca; follow-up to 89f1ede).**
+- Closes three of item 9's Open points: the dead's frozen vitals, the unforwarded friend's events, and the mouse / crosshair / roster / controls-line leftovers. `anima_sight` stays on (user decision).
+- **Protocol hygiene.** `Snapshot.watched: Option<Vitals>` is appended at the end of `Snapshot` with `#[serde(default)]`. No new `Event` or `Action`, no hidden AI state on the wire (only the friend's own body, which their own snapshot already carries as `me`). `protocol.rs` and `session.rs` change, so the fingerprint moves on purpose; no checkpoint recorded (the parallel lanes move it again at merge). `PROTOCOL` not bumped (same deviation as items 8 and 9).
+- Session (`net::session`):
+  - `Participant::vitals()` builds `Vitals` (the old inline `me` block, unchanged). `snapshot()` fills `watched` for a Dead recipient whose `watch` is `watchable`, from that friend's `vitals()`. **Not gated on `anima_sight`**: it is the friend's own fear, breath, peppers and torch, not a view of him.
+  - `shared_with_watcher(Event)` (pure, public) is the rule for what reaches the watcher: `WarningBegan`, `HuntBegan`, `Susto`, `DogGrowl` and the nine `Omen*`. `flush_events` sends a `Some(friend)` event to each Dead player whose `watch` is that friend when the rule allows it, in the same `Events` message as their own. Never forwarded: what the friend's hands do (pickups, `Prayed`, `SkillCheck`, `SkillGreat`, `BatteriesTaken`), nor `WarningAverted`, `LostTrack`, `ThreatReturned` (their hints say "you"; the status panel already follows the friend's `danger`). `DogBark` was already broadcast. The whistle path (`cues()`) is unchanged; its whistle-susto goes through `flush_events` and is forwarded like any other.
+  - `watch_step` still runs before `flush_events`, so a friend who falls that tick no longer forwards to the watcher (the watch has moved on).
+- Client:
+  - Pure `net::felt(snapshot, me)`: `watched` while `net::watched` holds, else `me`; `Network::felt()`. It drives the heartbeat level and speed and `dazed` in `audio::mix`, the vitals panel (fear, breath, peppers, torch) and the vignette's cold edge.
+  - Omens (`world::omen::frights`) are placed from the watched friend's row (position and yaw), not the shoulder camera 2.2 m behind; the lunge light still reads the camera. A false mark is never in the watched friend's colour either.
+  - Hints while Dead: "He has seen your friend.", "He is coming for your friend!", "Susto — fright freezes your friend." (static strings; the status panel names the friend). The hunt sting, growl and susto sounds play as for the friend.
+  - `spectate_keys`: keyboard only (A / D, ← / →); the mouse buttons no longer switch.
+  - `Crosshair` and `ControlsLine` markers (the literal controls string is untouched, merge-friendly). `hud::watch_line` hides the crosshair while spectating and swaps the controls line to "A / D or ← / →  watch another friend · M map · Esc", restoring the spawned text after.
+  - Roster: a Dead row reads "P2 La Coplera  lost · watching P1".
+  - README controls row: "A / D or arrows" (the click is gone).
+- Tests (`tests/session.rs`, new functions and one import):
+  - `the_fallen_live_the_hunt_on_the_friend_they_watch_and_no_other`: three players; the dead host lies beside player 3 but watches player 2. The real AI stalks and warns, then hunts (stepped tick by tick until `HuntBegan`). Hunting 3: 3 gets both, the host neither. Hunting 2: both reach the host. Red first with the forwarding disabled: "the fallen live their friend's WarningBegan: []".
+  - `the_fallen_feel_the_fright_of_the_friend_they_watch`: the dead host's own fear 0.95; `felt` follows friend 2's fear and stamina, then friend 3's after `Watch`; the living get `watched: None` and their own; when the watched friend is sacked, the watch moves on and `felt` follows the new friend.
+- Verified (lane integrator, on the final tree): `cargo fmt --check`, `cargo check --locked`, `cargo test --locked` (lib 95, district 9, session 57 + 3 ignored), `cargo clippy --locked --all-targets -- -D warnings` all clean. No asset or `tools/gen_audio.py` change; `git status` shows nothing under `assets/`, so all 76 WAVs are the base's bytes.
+- Not proven by the gate: `hud::watch_line` gained a crosshair `&mut Visibility` query (`Without<WatchLine>`) and a `ControlsLine` children query. They read as disjoint, but Bevy checks that when the schedule initialises, and no test builds the HUD app; the first rendered launch proves it.
+- Route sweep, normal (rerun by the lane integrator on the final tree; log `target\gate-sweep-normal.log`): solo 150/150, shared 148/150 (11, 35), the base's. The log `target\sweep-spec-normal.log` equals the base `target\sweep-normal.log` line for line (only the shell wrapper differs). No newly failing seeds: nothing in the simulation changed, only who is sent which event and a new snapshot field; the pilots never read events. Gentle and hard sweeps and the net smoke were not run (integrator's, after the merge).
+- Unverified (user-led, rendered, two or three windows): the heartbeat and cold edge following the friend; hunt sting, growl and susto heard while watching; omens appearing ahead of the friend from the shoulder view; crosshair gone and the controls line while watching and back after a restart; the roster's "watching Pn".
+- Open:
+  - A Dead player with nobody standing to watch still feels their own frozen vitals (heartbeat, vignette); the night is usually lost or ending by then.
+  - A watcher's omen is not the same one the friend sees (each client places its own from its own turn counter); both are from the friend's eye.
+  - Not built: a ring on the watched friend's dot on the map.
+- Bounds moved: none. Bounds audit (`git diff HEAD -- tests src/script.rs src/sim.rs src/tuning.rs`): `script.rs`, `sim.rs` and `tuning.rs` unchanged; `tests/` holds only the two new tests and the `felt` import, no removed or loosened assertion. Invariant tests untouched (hunt and stalk slower than walking, warnings over 1.5 s, continuous pressure hidden).
+- Commit and housekeeping: committed on m1b-spec by the lane integrator after the gate; not pushed, and the merge with the other lanes is the main integrator's. Every changed file is CRLF like the checkout (rustfmt had turned `tests/session.rs` into LF; converted back and rechecked every file). `.cargo/config.toml` is untouched and still untracked. No asset or `tools/gen_audio.py` change; `git status` shows nothing under `assets/`, so all 76 WAVs are the base's bytes. The fingerprint moves on purpose (`protocol.rs` and `session.rs` changed); no checkpoint recorded because the merge moves it again. `PROTOCOL` is not bumped, as in items 8 and 9. No hidden AI state on the wire.
+- Merge notes (places this branch could collide with the other lanes):
+  - `src/net/protocol.rs`: `Snapshot.watched` is the last field, `#[serde(default)]`.
+  - `src/net/session.rs`: `Participant::vitals()` is a new method right after `die()`, and `snapshot()`'s `me:` calls it (the old inline block is removed). The pure `shared_with_watcher` sits between `struct Call` and `struct Session`. The filter inside `flush_events` is rewritten in place. `snapshot()` gains a `watched:` initializer after `calls:`.
+  - `src/ui/mod.rs`: `Crosshair` and `ControlsLine` structs follow `WatchLine`. A `ControlsLine,` line sits two unchanged lines above the controls-string literal (not edited), so a radio-lane edit to that literal should merge cleanly. A `Crosshair,` line follows the crosshair's `BackgroundColor`.
+  - `src/ui/hud.rs`: three guarded `status() == 2` arms go just before the existing `Event::WarningBegan` arm in `hints_and_captions`. `watch_line` gains queries. The roster's `2 =>` arm is changed. The `vitals` and `vignette` fear reads are changed.
+  - `src/audio.rs`: the heartbeat and `dazed` in `mix` read `felt`.
+  - `src/world/omen.rs`: `frights` works out its eye and forward direction from the watched friend, and the false-mark filter is changed.
+  - `src/net/mod.rs`: new `felt` function and `Network::felt`; `spectate_keys` no longer takes the mouse.
+  - `tests/session.rs`: `felt` is added to the `net::{...}` import; the new tests follow `the_fallen_hear_the_whistle_their_friend_hears`.
+  - `README.md`: the watch row of the controls table.
+  - No new enum variants and no GAMEPLAY list change.
+
 ## Current handoff — 2026-09-30 (M1a landed: fingerprint-neutral, pairs with test.1)
 
 **Audio mix (fix 3).**

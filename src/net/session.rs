@@ -106,6 +106,25 @@ impl Participant {
         self.body.stun = 0.0;
         self.body.sprinting = false;
     }
+
+    /// Their own body as they feel it: fear, breath, hands, torch.
+    fn vitals(&self, tuning: &Tuning) -> Vitals {
+        Vitals {
+            fear: self.body.fear,
+            stamina: self.body.stamina,
+            aji: self.aji,
+            battery: self.battery,
+            stun: self.body.stun,
+            hold_kind: self.hold_kind,
+            hold: self.hold,
+            check: self.rhythm.check.map(|c| CheckView {
+                id: c.id,
+                needle: c.needle(tuning),
+                zone: c.zone,
+            }),
+            stall: self.rhythm.stall_left(),
+        }
+    }
 }
 
 /// Tureco: tied behind the house until someone unties him, then at the heels
@@ -152,6 +171,29 @@ pub struct Call {
     pub pos: Vec3,
     pub left: f32,
     pub by: PlayerId,
+}
+
+/// What of a friend's own night reaches the fallen who watch them: his eye
+/// on them and the hunt, their fright, their omens (placed, like theirs,
+/// from the eye the watcher shares) and Tureco's growl at their heels. Never
+/// what their hands do (pickups, prayers, skill checks): those stay theirs.
+pub fn shared_with_watcher(e: Event) -> bool {
+    matches!(
+        e,
+        Event::WarningBegan
+            | Event::HuntBegan
+            | Event::Susto
+            | Event::DogGrowl
+            | Event::OmenLampsDie
+            | Event::OmenSilence
+            | Event::OmenBones
+            | Event::OmenDrag
+            | Event::OmenHat
+            | Event::OmenPhantom
+            | Event::OmenStolenLight
+            | Event::OmenFootsteps
+            | Event::OmenFalseMark
+    )
 }
 
 pub struct Session {
@@ -764,9 +806,18 @@ impl Session {
         }
         let ids: Vec<PlayerId> = self.players.keys().copied().collect();
         for id in ids {
+            // Gone for the night, the friend they watch: what that friend
+            // lives through of him reaches them too (see `shared_with_watcher`).
+            let friend = self
+                .players
+                .get(&id)
+                .filter(|p| matches!(p.status, Status::Dead))
+                .and_then(|p| p.watch);
             let mine: Vec<Event> = events
                 .iter()
-                .filter(|(to, _)| to.is_none_or(|t| t == id))
+                .filter(|(to, e)| {
+                    to.is_none_or(|t| t == id) || (friend.is_some() && *to == friend && shared_with_watcher(*e))
+                })
                 .map(|(_, e)| *e)
                 .collect();
             self.emit(id, &mine);
@@ -1679,21 +1730,7 @@ impl Session {
             }),
             danger,
             exposure: if matches!(danger, 1..=3) { th.exposure } else { 0.0 },
-            me: Vitals {
-                fear: local.body.fear,
-                stamina: local.body.stamina,
-                aji: local.aji,
-                battery: local.battery,
-                stun: local.body.stun,
-                hold_kind: local.hold_kind,
-                hold: local.hold,
-                check: local.rhythm.check.map(|c| CheckView {
-                    id: c.id,
-                    needle: c.needle(tuning),
-                    zone: c.zone,
-                }),
-                stall: local.rhythm.stall_left(),
-            },
+            me: local.vitals(tuning),
             zones: self
                 .encounter
                 .zones
@@ -1740,6 +1777,17 @@ impl Session {
                     by: c.by,
                 })
                 .collect(),
+            // The friend's own body, not a view of him: their fear, breath
+            // and hands follow the watcher whatever `anima_sight` says.
+            watched: if matches!(local.status, Status::Dead) {
+                local
+                    .watch
+                    .filter(|&friend| self.watchable(friend))
+                    .and_then(|friend| self.players.get(&friend))
+                    .map(|p| p.vitals(tuning))
+            } else {
+                None
+            },
         }
     }
 
