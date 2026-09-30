@@ -361,6 +361,11 @@ pub struct Tuning {
     /// …and sometimes the llano goes quiet for a long while (chance, seconds).
     pub stalk_silence_chance: f32,
     pub stalk_silence: (f32, f32),
+    /// El Velo: while nobody can see him, the long silences come this much
+    /// rarer (a multiplier on `stalk_silence_chance`) and no stalking gap
+    /// runs past `veil_gap_max`: then the whistle is all anyone has of him.
+    pub veil_silence: f32,
+    pub veil_gap_max: f32,
     /// Seconds between phrases during a warning.
     pub warn_phrase_interval: f32,
     /// Seconds between phrases during a hunt.
@@ -519,18 +524,18 @@ impl Default for Tuning {
             stalk_speed: 2.2,
             creep_speed: 1.2,
             hunt_speed: 2.3,
-            warn_distance: 22.0,
+            warn_distance: 24.0,
             warn_time: 3.5,
             warn_break_time: 0.75,
             exposure_time: 7.0,
             exposure_near_boost: 0.8,
             exposure_decay: 0.35,
-            lose_track_time: 2.5,
+            lose_track_time: 4.0,
             recover_cooldown: 12.0,
             warn_recover_cooldown: 6.0,
             catch_distance: 1.5,
             patience: 20.0,
-            averts_to_withdraw: 3,
+            averts_to_withdraw: 4,
             standoff: 13.0,
             search_time: 6.0,
             noise_memory: 14.0,
@@ -597,6 +602,8 @@ impl Default for Tuning {
             stalk_answer: (1.8, 3.4),
             stalk_silence_chance: 0.2,
             stalk_silence: (15.0, 26.0),
+            veil_silence: 0.25,
+            veil_gap_max: 10.0,
             warn_phrase_interval: 3.2,
             hunt_phrase_interval: 3.8,
             phrase_jitter: 0.35,
@@ -664,7 +671,12 @@ impl Tuning {
             // A wider zone must still fit on the track.
             check_zone_at: (self.check_zone_at.0, self.check_zone_at.1.min(0.98 - zone)),
             check_great: scale(self.check_great, 0.8, 1.3),
-            averts_to_withdraw: if k > 0.0 { 4 } else { 2 },
+            // One more on a Hard night, one fewer on a Gentle one.
+            averts_to_withdraw: if k > 0.0 {
+                self.averts_to_withdraw + 1
+            } else {
+                self.averts_to_withdraw.saturating_sub(1).max(1)
+            },
             stalk_speed: scale(self.stalk_speed, 1.08, 0.9),
             ..self
         }
@@ -797,6 +809,14 @@ mod tests {
             Tuning::default().with_night(Night::Hard),
         );
         assert!(hard.warn_distance > gentle.warn_distance && hard.battery_life < gentle.battery_life);
+        // He waits over his prey longer on a harder night, never zero times.
+        let normal = Tuning::default();
+        assert!(hard.averts_to_withdraw > normal.averts_to_withdraw);
+        assert!(normal.averts_to_withdraw > gentle.averts_to_withdraw && gentle.averts_to_withdraw >= 1);
+        // Veiled, the whistle comes more often: the veil only ever shortens
+        // the stalking gaps, and never below his quickest answer.
+        assert!((0.0..1.0).contains(&normal.veil_silence));
+        assert!(normal.veil_gap_max < normal.stalk_silence.0 && normal.veil_gap_max > normal.stalk_answer.1);
         assert_eq!(Tuning::default().with_night(Night::Normal), Tuning::default());
         assert_eq!(Night::parse("hard"), Some(Night::Hard));
         assert_eq!(Night::parse("brutal"), None);

@@ -121,6 +121,9 @@ pub struct CueDirector {
     /// Seconds since the last phrase that was only in the listener's head.
     phantom_quiet: f32,
     last_take: Option<u8>,
+    /// El Velo: nobody can see him, so his whistle keeps closer company
+    /// (still inverted, still never placed).
+    veiled: bool,
 }
 
 impl CueDirector {
@@ -137,7 +140,18 @@ impl CueDirector {
             phrases: 0,
             phantom_quiet: 0.0,
             last_take: None,
+            veiled: false,
         }
+    }
+
+    /// El Velo falls or lifts (the session says so each tick). As it falls,
+    /// a long silence already under way is cut to `veil_gap_max`: while
+    /// nobody can see him, the whistle is all anyone has of him.
+    pub fn veil(&mut self, veiled: bool, tuning: &Tuning) {
+        if veiled && !self.veiled {
+            self.countdown = self.countdown.min(tuning.veil_gap_max);
+        }
+        self.veiled = veiled;
     }
 
     /// A performance other than the last one: he never whistles it the same
@@ -164,20 +178,27 @@ impl CueDirector {
     /// once; sometimes the llano goes quiet for a long time. The more of his
     /// bones are taken, the sooner (up to a fifth) — except an answer. Each
     /// bundle laid to rest crowds him further (`Tuning::at_rage`): sooner,
-    /// answered more, and the long silences grow rare.
+    /// answered more, and the long silences grow rare. Veiled, the long
+    /// silences are rarer still and no gap outlasts `veil_gap_max`.
     fn stalk_gap(&mut self, tuning: &Tuning, pressure: f32, rage: u8) -> f32 {
         let raged = tuning.at_rage(rage);
         let tuning = &raged;
+        let silence = if self.veiled {
+            tuning.stalk_silence_chance * tuning.veil_silence
+        } else {
+            tuning.stalk_silence_chance
+        };
         let roll = self.rng.f32();
         let sooner = 1.0 - 0.2 * pressure.clamp(0.0, 1.0);
-        if roll < tuning.stalk_answer_chance {
+        let gap = if roll < tuning.stalk_answer_chance {
             self.rng.range(tuning.stalk_answer.0, tuning.stalk_answer.1)
-        } else if roll < tuning.stalk_answer_chance + tuning.stalk_silence_chance {
+        } else if roll < tuning.stalk_answer_chance + silence {
             self.rng.range(tuning.stalk_silence.0, tuning.stalk_silence.1) * sooner
         } else {
             let (lo, hi) = tuning.stalk_phrase_interval;
             self.rng.range(lo, hi) * sooner
-        }
+        };
+        if self.veiled { gap.min(tuning.veil_gap_max) } else { gap }
     }
 
     /// A whistle only a badly frightened listener hears: any of the three
@@ -483,5 +504,71 @@ mod tests {
             .fold((f32::MAX, f32::MIN), |(lo, hi), &g| (lo.min(g), hi.max(g)));
         assert!(lo < t.stalk_answer.1 + 0.1, "no quick answers: {lo}");
         assert!(hi > lo * 2.5, "a steady rhythm: {lo}..{hi}");
+    }
+
+    /// El Velo: while nobody can see him his whistle keeps closer company.
+    /// No gap outlasts `veil_gap_max`, a silence under way is cut short as
+    /// the veil falls, and the whistle still keeps no rhythm and still says
+    /// only what the inversion says.
+    #[test]
+    fn veiled_he_is_never_silent_for_long_and_still_keeps_no_rhythm() {
+        let layout = Layout::new();
+        let t = Tuning::default();
+        let dt = 1.0 / 60.0;
+        let mut enc = Encounter::new(&layout);
+        enc.threat.state = ThreatState::Stalking;
+        enc.threat.presence = Presence::Present;
+        enc.threat.pos = Vec2::new(0.0, -20.0);
+        let run = |veiled: bool| {
+            let mut cue = CueDirector::new(5);
+            let (mut last, mut gaps, mut heard) = (None, Vec::new(), Vec::new());
+            for i in 0..(30 * 60 * 60) {
+                cue.veil(veiled, &t);
+                if let Some(p) = cue.tick(dt, &enc, Vec2::ZERO, &t) {
+                    let now = i as f32 * dt;
+                    if let Some(before) = last {
+                        gaps.push(now - before);
+                    }
+                    last = Some(now);
+                    heard.push(p);
+                }
+            }
+            (gaps, heard)
+        };
+        let (seen, _) = run(false);
+        let (veiled, heard) = run(true);
+        let most = |g: &[f32]| g.iter().copied().fold(f32::MIN, f32::max);
+        let least = |g: &[f32]| g.iter().copied().fold(f32::MAX, f32::min);
+        let mean = |g: &[f32]| g.iter().sum::<f32>() / g.len() as f32;
+        assert!(
+            most(&seen) > t.veil_gap_max,
+            "seen, the llano still falls quiet for long"
+        );
+        assert!(
+            most(&veiled) <= t.veil_gap_max + 2.0 * dt,
+            "veiled, a silence of {:.1} s",
+            most(&veiled)
+        );
+        assert!(mean(&veiled) < mean(&seen), "veiled, he whistles more often");
+        assert!(least(&veiled) < t.stalk_answer.1 + 0.1, "no quick answers");
+        assert!(most(&veiled) > least(&veiled) * 2.5, "a steady rhythm");
+        // The veil changes nothing of what a phrase says: the same distance,
+        // the same inverted timbre.
+        let expected = variant_for(seeming_closeness(20.0, &t), &t);
+        assert!(heard.iter().all(|p| p.variant == expected && !p.phantom));
+        // A long silence under way when the veil falls is cut short.
+        let mut cue = CueDirector::new(5);
+        let mut waited = 0;
+        while cue.countdown <= t.veil_gap_max + 1.0 {
+            cue.tick(dt, &enc, Vec2::ZERO, &t);
+            waited += 1;
+            assert!(waited < 30 * 60 * 60, "no long silence in half an hour");
+        }
+        cue.veil(true, &t);
+        let mut quiet = 0.0;
+        while cue.tick(dt, &enc, Vec2::ZERO, &t).is_none() {
+            quiet += dt;
+            assert!(quiet <= t.veil_gap_max + dt, "the silence ran on under the veil");
+        }
     }
 }

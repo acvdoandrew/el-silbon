@@ -15,6 +15,10 @@
 //!   he bends over you, and everything goes black (the outcome screen
 //!   waits for it). See `silbon::lunge_frame`.
 //! - Reveal: a lightning strike shows him close, with a stinger.
+//! - Materialize: he was nowhere to be seen for a long while (El Velo, or
+//!   just out of view), and now he is there, coming for you: the same
+//!   stinger. Read from the snapshot alone (in view or not, the danger this
+//!   eye is in); nothing here knows why he was unseen.
 
 use bevy::light::{NotShadowCaster, NotShadowReceiver};
 use bevy::prelude::*;
@@ -60,6 +64,52 @@ pub struct Catch {
 }
 /// Seconds between two lightning reveals.
 const REVEAL_COOL: f32 = 45.0;
+/// Seconds he must have been out of sight before his appearing reads as a
+/// materialization, and how soon after he appears he must come for you.
+const MATERIALIZE_UNSEEN: f32 = 8.0;
+const MATERIALIZE_FRESH: f32 = 3.0;
+
+/// He appears out of nowhere: long unseen, then in view, and at once (or
+/// already) coming for this eye (the player's own, or the friend's they
+/// watch). As the veil lifts at a Peak he often stands there a moment
+/// before he warns; that still counts.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Materialize {
+    /// Seconds out of sight in the current stretch.
+    unseen: f32,
+    /// How long he had been out of sight before this time in view, and the
+    /// seconds in view since.
+    gap: f32,
+    seen_for: f32,
+    in_view: bool,
+    /// He was in view and coming for this eye last frame.
+    coming: bool,
+}
+
+impl Materialize {
+    /// One frame: true once, the frame he is in view and coming for this
+    /// eye, when he came into view at most `MATERIALIZE_FRESH` seconds ago
+    /// after `MATERIALIZE_UNSEEN` seconds nowhere to be seen.
+    pub fn appears(&mut self, shown: bool, chased: bool, dt: f32) -> bool {
+        if !shown {
+            self.unseen += dt;
+            self.in_view = false;
+            self.coming = false;
+            return false;
+        }
+        if self.in_view {
+            self.seen_for += dt;
+        } else {
+            self.in_view = true;
+            self.gap = self.unseen;
+            self.seen_for = 0.0;
+            self.unseen = 0.0;
+        }
+        let fresh = chased && !self.coming;
+        self.coming = chased;
+        fresh && self.gap >= MATERIALIZE_UNSEEN && self.seen_for <= MATERIALIZE_FRESH
+    }
+}
 
 /// A sound the frights ask for.
 #[derive(Message, Clone, Copy, Debug, PartialEq)]
@@ -178,6 +228,8 @@ pub struct Fright {
     pub false_mark: Option<FalseMark>,
     /// La Rabia's telegraph.
     pub rage: RageTelegraph,
+    /// He appears out of nowhere.
+    materialize: Materialize,
 }
 
 impl Fright {
@@ -764,6 +816,15 @@ pub fn frights(
     }
     fright.last_flash = flash;
 
+    // He appears out of nowhere, coming for this eye: the reveal's stinger
+    // (and its cooldown, so a strike a moment later does not sting twice).
+    let shown = net.snapshot().is_some_and(|s| s.threat.is_some());
+    let chased = net.snapshot().is_some_and(|s| matches!(s.danger, 1..=3));
+    if fright.materialize.appears(shown, chased, dt) && fright.lunge.is_none() && fright.reveal_cool <= 0.0 {
+        fright.reveal_cool = REVEAL_COOL;
+        stings.write(Sting::Reveal);
+    }
+
     // What is shown fades on its own clock, or when you come close.
     let (drag_left, _, drag_vis) = &mut *drag;
     drag_left.0 -= dt;
@@ -822,5 +883,38 @@ mod tests {
         // Laying again after a long quiet telegraphs again.
         rage.tick(RAGE_MERGE);
         assert!(rage.laid());
+    }
+
+    #[test]
+    fn he_materializes_only_after_a_long_while_unseen_and_only_coming_for_you() {
+        let dt = 1.0 / 60.0;
+        let unseen = |m: &mut Materialize, secs: f32| {
+            for _ in 0..(secs / dt) as usize {
+                assert!(!m.appears(false, true, dt), "nothing to see, nothing appears");
+            }
+        };
+        let seen = |m: &mut Materialize, secs: f32| {
+            for _ in 0..(secs / dt) as usize {
+                assert!(!m.appears(true, false, dt), "he only stands there");
+            }
+        };
+        let mut m = Materialize::default();
+        // Long unseen, then there as he warns: it stings, once.
+        unseen(&mut m, MATERIALIZE_UNSEEN + 0.5);
+        assert!(m.appears(true, true, dt));
+        assert!(!m.appears(true, true, dt), "only the frame he appears");
+        // Glimpsed a moment ago: turning back to him is no materialization.
+        unseen(&mut m, MATERIALIZE_UNSEEN * 0.5);
+        assert!(!m.appears(true, true, dt));
+        // Long unseen, and he only stalks: no stinger...
+        unseen(&mut m, MATERIALIZE_UNSEEN + 0.5);
+        assert!(!m.appears(true, false, dt));
+        // ...until he warns a moment later (the veil lifts, then the warning).
+        seen(&mut m, 1.0);
+        assert!(m.appears(true, true, dt));
+        // In plain view a good while before he comes: no surprise left.
+        unseen(&mut m, MATERIALIZE_UNSEEN + 0.5);
+        seen(&mut m, MATERIALIZE_FRESH + 1.0);
+        assert!(!m.appears(true, true, dt));
     }
 }

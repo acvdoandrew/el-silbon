@@ -1570,7 +1570,10 @@ mod tests {
             run_for(&mut enc, &l, &t, HIDDEN, t.warn_break_time + 0.1, &mut ev);
             assert_eq!(enc.threat.state, ThreatState::Stalking);
         }
-        assert_eq!(ev.iter().filter(|e| **e == Event::WarningAverted).count(), 3);
+        assert_eq!(
+            ev.iter().filter(|e| **e == Event::WarningAverted).count(),
+            t.averts_to_withdraw as usize
+        );
         assert!(ev.contains(&Event::LostTrack), "he gives up his watch");
         assert!(matches!(enc.threat.presence, Presence::Sinking { relocate: true, .. }));
         run_for(&mut enc, &l, &t, HIDDEN, t.sink_time + t.rise_time + 0.3, &mut ev);

@@ -3004,6 +3004,121 @@ fn a_player_in_plain_view_ten_metres_from_him_is_never_warned_during_grace_or_re
     }
 }
 
+/// El Velo: through a Build he walks veiled for stretches. Pinned in plain
+/// view ten metres off, he is then in nobody's snapshot, neither the
+/// player's nor that of the fallen friend who watches them, and he only
+/// stalks. The warning that follows the Build shows him to both at once and
+/// still lasts over 1.5 s. Several of the director's seeds, so at least one
+/// Build still has him veiled when it runs out.
+#[test]
+fn veiled_he_is_in_no_snapshot_and_the_warning_that_follows_still_reads() {
+    use el_silbon::pacing::{Phase, Respiro};
+    let mut veiled_into_the_peak = 0;
+    for seed in 0..6u64 {
+        let mut r = Rig::new(2);
+        // This seed's night, as a restart with it would begin.
+        r.s.pacing = Respiro::new(r.t.night, seed);
+        // Player 2 is gone for the night and watches the host.
+        r.put(2, Vec2::new(-30.0, 20.0));
+        r.s.players.get_mut(&2).unwrap().status = Status::Dead;
+        r.take(HOST, 0);
+        let (me, him) = (Vec2::new(0.0, 8.0), Vec2::new(0.0, 18.0));
+        assert!(r.l.line_of_sight(me, him), "plain view");
+        let (mut seen_before, mut veiled_secs) = (false, 0.0);
+        loop {
+            let (phase_before, veiled_before) = (r.s.pacing.phase(), r.s.veiled());
+            let ev = face_him(&mut r, me, him);
+            assert_eq!(r.s.players[&2].watch, Some(HOST), "{seed}: the fallen watch the host");
+            let host = r.s.snapshot(HOST, &r.l, &r.t);
+            let fallen = r.s.snapshot(2, &r.l, &r.t);
+            assert_eq!(
+                host.threat.is_some(),
+                fallen.threat.is_some(),
+                "{seed}: the fallen see what their friend sees"
+            );
+            assert_eq!(host.danger, fallen.danger);
+            if r.s.veiled() {
+                veiled_secs += STEP;
+                assert!(
+                    matches!(r.s.pacing.phase(), Phase::Build | Phase::Relax),
+                    "{seed}: veiled in the {:?}",
+                    r.s.pacing.phase()
+                );
+                assert_eq!(r.s.encounter.threat.state, ThreatState::Stalking);
+                assert!(
+                    host.threat.is_none() && host.danger == 0,
+                    "{seed}: veiled, and placed at {:.1} s",
+                    r.s.encounter.elapsed
+                );
+                let json = serde_json::to_string(&host).unwrap();
+                assert!(!json.contains("veil"), "nothing on the wire says so");
+            } else if veiled_secs <= 0.0 {
+                seen_before |= host.threat.is_some();
+            }
+            if phase_before == Phase::Build && r.s.pacing.phase() == Phase::Peak && veiled_before {
+                veiled_into_the_peak += 1;
+            }
+            if matches!(r.s.encounter.threat.state, ThreatState::Warning | ThreatState::Hunting) {
+                assert!(!r.s.veiled(), "{seed}: veiled through a warning");
+            }
+            if ev.contains(&Event::WarningBegan) {
+                assert!(
+                    host.threat.is_some() && fallen.threat.is_some(),
+                    "{seed}: the warning shows him"
+                );
+                // The warning runs its course in plain view.
+                let mut warned = STEP;
+                while r.s.encounter.threat.state == ThreatState::Warning {
+                    face_him(&mut r, me, him);
+                    assert!(!r.s.veiled());
+                    assert!(r.s.snapshot(HOST, &r.l, &r.t).threat.is_some());
+                    warned += STEP;
+                    assert!(warned < 10.0, "{seed}: an endless warning");
+                }
+                assert!(warned > 1.5, "{seed}: a warning of {warned:.2} s");
+                break;
+            }
+            assert!(r.s.encounter.elapsed < 600.0, "{seed}: no warning");
+        }
+        assert!(seen_before, "{seed}: before any veil he stood in plain view");
+        assert!(veiled_secs > 0.0, "{seed}: the Build never veiled him");
+        assert!(r.s.pacing.beats().veiled > 0.0, "{seed}: the beats keep the veil");
+    }
+    assert!(veiled_into_the_peak > 0, "no Build ran out with him veiled");
+}
+
+/// Veiled, he is still there to the one sense that does not lie: Tureco
+/// growls at him up close, truthfully, though nobody can see him.
+#[test]
+fn tureco_still_growls_at_him_when_he_walks_veiled() {
+    let mut r = Rig::new(1);
+    r.take(HOST, 0);
+    r.s.dog.free = true;
+    r.s.dog.owner = Some(HOST);
+    while !r.s.veiled() {
+        r.send(HOST, [0.0; 2], false, false, false);
+        r.tick();
+        assert!(r.s.encounter.elapsed < 600.0, "the veil never fell");
+    }
+    r.s.dog.growling = false;
+    r.events(HOST);
+    let dog = r.s.dog.pos;
+    let th = &mut r.s.encounter.threat;
+    th.pos = dog + Vec2::new(15.0, 0.0);
+    th.presence = Presence::Present;
+    th.movement = el_silbon::sim::Movement::Still;
+    r.send(HOST, [0.0; 2], false, false, false);
+    r.tick();
+    assert!(r.s.veiled(), "still veiled");
+    assert!(
+        r.events(HOST).contains(&Event::DogGrowl),
+        "Tureco growls at what nobody sees"
+    );
+    let snap = r.s.snapshot(HOST, &r.l, &r.t);
+    assert_eq!(snap.dog.mood, 2, "and everyone sees him growl");
+    assert!(snap.threat.is_none(), "but nobody sees him");
+}
+
 /// The rooster crows at 1.5 night lengths: with bones still out the night
 /// ends as Dawn; with them all home he sinks for good and the way out stays
 /// open.
