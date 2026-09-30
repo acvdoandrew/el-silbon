@@ -7,7 +7,7 @@
 - This deliberately changes the fingerprint: test.3 will NOT pair with test.1 (old CRLF/test.1 value 0x93dcc314afdc3f17). From now on a Windows CRLF build and a Linux LF build of the same commit DO pair.
 - Only `\r` bytes are dropped, so an LF checkout hashes exactly as before (unchanged HEAD on Linux: 0x656b174ca193ce45); only the Windows CRLF value moves.
 - This tree with only this item: 0xa7c36c4384a95020 on both platforms. From the Python model of the hash, which reproduces the real Rust test.1 value from HEAD re-CRLF'd. A checkpoint, not the test.3 value: items 6-11 edit hashed files again.
-- New hashed files later (pacing.rs, errand.rs, remedy.rs, radio.rs) just join the `include_str!` list.
+- New hashed files later (pacing.rs, errand.rs, remedy.rs, radio.rs) just join the `GAMEPLAY` list in `protocol.rs`.
 - Test `a_windows_and_a_linux_checkout_of_one_commit_share_a_fingerprint_but_edits_do_not`: CRLF and LF texts agree; a changed or removed line still refuses.
 - Verified: fmt, check, test (lib 87, district 7, session 41 + 3 ignored), clippy -D warnings clean. Route sweep: normal solo 150/150, shared 150/150; gentle 150/150, 149/150 (shared seed 124, = baseline); hard 136/150, 134/150 (= baseline; the test's own 97% assert fires, not the bar), failing seed set identical to HEAD's. No newly failing seeds.
 - Net smoke (headless, two processes, 127.0.0.1:5311): run 1 host `NET SMOKE FAIL: the player went down before the route meant it to` (run 1, night 155 s; handshake, delivery and marks had succeeded), client then failed on the closed session. Run 2: both `NET SMOKE PASS`, exit 0. Gameplay is unchanged (seed sets identical), so run 1 reads as a pre-existing real-time smoke flake.
@@ -197,6 +197,40 @@
   - Haunts (Phase 2, Ánimas) are M2.
 - Bounds moved: none. Invariant tests are untouched (hunt and stalk slower than walking, warnings over 1.5 s, continuous pressure hidden; `tests/session.rs` only gains tests, a helper and two imports). Committed on m1b; not pushed.
 
+**The fingerprint covers the seeded generator and the world noise (after test.3).**
+- Where pairing stands:
+  - `v0.1.0-test.3` is tagged at 89f1ede. Its fingerprint is 0x44387ca6b9e1452e, from a real headless host run of 89f1ede's hashed sources (only the unhashed `transport.rs` print added). It equals the item 9 checkpoint from the Python model, recomputed again at commit from 89f1ede's git objects.
+  - test.3 does not pair with test.1 or test.2 (both 0x93dcc314afdc3f17 on Windows).
+  - From 18b47f8 on, a Windows (CRLF) and a Linux (LF) build of one commit share a fingerprint.
+  - This tree: **0xd335073e06e8cde2**, printed by both processes of a real net smoke (`target\fp11\net-{host,client}.err`, and at commit `target\fp12\net-{host,client}.err`). The Python model `target\fp.py` (now with `src/rng.rs` and `src/noise.rs`) gives the same value. It does not pair with test.3: `rng.rs` and `noise.rs` join the hash, and `protocol.rs` gains a test. A checkpoint: items 10-11 edit hashed files again.
+  - Superseded checkpoint: 0x34bb1c0c537e2997 (`target\fp10`) was this item before `noise.rs` joined the list.
+- `src/net/protocol.rs`:
+  - The hashed sources are now the `GAMEPLAY` const (15 texts), and `fingerprint()` is `fingerprint_of(GAMEPLAY)`, still without `\r`.
+  - `src/rng.rs` is hashed. `geometry/district.rs`, `net/session.rs`, `sim.rs`, `storm.rs`, `perception.rs`, `skill.rs` and `director.rs` all draw from `rng::Rng`. A change to the generator deals another district, storm and night from one seed, and before this change it still paired.
+  - `src/noise.rs` is hashed after it, before `Cargo.lock`. `district.rs` imports `fbm2`, and it decides two things:
+    - Which tree trunks are kept (:1104). Kept trunks become host-authoritative `Blocker { Shape::Circle, sight: Sight::Blocks, kind: Trunk }` (:1368-1373), which block movement and line of sight.
+    - The terrain height (:1234, :1246, :1253). `Layout::wade` reads that height to choose Dry, Shallow or Deep, which sets wading speed and noise.
+    - So a change to the noise dealt other cover and other wading from one seed, and before this change it still paired.
+- `src/net/transport.rs`: `Endpoint::new` prints `NET fingerprint 0x…` to stderr when hosting or joining (`!mode.is_solo()`). It prints once the socket is set up, so a refused or unbindable address fails without printing a value. `transport.rs` is not hashed, so the print does not move the value. Every networked run and the net smoke log now show it.
+- Test `a_build_whose_seed_deals_another_night_does_not_pair`:
+  - For `rng.rs` and `noise.rs`, it appends a comment to that source, substitutes it into `GAMEPLAY`, and requires a fingerprint different from this build's. Appending, instead of editing a constant, keeps the test independent of how either file is written.
+  - Red first, with `rng.rs` hashed and `noise.rs` not: "a build with another noise.rs paired" (both sides 6649486625843381237). The `rng.rs` case passed. Earlier in this item, with neither file hashed, the `rng.rs` case was red: "a build with another generator paired". Green after each file joined the list.
+- **Protocol hygiene.** No message, wire field or enum changed. `PROTOCOL` is not bumped, the same deviation as items 8 and 9. No hidden AI state is on the wire.
+- Verified:
+  - fmt, check, test (lib 95, district 9, session 55 + 3 ignored), clippy -D warnings clean; the same when rerun at commit. Logs `target\fp11\gate-*.log`, and at commit `target\fp12\gate-*.log`.
+  - Route sweep on the final tree (`noise.rs` hashed), at commit: normal solo 150/150, shared 148/150 (11, 35); gentle 150/150, 150/150; hard 150/150, 138/150 (the test's own 97% assert fires on hard, not the bar).
+    - Every failure report on every night is identical, character for character, to the previous commit's `sweep9i-*`. No newly failing seeds: no gameplay source changed, and `rng.rs` and `noise.rs` themselves are unchanged. Logs `target\sweep12v-*.log` (and `target\sweep10fp-*.log`, the same, from before `noise.rs` joined).
+  - Net smoke (headless, two processes, 127.0.0.1:5311, debug build of this tree):
+    - Implementer, run once: `NET SMOKE PASS host` and `NET SMOKE PASS client`; host exit 0, client exit 0. Logs `target\fp11\net-*`.
+    - At commit, run once, about 9.3 min: both PASS, host exit 0, client exit 0. Both first lines read `NET fingerprint 0xd335073e06e8cde2`, and the host accepted the client. Logs `target\fp12\net-*`.
+- Unverified: a real Linux LF build pairing with a Windows CRLF build (the unit test and the Python model agree that they do).
+- Open: other unhashed sources that the hashed ones use:
+  - `src/survivor.rs`: `Survivor::assign` (who gets which survivor) runs on the host. `code`/`from_code` map the wire byte to a survivor. This is identity, not layout or rules.
+  - `src/awards.rs`: `Deeds` is on the wire (`Snapshot.deeds`, `#[serde(default)]` on the struct). The awards are computed on each client (`ui/mod.rs` :1015), so this is presentation only.
+  - Done: `src/noise.rs` (above).
+- Bounds moved: none. The only test change is a new assertion in `protocol.rs`; invariant tests are untouched.
+- The commit holds exactly three files: `docs/PROGRESS.md`, `src/net/protocol.rs` and `src/net/transport.rs`. No asset touched. `target\fp.py`, `target\fp11\*` and `target\fp12\*` are gitignored evidence. Committed on m1b; not pushed.
+
 ## Current handoff — 2026-09-30 (M1a landed: fingerprint-neutral, pairs with test.1)
 
 **Audio mix (fix 3).**
@@ -249,7 +283,7 @@
 **Integration checks (this pass).**
 - New test `profile::a_testers_saved_profile_loads_into_this_build`: a full test.1 profile keeps its pages, tally, join address, survivor and choices; master, display mode and contrast start at defaults; calibration is offered; the old keys are not saved again.
 - No Rust code still uses the removed `volume` or `fullscreen` settings.
-- Fingerprint unchanged: 0x93dcc314afdc3f17 from a real run, equal to v0.1.0-test.1 checked out with CRLF.
+- Fingerprint unchanged: 0x93dcc314afdc3f17 from a real run, equal to v0.1.0-test.1 checked out with CRLF. (History: this is the test.2 value, `v0.1.0-test.2` at 93dfb95. M1b changed it; test.3 does not pair with test.1 or test.2.)
 - The real test.1 Windows exe (built from CRLF sources) and this tree paired in both directions over headless loopback ("NET accepted").
 - Gate green: lib 86, district 7, session 41 + 3 ignored, clippy clean. Headless two-process net smoke: NET SMOKE PASS on host and client, exit 0.
 
@@ -260,7 +294,7 @@
 - Line endings enter the fingerprint (`include_str!` hashes raw bytes):
   a CRLF checkout on Windows pairs with test.1-windows, an LF Linux build
   does not. Strip `\r` in `fingerprint()` in M1b (it changes the
-  fingerprint). Do not bump the crate version for test.2: `Cargo.lock` is
+  fingerprint). **Done** in 18b47f8. Do not bump the crate version for test.2: `Cargo.lock` is
   a fingerprint input; tag the release instead.
 - Open for the user's eye: middling and faint captions are both pale blue
   italics and may read alike; the calibration card can cover the hat

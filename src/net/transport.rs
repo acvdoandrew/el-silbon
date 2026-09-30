@@ -155,6 +155,9 @@ impl Endpoint {
                 )
             }
         };
+        if !mode.is_solo() {
+            eprintln!("NET fingerprint {:#018x}", fingerprint());
+        }
         Ok(Self {
             mode,
             side,

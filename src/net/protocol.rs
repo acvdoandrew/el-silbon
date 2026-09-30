@@ -396,24 +396,31 @@ pub enum ServerMessage {
     Ended(String),
 }
 
+/// The sources that decide shared play, the seeded generator they all draw
+/// from and the world noise that shapes the district's terrain and trunks
+/// included.
+const GAMEPLAY: [&str; 15] = [
+    include_str!("protocol.rs"),
+    include_str!("session.rs"),
+    include_str!("../geometry.rs"),
+    include_str!("../geometry/district.rs"),
+    include_str!("../tuning.rs"),
+    include_str!("../control.rs"),
+    include_str!("../sim.rs"),
+    include_str!("../body.rs"),
+    include_str!("../storm.rs"),
+    include_str!("../perception.rs"),
+    include_str!("../skill.rs"),
+    include_str!("../director.rs"),
+    include_str!("../rng.rs"),
+    include_str!("../noise.rs"),
+    include_str!("../../Cargo.lock"),
+];
+
 /// Exact gameplay build + seed handshake, rather than assuming layouts/config
 /// match because both applications happened to start successfully.
 pub fn fingerprint() -> u64 {
-    fingerprint_of([
-        include_str!("protocol.rs"),
-        include_str!("session.rs"),
-        include_str!("../geometry.rs"),
-        include_str!("../geometry/district.rs"),
-        include_str!("../tuning.rs"),
-        include_str!("../control.rs"),
-        include_str!("../sim.rs"),
-        include_str!("../body.rs"),
-        include_str!("../storm.rs"),
-        include_str!("../perception.rs"),
-        include_str!("../skill.rs"),
-        include_str!("../director.rs"),
-        include_str!("../../Cargo.lock"),
-    ])
+    fingerprint_of(GAMEPLAY)
 }
 
 /// FNV-1a over the gameplay sources, without `\r`: git checks one commit out
@@ -534,5 +541,26 @@ mod tests {
         let lf = fingerprint_of(["a = 1;\nb = 2;\n"]);
         assert_ne!(lf, fingerprint_of(["a = 1;\nb = 3;\n"]));
         assert_ne!(lf, fingerprint_of(["a = 1;b = 2;\n"]));
+    }
+
+    #[test]
+    fn a_build_whose_seed_deals_another_night_does_not_pair() {
+        // The district, the storm, the skill checks and his choices are all
+        // drawn from rng::Rng, and the terrain, the wading depth and the
+        // trunks that block him are shaped by the world noise: another
+        // generator or another noise deals another night from the same seed,
+        // so the handshake must refuse it.
+        for (name, ours) in [
+            ("rng.rs", include_str!("../rng.rs")),
+            ("noise.rs", include_str!("../noise.rs")),
+        ] {
+            let theirs = format!("{ours}\n// another build's {name}\n");
+            let other = GAMEPLAY.map(|text| if text == ours { theirs.as_str() } else { text });
+            assert_ne!(
+                fingerprint_of(other),
+                fingerprint(),
+                "a build with another {name} paired"
+            );
+        }
     }
 }
