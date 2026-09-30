@@ -163,6 +163,39 @@ pub fn follow_body(pose: &mut Pose, local: &PlayerView, fresh: bool, dt: f32, tu
     }
 }
 
+/// Gone for the night, the friend this player watches: only for the dead,
+/// and only while that friend is on their feet (the session moves the watch
+/// on when they fall). The eye, the ears and the HUD follow this row.
+pub fn watched(snapshot: &Snapshot, me: Option<PlayerId>) -> Option<&PlayerView> {
+    let mine = snapshot.player(me?)?;
+    if mine.status != 2 || mine.watching == 0 {
+        return None;
+    }
+    snapshot.player(mine.watching).filter(|p| p.status == 0)
+}
+
+/// The friend on their feet `step` places along the party from the one
+/// watched now (wrapping); None when nobody else stands.
+pub fn cycle_watch(snapshot: &Snapshot, me: PlayerId, step: i32) -> Option<PlayerId> {
+    let standing: Vec<PlayerId> = snapshot
+        .players
+        .iter()
+        .filter(|p| p.id != me && p.status == 0)
+        .map(|p| p.id)
+        .collect();
+    let n = standing.len() as i32;
+    if n == 0 {
+        return None;
+    }
+    let now = snapshot.player(me).map_or(0, |p| p.watching);
+    let at = match standing.iter().position(|&id| id == now) {
+        Some(i) => i as i32 + step,
+        None if step < 0 => n - 1,
+        None => 0,
+    };
+    Some(standing[at.rem_euclid(n) as usize])
+}
+
 /// The skill check this player is being asked for, and where its needle is
 /// now: the host's needle in the newest snapshot, carried on by the seconds
 /// since it arrived.
@@ -239,6 +272,25 @@ impl Network {
     pub fn stunned(&self) -> bool {
         self.snapshot().is_some_and(|s| s.me.stun > 0.0)
     }
+    /// Gone for the night, the friend on their feet this player watches.
+    pub fn watched(&self) -> Option<&PlayerView> {
+        watched(self.snapshot()?, self.id())
+    }
+    /// Watching a friend: the eye, the whistles and the HUD are theirs.
+    pub fn spectating(&self) -> bool {
+        self.watched().is_some()
+    }
+    /// What the fallen are told: whom they watch, and how to watch another.
+    pub fn watch_label(&self) -> Option<String> {
+        let (s, me) = (self.snapshot()?, self.id()?);
+        let friend = watched(s, Some(me))?;
+        let who = Survivor::from_code(friend.survivor).name();
+        Some(if cycle_watch(s, me, 1).is_some_and(|next| next != friend.id) {
+            format!("Watching {who}   ·   A / D  another friend")
+        } else {
+            format!("Watching {who}")
+        })
+    }
     /// The skill check in flight for this player and its needle now.
     pub fn needle(&self, tuning: &Tuning) -> Option<(u32, f32)> {
         let e = self.endpoint.as_ref()?;
@@ -282,7 +334,12 @@ impl Plugin for NetworkPlugin {
             .add_message::<StartRun>()
             .add_message::<LeaveRun>()
             .add_systems(Startup, setup)
-            .add_systems(Update, (net_keys, begin_or_leave).chain().in_set(GameSet::Control))
+            .add_systems(
+                Update,
+                (net_keys, spectate_keys, begin_or_leave)
+                    .chain()
+                    .in_set(GameSet::Control),
+            )
             .add_systems(Update, update.in_set(GameSet::Simulate))
             .add_systems(
                 Update,
@@ -440,9 +497,43 @@ fn net_keys(
     }
 }
 
+/// Gone for the night: A / D (the arrows, or the mouse buttons) watch the
+/// previous or the next friend on their feet. Only ever an explicit command;
+/// the dead's input packet still carries nothing.
+fn spectate_keys(
+    keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    launch: Res<Launch>,
+    state: Res<State<Flow>>,
+    net: Res<Network>,
+    mut controls: MessageWriter<NetControl>,
+) {
+    if launch.smoke || launch.net_smoke || launch.photos {
+        return;
+    }
+    if *state.get() != Flow::Playing || !net.running() || net.status() != 2 {
+        return;
+    }
+    let step = if keys.any_just_pressed([KeyCode::KeyA, KeyCode::ArrowLeft]) || mouse.just_pressed(MouseButton::Left) {
+        -1
+    } else if keys.any_just_pressed([KeyCode::KeyD, KeyCode::ArrowRight]) || mouse.just_pressed(MouseButton::Right) {
+        1
+    } else {
+        return;
+    };
+    let (Some(s), Some(me)) = (net.snapshot(), net.id()) else {
+        return;
+    };
+    let now = s.player(me).map_or(0, |p| p.watching);
+    if let Some(id) = cycle_watch(s, me, step).filter(|&id| id != now) {
+        controls.write(NetControl::Action(Action::Watch { id }));
+    }
+}
+
 fn update(
     (time, real, fright): (Res<Time>, Res<Time<Real>>, Res<crate::world::omen::Fright>),
-    mut outcome_wait: Local<f32>,
+    // Seconds the run has been over; the eased eye of the friend watched.
+    (mut outcome_wait, mut shoulder): (Local<f32>, Local<Option<(PlayerId, Pose)>>),
     layout: Res<LayoutRes>,
     tuning: Res<TuningRes>,
     state: Res<State<Flow>>,
@@ -555,6 +646,36 @@ fn update(
         // solo (so a fixed-step smoke replays exactly), the wall clock shared.
         follow_body(&mut player.0.pose, local, changed, dt, &tuning.0);
         *player.1 = crate::player::eye_transform(&player.0.pose, &tuning.0, &layout.0);
+    }
+    // Gone for the night: the eye rides over the shoulder of the friend
+    // watched, from their row, eased as their avatar is. Written here, in
+    // Simulate, so everything presented this frame (placed sounds, omens,
+    // marks, lamps) is seen and heard from it.
+    match watched(s, endpoint.id) {
+        Some(friend) => {
+            let t = &tuning.0;
+            let want = Pose {
+                pos: Vec2::from_array(friend.position),
+                yaw: friend.yaw,
+                pitch: friend.pitch,
+                lower: if friend.crouch { t.crouch_lower } else { 0.0 },
+            };
+            let k = (real.delta_secs() * 18.0).min(1.0);
+            let eye = match *shoulder {
+                Some((id, mut eye)) if id == friend.id && !changed && eye.pos.distance(want.pos) <= 4.0 => {
+                    eye.pos = eye.pos.lerp(want.pos, k);
+                    eye.yaw = crate::control::wrap_angle(eye.yaw + crate::control::wrap_angle(want.yaw - eye.yaw) * k);
+                    eye.pitch += (want.pitch - eye.pitch) * k;
+                    eye.lower += (want.lower - eye.lower) * k;
+                    eye
+                }
+                // A new friend, a new run or a jump: cut to them.
+                _ => want,
+            };
+            *shoulder = Some((friend.id, eye));
+            *player.1 = crate::player::shoulder_transform(&eye, t, &layout.0);
+        }
+        None => *shoulder = None,
     }
     // The run is over: the outcome screen, once a player who was just
     // caught has had the moment he lunges at them.
@@ -854,6 +975,7 @@ fn banner(
     if e.closed {
         buffer.push_str(&e.status);
     } else if let Some(s) = &e.snapshot {
+        let watching = net.watch_label();
         let state = if !s.started {
             "Lobby: the host presses Enter when everyone is connected | F7: be someone else"
         } else if s.outcome == 1 {
@@ -865,7 +987,7 @@ fn banner(
         } else if net.status() == 1 {
             "DOWN: crawl toward your friends | V: call for help (he may hear it too)."
         } else if net.status() == 2 {
-            "You bled out. Watch over your teammates."
+            watching.as_deref().unwrap_or("You are gone for the night.")
         } else {
             "V: mark | Q: pepper | G: put a bundle down | Esc: local menu (world continues)"
         };

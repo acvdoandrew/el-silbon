@@ -66,6 +66,10 @@ pub enum Action {
     Call {
         kind: CallKind,
     },
+    /// Gone for the night: watch this friend, who must be on their feet.
+    Watch {
+        id: PlayerId,
+    },
 }
 
 /// What a call says (the call wheel). So far only the fallen's cry.
@@ -158,6 +162,10 @@ pub struct PlayerView {
     /// Who they are (`survivor::Survivor` code): only how they look.
     #[serde(default)]
     pub survivor: u8,
+    /// Gone for the night: the friend on their feet whose eyes and ears they
+    /// share (0 for none).
+    #[serde(default)]
+    pub watching: PlayerId,
 }
 
 impl PlayerView {
@@ -171,6 +179,8 @@ impl PlayerView {
 
 /// Only sent when physically present, in the listener's view cone and with
 /// unobstructed sight. This is legitimate visible presentation, not an AI dump.
+/// For a listener gone for the night, the eye is the friend they watch (and
+/// only with `Tuning::anima_sight`): never their own body's, never all-seeing.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct VisibleThreat {
     pub position: [f32; 2],

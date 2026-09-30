@@ -204,6 +204,9 @@ pub struct Tuning {
     /// the same voice calls again, and how long the call shows.
     pub call_cooldown: f32,
     pub call_life: f32,
+    /// The fallen see him when the friend they watch does, through that
+    /// friend's eyes (off: they watch their friend panic at nothing).
+    pub anima_sight: bool,
 
     // ---------------------------------------------------------------- threat
     /// He never manifests closer than this to a player.
@@ -497,6 +500,7 @@ impl Default for Tuning {
             ping_range: 140.0,
             call_cooldown: 8.0,
             call_life: 3.0,
+            anima_sight: true,
 
             manifest_min_distance: 30.0,
             rise_time: 1.6,

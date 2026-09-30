@@ -121,28 +121,38 @@ pub(crate) fn status_text(
     mut panel: Query<(&mut Visibility, &Children), With<StatusPanel>>,
     mut texts: Query<(&mut Text, &mut TextColor)>,
 ) {
-    let status: Option<(&str, Color)> = match net.snapshot() {
-        Some(s) if *state.get() == Flow::Playing && !s.outcome().is_over() => match s.danger {
-            1 => Some(("He has seen you — break his line of sight", AMBER)),
-            2 => Some(("He is coming — get behind solid walls!", RED)),
-            3 => Some(("Out of his sight… stay hidden", PALE_BLUE)),
-            4 => Some(("He kneels to count his bones — slip away", PALE_BLUE)),
-            _ if s.me.stun > 0.0 => Some(("Frozen with fright…", RED)),
-            _ if s.world.cattle > 0.0 => Some(("The cattle are bellowing — the whole llano can hear", AMBER)),
-            _ if s.world.truck >= 1.0 && s.world.warm < 1.0 => Some(("The engine roars — it carries for miles", AMBER)),
-            _ if s.world.beacon > 0.0 => Some(("The beacon burns — he is drawn to the light", AMBER)),
+    // Watching a friend, the danger in the snapshot is theirs.
+    let friend = net
+        .watched()
+        .map(|p| crate::survivor::Survivor::from_code(p.survivor).name());
+    let status: Option<(String, Color)> = match net.snapshot() {
+        Some(s) if *state.get() == Flow::Playing && !s.outcome().is_over() => match (s.danger, friend) {
+            (1, Some(who)) => Some((format!("He has seen {who}"), AMBER)),
+            (2, Some(who)) => Some((format!("He is coming for {who}!"), RED)),
+            (3, Some(who)) => Some((format!("{who} is out of his sight… for now"), PALE_BLUE)),
+            (4, Some(_)) => Some(("He kneels to count his bones".into(), PALE_BLUE)),
+            (1, None) => Some(("He has seen you — break his line of sight".into(), AMBER)),
+            (2, None) => Some(("He is coming — get behind solid walls!".into(), RED)),
+            (3, None) => Some(("Out of his sight… stay hidden".into(), PALE_BLUE)),
+            (4, None) => Some(("He kneels to count his bones — slip away".into(), PALE_BLUE)),
+            _ if s.me.stun > 0.0 => Some(("Frozen with fright…".into(), RED)),
+            _ if s.world.cattle > 0.0 => Some(("The cattle are bellowing — the whole llano can hear".into(), AMBER)),
+            _ if s.world.truck >= 1.0 && s.world.warm < 1.0 => {
+                Some(("The engine roars — it carries for miles".into(), AMBER))
+            }
+            _ if s.world.beacon > 0.0 => Some(("The beacon burns — he is drawn to the light".into(), AMBER)),
             _ => None,
         },
         _ => None,
     };
     for (mut vis, children) in &mut panel {
         set_vis(&mut vis, status.is_some());
-        if let Some((s, c)) = status {
+        if let Some((s, c)) = &status {
             let kids: &[Entity] = children;
             for &child in kids {
                 if let Ok((mut t, mut color)) = texts.get_mut(child) {
                     set_text(&mut t, s);
-                    set_color(&mut color, c);
+                    set_color(&mut color, *c);
                 }
             }
         }
@@ -560,10 +570,17 @@ pub(crate) fn downed_panel(
     mut help: Query<&mut Text, (With<DownedHelp>, Without<DownedText>)>,
     mut tint: Query<&mut BackgroundColor, With<Tint>>,
     mut wash: Local<(f32, [f32; 3])>,
+    mut gone: Local<f32>,
 ) {
     let playing = *state.get() == Flow::Playing;
     let me = net.me();
     let status = if playing { me.map_or(0, |p| p.status) } else { 0 };
+    // Seconds since this player was lost for the night.
+    *gone = if me.is_some_and(|p| p.status == 2) {
+        *gone + time.delta_secs()
+    } else {
+        0.0
+    };
     let shared = net.is_shared();
     // Down where friends can find you: what you can still do about it.
     let can = if shared && status == 1 && me.is_some_and(|p| p.findable()) {
@@ -589,6 +606,8 @@ pub(crate) fn downed_panel(
             0.38,
             [0.28, 0.02, 0.02],
         ),
+        // Then the night again, faintly cold, through a friend's eyes.
+        (2, _) if net.spectating() && *gone > DIED_HOLD => (String::new(), 0.14, [0.03, 0.05, 0.09]),
         (2, _) => (
             if shared {
                 "YOU DIED\nWatch over your friends".to_string()
@@ -621,6 +640,30 @@ pub(crate) fn downed_panel(
     for mut bg in &mut tint {
         if bg.0 != color {
             bg.0 = color;
+        }
+    }
+}
+
+/// Seconds "YOU DIED" holds the screen before the fallen watch a friend.
+const DIED_HOLD: f32 = 3.0;
+
+/// Gone for the night: whom they watch, and the keys to watch another.
+pub(crate) fn watch_line(
+    net: Res<Network>,
+    state: Res<State<Flow>>,
+    mut line: Query<(&mut Visibility, &Children), With<WatchLine>>,
+    mut texts: Query<&mut Text>,
+) {
+    let label = net.watch_label().filter(|_| *state.get() == Flow::Playing);
+    for (mut vis, kids) in &mut line {
+        set_vis(&mut vis, label.is_some());
+        if let Some(label) = &label {
+            let kids: &[Entity] = kids;
+            for &kid in kids {
+                if let Ok(mut t) = texts.get_mut(kid) {
+                    set_text(&mut t, label);
+                }
+            }
         }
     }
 }
@@ -726,6 +769,7 @@ pub(crate) fn hints_and_captions(
                     );
                 }
             }
+            Event::SackDropped if net.status() == 2 => show(&mut hint, "The sack falls!", 7.0, 3),
             Event::SackDropped => show(
                 &mut hint,
                 "The sack falls! Follow their groans, their torch and the red mark — then hold E beside them.",
@@ -816,6 +860,8 @@ pub(crate) fn hints_and_captions(
                     show(&mut hint, "He has you.", 6.0, 3);
                 } else if net.status() == 1 {
                     show(&mut hint, "You are down. Hold on — someone may reach you.", 6.0, 3);
+                } else if net.status() == 2 {
+                    show(&mut hint, "A friend is down.", 6.0, 3);
                 } else {
                     show(
                         &mut hint,

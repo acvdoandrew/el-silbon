@@ -146,6 +146,57 @@
 - Hint priority: the DogBark hint moving from 3 to 2 is presentation only (it no longer overwrites the SackDropped hint shown at the same moment). It is not a rule change.
 - Bounds moved: none. Invariant tests are untouched (hunt and stalk slower than walking, warnings over 1.5 s, continuous pressure hidden; `tests/session.rs` only gains tests and one import). Committed on m1b; not pushed. Next: spectating (item 9) moves the fingerprint again.
 
+**Spectating (item 9, roadmap fix 8, investigation "spectator" Phase 1).**
+- **Fairness.** A player gone for the night (Dead) sees him only when the friend they watch could, from that friend's pose, by the unchanged rules. They hear only the whistle that friend hears. They never get their own dead eye, and never an all-seeing view.
+- Session (`net::session`):
+  - `Participant::watch: Option<PlayerId>`. `Action::Watch { id }` is appended after `Call` and is accepted before the `is_active` guard, like `Ping` and `Call`.
+  - `Session::watch` refuses a run that is not active, a requester who is not Dead (the downed and the living keep their own eyes), themselves, and anyone not on their feet.
+  - `watchable` means on their feet (`Status::Active`). **Deviation** from the investigation, which also allowed a downed friend out of the sack: "auto-advance when the watched friend falls" makes the downed no target, or a chosen downed friend would be dropped at once.
+  - `watch_step()` runs between `outcome_step` and `flush_events`, so the cues that follow go to the right watcher. A Dead player whose friend is no longer on their feet (fell, sacked, died, left) moves to the standing friend nearest where they lie (ties to the lowest id). Everyone else watches nobody. BTreeMap order, no randomness.
+  - `snapshot()`: the viewer is the recipient; for a Dead recipient it is the watched friend, only with `anima_sight` and only while that friend is watchable (looked up with `.get()`, so for the one tick after a friend leaves the dead get no view at all). `threat`, `danger` and `exposure` come from the viewer with the unchanged rules: the 0.55 cone, 75 m (130 m from a deck), line of sight, and danger only when `target` is the viewer and they stand. `me` stays the recipient's own vitals. `PlayerView.watching` carries whom each player watches.
+  - `cues()`: each Cue pushed for a listener is cloned, with the same serial, to every Dead player watching them, in the same pass. The outbox is FIFO per recipient and the serial is global, so the client's `serial > last_serial` rule keeps it. The dead's own `CueDirector` never ticks and nothing startles them. Omens and other `Some(id)` events (warning, hunt, susto, Tureco's growl) are not forwarded.
+  - `Participant::die()` (bleed-out and Taken): Dead, revive 0, stun 0, not sprinting. The Taken no longer keep a stale "Frozen with fright" (stun only thaws in `Body::advance`, which captives and the dead skip).
+- `Tuning::anima_sight` (default on, user decision). Off, the dead never get threat, danger or exposure; they still ride their friend's shoulder and hear their friend's whistle.
+- **Protocol hygiene.** The fingerprint change is on purpose; test.3 will not pair with test.1. `Action::Watch` is appended at the end of `Action`, `PlayerView.watching` has `#[serde(default)]`, and no hidden AI state goes on the wire.
+  - **Deviation:** `PROTOCOL` (renet's `protocol_id`) is not bumped. A mismatch there fails the UDP handshake silently, where the fingerprint refusal is readable. Item 8 appended `Call` the same way.
+  - **Deviation:** no `Snapshot.watched` vitals in Phase 1 (see Open).
+- Client:
+  - Pure `net::watched(snapshot, me)` (only for status 2, only while that row stands) and `net::cycle_watch(snapshot, me, step)` (friends on their feet in roster order, wrapping). `Network::watched`, `spectating` and `watch_label`.
+  - `spectate_keys` (Control, after `net_keys`; not in the smoke, net smoke or photo drivers; only Playing, running and status 2): A, ← or left click watch the previous friend; D, → or right click the next. Each sends `NetControl::Action(Action::Watch)`. The dead's input packet still carries nothing.
+  - Camera: `net::update` (Simulate) writes `player::shoulder_transform` from the watched row (position, yaw, pitch, crouch), eased at 18/s like their avatar and cut on a new friend, a new run or a jump over 4 m. So Ears, omens, pings and lamps all read the spectator eye in Present.
+  - `shoulder_transform` (presentation only): 2.2 m back, 0.45 m right and 0.45 m up from their eye, kept 0.25 m off blockers with `move_circle`, and pulled in (×1, 0.75, 0.5, 0.3, 0.15, else over their head) until `line_of_sight(friend, camera)` holds. It looks at their eye + look direction × 6 m. Every coordinate comes from `Layout`.
+  - The hand torch is hidden and dark while spectating (the friend's own beam lights the way), and the head bob is off.
+  - Audio: whistles play for the dead while they watch (`play_whistles` and `mix` both muted status 2 outright before).
+  - HUD: "YOU DIED" holds 3 s (`DIED_HOLD`), then a light cold wash (0.14). A new `WatchLine` (bottom centre, spawned once at startup) reads "Watching La Coplera · A / D another friend", with the keys only when there is another. The status panel speaks of the friend ("He has seen …", "He is coming for …!", "… is out of his sight… for now"). The dead get "A friend is down." and "The sack falls!" without "hold E". The banner shows the watch line instead of "You bled out. Watch over your teammates.", which was also wrong for the Taken.
+  - README and `docs/PLAYING.txt` controls: A / D while gone for the night.
+- Tests:
+  - Red first on the old code, each for its root cause:
+    - `a_taken_player_is_not_left_frozen_with_fright`: "the dead are not frozen with fright (1.98 s)".
+    - `the_fallen_see_him_only_through_their_friends_eyes`: "the fallen see him through their friend's eyes" (no threat for the dead). It also checks equal danger and exposure; the friend turned away hides him; and a wall between friend and him hides him even where the dead body itself faces him with a clear line of sight. After the fix, `anima_sight = false` was added: no threat, danger 0, exposure 0.
+    - `the_fallen_hear_the_whistle_their_friend_hears`: the dead host got no Cue (left `[]`, right `[(1, 2, 1.0495794, false, 1)]`). The friend hears it faint near him; from where the host lies it would have been loud.
+  - Written with the new API: `the_fallen_watch_a_friend_on_their_feet` (four players). The nearest standing friend is chosen; `watched` and `cycle_watch` step round; refusals for a downed requester, themselves, an unknown id and the living. When the watched friend leaves, the snapshot still builds without him and the next tick moves on. When the watched friend is sacked, the watch moves on and the sack is refused. A restart clears every watch.
+  - Lib: `player::a_friend_is_watched_from_their_own_side_of_every_wall`: a 30 × 30 m grid around the house × 8 headings. The friend always has line of sight to the camera, which looks where they look; both pulled-in and full-distance views occur.
+- Fingerprint checkpoint for this tree: 0x44387ca6b9e1452e (Python model of `fingerprint_of`, recomputed at commit; it reproduces HEAD's 0x8d808c5460a8c897). Items 10-11 move it again.
+- Verified: fmt, check, test (lib 94, district 9, session 55 + 3 ignored), clippy -D warnings clean; the same when rerun at commit (clippy forced to recheck every target; `target\gate9i-*.log`).
+- Route sweep on the final tree, rerun at commit and identical: normal solo 150/150, shared 148/150 (11, 35); gentle 150/150, 150/150; hard 150/150, 138/150 (the test's own 97% assert fires on hard, not the bar). Every failure report on every night is identical, character for character, to item 8's `sweep8v-*`. No newly failing seeds. Normal shared 11 and 35 fail against 3288232 but came with item 7; both fail at a first down (downs 1, revives 0, status 1), so no player was Dead yet. Solo never has a Dead player; in the shared route the dead partner's new view changes only its script's `seen`, which never moved an outcome. Logs `target\sweep9-*.log`, and at commit `sweep9i-*`.
+- Net smoke (headless, two processes, 127.0.0.1:5311, debug build of this tree):
+  - Run 1: the host failed with `NET SMOKE FAIL: the player went down before the route meant it to`, in run 1 at 250 s (Go (43,-59), delivered 3/5, at (44.8,-81.9)). The client then failed on the closed session; both exited 1. Nobody had died yet, so none of this item's code had run (no watcher, no forwarded cue; `die()` untouched). This is the known real-time flake (seen in the fingerprint item), with the signature of the base-shed wade that item 7 brought to Normal shared 35.
+  - Run 2, about 9.5 min: `NET SMOKE PASS host` and `NET SMOKE PASS client`; host exit 0, client exit 0. Every snapshot carried the new `watching` field over real UDP. The route never sends `Watch`.
+  - At commit, debug build, about 9.5 min: both PASS, host exit 0, client exit 0.
+  - Logs `target\net9-*`, `target\net9b-*` and, at commit, `target\net9i-*` (gitignored).
+- Unverified (user-led, rendered, two windows `--host 127.0.0.1:5000` / `--join 127.0.0.1:5000`; let one player die, the sack and Taken being the quickest): the shoulder camera's feel, and whether it is pulled in well against walls, fences and the deck; the 3 s hold and the cold wash; the watch line and the status panel's third-person lines; whistles heard at the right level while watching; A / D and the mouse buttons switching; the auto-advance when the friend is sacked.
+- Reasoned, not observed: a real client applying a forwarded Cue (its serial equals the friend's) and then the Events that follow it. `flush_events` runs before `cues()` in each step, so a step's Events carry lower serials than its Cues, and the next step's are higher; the route pilots never read cues, so no test or smoke plays this path.
+- Open:
+  - The dead's own frozen vitals still drive their vitals panel, the vignette's cold edge and the heartbeat while they watch (pre-existing). Either send the friend's (`Snapshot.watched`, the investigation's 3g) or quiet them at death.
+  - Events only the friend is sent (the hunt sting, warnings, susto, omens, Tureco's growl) are not forwarded, so the watcher sees "He is coming for …!" but hears no hunt sting.
+  - Not built: the roster's "watching Pn", a ring on the watched dot on the map, a mention of A / D in the in-game controls line.
+  - Any left or right click while watching switches friend, a reflexive click to take the cursor back included. Drop the mouse buttons if that annoys in play.
+  - The crosshair dot still draws over the friend's back while watching.
+  - The routes never send `Watch`; the sweep and the net smoke exercise the automatic watch only.
+  - `AGENTS.md` (perception boundary) could note that a Dead recipient's snapshot uses the watched friend's eye with `anima_sight`; not edited here.
+  - Haunts (Phase 2, Ánimas) are M2.
+- Bounds moved: none. Invariant tests are untouched (hunt and stalk slower than walking, warnings over 1.5 s, continuous pressure hidden; `tests/session.rs` only gains tests, a helper and two imports). Committed on m1b; not pushed.
+
 ## Current handoff — 2026-09-30 (M1a landed: fingerprint-neutral, pairs with test.1)
 
 **Audio mix (fix 3).**

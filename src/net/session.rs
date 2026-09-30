@@ -59,6 +59,9 @@ pub struct Participant {
     pulse: [f32; 5],
     /// What they did tonight, for the awards.
     pub deeds: Deeds,
+    /// Gone for the night: the friend on their feet whose eyes and ears they
+    /// share (see `Session::watch`).
+    pub watch: Option<PlayerId>,
 }
 
 impl Participant {
@@ -86,12 +89,22 @@ impl Participant {
             praying: false,
             pulse: [0.0; 5],
             deeds: Deeds::default(),
+            watch: None,
         }
     }
 
     /// Down or dead: not on their feet.
     pub fn is_down(&self) -> bool {
         !self.status.is_active()
+    }
+
+    /// Gone for the night (bled out, or taken in his sack). The body never
+    /// moves again, so nothing that only thaws as it moves is left on it.
+    fn die(&mut self) {
+        self.status = Status::Dead;
+        self.revive = 0.0;
+        self.body.stun = 0.0;
+        self.body.sprinting = false;
     }
 }
 
@@ -323,6 +336,7 @@ impl Session {
             }
             Action::Ping { at } => self.ping(id, at, tuning),
             Action::Call { kind } => self.call(id, kind, tuning),
+            Action::Watch { id: friend } => self.watch(id, friend),
             _ => {
                 if !self.started || self.encounter.outcome.is_over() {
                     return Err("The run is not active.".into());
@@ -416,6 +430,58 @@ impl Session {
             && let Status::Downed { bleed } = &mut p.status
         {
             *bleed = bleed.max(tuning.bleed_after_sack);
+        }
+    }
+
+    /// A friend the fallen may watch: in the night and on their feet. Not
+    /// the downed, and not the one in his sack (there their eyes are his), so
+    /// a watch moves on when its friend falls.
+    fn watchable(&self, id: PlayerId) -> bool {
+        self.players.get(&id).is_some_and(|p| p.status.is_active())
+    }
+
+    /// Gone for the night, a player watches a friend on their feet. The
+    /// fallen see only what that friend's eyes see and hear only the whistle
+    /// that friend hears (see `snapshot` and `cues`), never more.
+    fn watch(&mut self, id: PlayerId, friend: PlayerId) -> Result<(), String> {
+        if !self.started || self.encounter.outcome.is_over() {
+            return Err("The run is not active.".into());
+        }
+        if !self.players.get(&id).is_some_and(|p| matches!(p.status, Status::Dead)) {
+            return Err("Only the fallen watch over their friends.".into());
+        }
+        if friend == id || !self.watchable(friend) {
+            return Err("They are not on their feet.".into());
+        }
+        if let Some(p) = self.players.get_mut(&id) {
+            p.watch = Some(friend);
+        }
+        Ok(())
+    }
+
+    /// The fallen always watch a friend on their feet: when theirs falls or
+    /// leaves, the watch moves to the one standing nearest where they lie
+    /// (ties to the lowest id).
+    fn watch_step(&mut self) {
+        let standing: Vec<(PlayerId, Vec2)> = self
+            .players
+            .iter()
+            .filter(|(_, p)| p.status.is_active())
+            .map(|(&id, p)| (id, p.pose.pos))
+            .collect();
+        for p in self.players.values_mut() {
+            if !matches!(p.status, Status::Dead) {
+                p.watch = None;
+                continue;
+            }
+            if p.watch.is_some_and(|w| standing.iter().any(|&(id, _)| id == w)) {
+                continue;
+            }
+            let at = p.pose.pos;
+            p.watch = standing
+                .iter()
+                .min_by(|a, b| a.1.distance(at).total_cmp(&b.1.distance(at)))
+                .map(|&(id, _)| id);
         }
     }
 
@@ -743,6 +809,8 @@ impl Session {
         self.fear_step(layout, tuning, dt);
         self.omens(tuning, dt);
         self.outcome_step(layout, tuning);
+        // Before the whistles go out, so the fallen hear their friend's.
+        self.watch_step();
         self.flush_events();
         self.cues(tuning, dt);
     }
@@ -763,8 +831,7 @@ impl Session {
             if let Status::Downed { bleed } = &mut p.status {
                 *bleed -= dt;
                 if *bleed <= 0.0 {
-                    p.status = Status::Dead;
-                    p.revive = 0.0;
+                    p.die();
                     self.events.push((None, Event::Died));
                 }
             }
@@ -1171,8 +1238,7 @@ impl Session {
                     if let Some(id) = self.captive.take()
                         && let Some(p) = self.players.get_mut(&id)
                     {
-                        p.status = Status::Dead;
-                        p.revive = 0.0;
+                        p.die();
                     }
                     self.events.push((None, e));
                 }
@@ -1458,6 +1524,14 @@ impl Session {
 
     fn cues(&mut self, tuning: &Tuning, dt: f32) {
         let ids: Vec<PlayerId> = self.players.keys().copied().collect();
+        // (the fallen, the friend they watch): the fallen hear no whistle of
+        // their own, only the one their friend hears.
+        let watchers: Vec<(PlayerId, PlayerId)> = self
+            .players
+            .iter()
+            .filter(|(_, p)| matches!(p.status, Status::Dead))
+            .filter_map(|(&id, p)| p.watch.map(|friend| (id, friend)))
+            .collect();
         for id in ids {
             let Some(p) = self.players.get_mut(&id) else {
                 continue;
@@ -1478,17 +1552,20 @@ impl Session {
             // that conjured it: dread must not feed on itself.
             let frightened = p.status.is_active() && !cue.phantom && p.body.startle(tuning, cue.variant.dread(tuning));
             self.serial += 1;
-            self.outbox.push((
-                id,
-                ServerMessage::Cue {
-                    run: self.run,
-                    serial: self.serial,
-                    variant: cue.variant as u8,
-                    speed: cue.speed,
-                    phantom: cue.phantom,
-                    take: cue.take,
-                },
-            ));
+            let message = ServerMessage::Cue {
+                run: self.run,
+                serial: self.serial,
+                variant: cue.variant as u8,
+                speed: cue.speed,
+                phantom: cue.phantom,
+                take: cue.take,
+            };
+            // The same whistle under the same serial to each of the fallen
+            // watching this friend: still categorical, still never placed.
+            for &(watcher, _) in watchers.iter().filter(|&&(_, friend)| friend == id) {
+                self.outbox.push((watcher, message.clone()));
+            }
+            self.outbox.push((id, message));
             if frightened {
                 self.susto(id, tuning);
                 self.flush_events();
@@ -1502,20 +1579,33 @@ impl Session {
         let local = &self.players[&id];
         let th = &self.encounter.threat;
         let progress = &self.encounter.progress;
-        let towards = th.pos - local.pose.pos;
+        // Whose eyes this listener has: their own, or, gone for the night,
+        // those of the friend on their feet they watch (with `anima_sight`).
+        // Never the dead body's own eye, and never all-seeing.
+        let viewer: Option<(PlayerId, &Participant)> = if matches!(local.status, Status::Dead) {
+            local
+                .watch
+                .filter(|&friend| tuning.anima_sight && self.watchable(friend))
+                .and_then(|friend| self.players.get(&friend).map(|p| (friend, p)))
+        } else {
+            Some((id, local))
+        };
         // A slightly wider than camera cone accommodates the visible body's
         // extent, but no transforms are sent for enemies behind walls or behind
-        // this listener. From a tower deck the whole llano opens up. Host trust
+        // this viewer. From a tower deck the whole llano opens up. Host trust
         // and previously seen positions are not hidden.
-        let range = if local.ground_height > 3.0 { 130.0 } else { 75.0 };
-        let visible = !matches!(local.status, Status::Dead)
-            && th.visibility(tuning) > 0.0
-            && towards.length() < range
-            && layout.line_of_sight(local.pose.pos, th.pos)
-            && local.pose.forward2().dot(towards.normalize_or(Vec2::Y)) > 0.55;
+        let visible = viewer.is_some_and(|(_, v)| {
+            let towards = th.pos - v.pose.pos;
+            let range = if v.ground_height > 3.0 { 130.0 } else { 75.0 };
+            th.visibility(tuning) > 0.0
+                && towards.length() < range
+                && layout.line_of_sight(v.pose.pos, th.pos)
+                && v.pose.forward2().dot(towards.normalize_or(Vec2::Y)) > 0.55
+        });
+        let pursued = viewer.is_some_and(|(vid, v)| self.target == Some(vid) && v.status.is_active());
         let danger = if th.state == ThreatState::Counting && visible {
             4
-        } else if self.target != Some(id) || !local.status.is_active() {
+        } else if !pursued {
             0
         } else {
             match th.state {
@@ -1550,6 +1640,7 @@ impl Session {
                     },
                     hauled: self.captive == Some(pid),
                     survivor: self.survivor(pid).code(),
+                    watching: p.watch.unwrap_or(0),
                 })
                 .collect(),
             relics: progress.relics.iter().map(RelicView::from_relic).collect(),

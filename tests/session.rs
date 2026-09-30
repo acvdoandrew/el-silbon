@@ -4,10 +4,10 @@ use el_silbon::{
     control::{Intent, Pose, Target},
     geometry::{Layout, ground},
     net::{
-        Wire, controls_live, follow_body, mirror,
+        Wire, controls_live, cycle_watch, follow_body, mirror,
         protocol::{Action, CallKind, HOST, Input, SEND_INTERVAL, STEP, ServerMessage, Snapshot},
         session::Session,
-        status_of,
+        status_of, watched,
     },
     script::{Observation, RouteScript, crosshair},
     sim::{Encounter, Event, Outcome, Presence, Relic, ThreatState},
@@ -1157,6 +1157,173 @@ fn nobody_cries_for_help_from_his_sack_the_grave_or_their_feet() {
     assert!(!r.s.encounter.outcome.is_over(), "one still stands");
     assert!(r.act(2, HELP).is_err(), "the dead are past calling");
     assert!(!r.s.snapshot(1, &r.l, &r.t).player(2).unwrap().findable());
+}
+
+#[test]
+fn a_taken_player_is_not_left_frozen_with_fright() {
+    let mut r = Rig::new(2);
+    // A susto froze them just before he caught them; in his sack the body
+    // never moves, so nothing thaws it there.
+    r.s.players.get_mut(&2).unwrap().body.stun = 2.0;
+    sacked(&mut r);
+    r.calm = true;
+    r.idle(r.t.haul_time + 1.0);
+    assert!(matches!(r.s.players[&2].status, Status::Dead), "taken");
+    let stun = r.s.snapshot(2, &r.l, &r.t).me.stun;
+    assert_eq!(stun, 0.0, "the dead are not frozen with fright ({stun:.2} s)");
+}
+
+/// Whom `id` watches, as their own snapshot says (0 for nobody).
+fn watching(r: &Rig, id: u64) -> u64 {
+    r.s.snapshot(id, &r.l, &r.t).player(id).unwrap().watching
+}
+
+#[test]
+fn the_fallen_watch_a_friend_on_their_feet() {
+    let mut r = Rig::new(4);
+    r.put(1, Vec2::new(-20.0, 20.0));
+    r.put(2, Vec2::new(30.0, 20.0));
+    r.put(3, Vec2::new(60.0, 20.0));
+    r.put(4, Vec2::new(-24.0, 20.0));
+    r.s.players.get_mut(&4).unwrap().status = Status::Downed { bleed: 0.5 };
+    assert!(
+        r.act(4, Action::Watch { id: 1 }).is_err(),
+        "the downed still have their own eyes"
+    );
+    r.idle(1.0);
+    assert!(matches!(r.s.players[&4].status, Status::Dead));
+    assert_eq!(watching(&r, 4), 1, "gone, they watch the friend standing nearest");
+    let snap = r.s.snapshot(4, &r.l, &r.t);
+    assert_eq!(
+        watched(&snap, Some(4)).map(|p| p.id),
+        Some(1),
+        "their eye is that friend's"
+    );
+    assert!(
+        watched(&r.s.snapshot(1, &r.l, &r.t), Some(1)).is_none(),
+        "the living use their own"
+    );
+    // They choose whom, stepping round the friends on their feet (never
+    // themselves).
+    assert_eq!(cycle_watch(&snap, 4, -1), Some(3));
+    assert_eq!(cycle_watch(&snap, 4, 1), Some(2));
+    r.act(4, Action::Watch { id: 2 }).expect("a friend on their feet");
+    assert_eq!(watching(&r, 4), 2);
+    assert!(r.act(4, Action::Watch { id: 4 }).is_err(), "not themselves");
+    assert!(r.act(4, Action::Watch { id: 9 }).is_err(), "nobody who is not here");
+    assert!(
+        r.act(1, Action::Watch { id: 2 }).is_err(),
+        "the living have their own eyes"
+    );
+    r.idle(0.5);
+    assert_eq!(watching(&r, 4), 2, "the choice holds while that friend stands");
+    // The watched friend leaves: nothing breaks, nothing of him shows, and
+    // the next moment the watch moves on.
+    r.s.remove_player(2);
+    assert!(r.s.snapshot(4, &r.l, &r.t).threat.is_none());
+    r.tick();
+    assert_eq!(watching(&r, 4), 1);
+    // The watched friend falls into his sack: the watch moves on to one
+    // still standing, and the sack is not a friend to watch.
+    r.act(4, Action::Watch { id: 3 }).unwrap();
+    doom(&mut r, 3, Vec2::new(60.0, 20.0));
+    r.idle(0.05);
+    assert_eq!(r.s.encounter.threat.state, ThreatState::Hauling);
+    assert_eq!(watching(&r, 4), 1, "their friend fell: the watch moved on");
+    assert!(r.act(4, Action::Watch { id: 3 }).is_err(), "not the one in his sack");
+    // A new night: everyone has their own eyes again.
+    r.act(HOST, Action::Restart).unwrap();
+    assert!(r.s.players.values().all(|p| p.watch.is_none()));
+    assert_eq!(watching(&r, 4), 0);
+}
+
+/// He stands present and warning at `at`, going nowhere.
+fn warning_at(r: &mut Rig, at: Vec2) {
+    let th = &mut r.s.encounter.threat;
+    th.state = ThreatState::Warning;
+    th.presence = Presence::Present;
+    th.pos = at;
+}
+
+#[test]
+fn the_fallen_see_him_only_through_their_friends_eyes() {
+    let mut r = Rig::new(2);
+    // Player 2 is gone for the night and lies far off; player 1 stands and
+    // faces him as he warns them.
+    r.put(2, Vec2::new(-30.0, 20.0));
+    r.s.players.get_mut(&2).unwrap().status = Status::Dead;
+    let him = Vec2::new(0.0, 15.0);
+    warning_at(&mut r, him);
+    r.stand(1, Vec2::new(0.0, 8.0), Vec3::new(him.x, 2.0, him.y));
+    r.tick();
+    r.s.encounter.threat.pos = him;
+    let friend = r.s.snapshot(1, &r.l, &r.t);
+    let fallen = r.s.snapshot(2, &r.l, &r.t);
+    assert!(
+        friend.threat.is_some() && matches!(friend.danger, 1..=3),
+        "the friend sees him come"
+    );
+    let seen = fallen.threat.expect("the fallen see him through their friend's eyes");
+    assert_eq!(seen.position, friend.threat.unwrap().position);
+    assert_eq!(fallen.danger, friend.danger, "and feel the danger the friend is in");
+    assert_eq!(fallen.exposure, friend.exposure);
+    // Without `anima_sight` the fallen watch their friend panic at nothing.
+    r.t.anima_sight = false;
+    let blind = r.s.snapshot(2, &r.l, &r.t);
+    assert!(blind.threat.is_none() && blind.danger == 0 && blind.exposure == 0.0);
+    r.t.anima_sight = true;
+    // The friend looks away: he is behind the fallen's eyes too.
+    r.s.players.get_mut(&1).unwrap().pose.yaw += std::f32::consts::PI;
+    assert!(r.s.snapshot(1, &r.l, &r.t).threat.is_none());
+    assert!(r.s.snapshot(2, &r.l, &r.t).threat.is_none(), "behind the friend");
+    // A wall between the friend and him hides him from both, even where the
+    // fallen body itself faces him with nothing in the way.
+    let him = Vec2::new(0.0, -4.0);
+    r.s.encounter.threat.pos = him;
+    r.stand(1, Vec2::new(8.0, -4.0), Vec3::new(him.x, 2.0, him.y));
+    r.stand(2, Vec2::new(0.0, -1.0), Vec3::new(him.x, 2.0, him.y));
+    assert!(r.l.line_of_sight(r.pose(2).pos, him), "the body itself has him in view");
+    assert!(r.s.snapshot(1, &r.l, &r.t).threat.is_none());
+    assert!(
+        r.s.snapshot(2, &r.l, &r.t).threat.is_none(),
+        "never what the fallen's own eye would see"
+    );
+}
+
+#[test]
+fn the_fallen_hear_the_whistle_their_friend_hears() {
+    let mut r = Rig::new(2);
+    // The host is gone for the night, far from him; player 2 stands near him.
+    r.s.players.get_mut(&HOST).unwrap().status = Status::Dead;
+    warning_at(&mut r, Vec2::new(0.0, 10.0));
+    r.put(HOST, Vec2::new(-35.0, 20.0));
+    r.put(2, Vec2::new(0.0, 8.0));
+    r.tick();
+    let cues = |r: &Rig, id: u64| -> Vec<(u64, u8, f32, bool, u8)> {
+        r.s.outbox
+            .iter()
+            .filter_map(|(to, m)| match m {
+                ServerMessage::Cue {
+                    serial,
+                    variant,
+                    speed,
+                    phantom,
+                    take,
+                    ..
+                } if *to == id => Some((*serial, *variant, *speed, *phantom, *take)),
+                _ => None,
+            })
+            .collect()
+    };
+    let friend = cues(&r, 2);
+    assert_eq!(friend.len(), 1, "the friend hears him");
+    // Near him the friend hears it faint; from where the host lies it would
+    // have been loud. The fallen hear the friend's, whistle for whistle.
+    assert_eq!(
+        cues(&r, HOST),
+        friend,
+        "the fallen hear exactly what their friend hears"
+    );
 }
 
 #[test]

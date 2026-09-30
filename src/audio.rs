@@ -559,10 +559,11 @@ fn play_whistles(
     state: Res<State<Flow>>,
     net: Res<Network>,
 ) {
-    // The dead hear no more of him; the paused hear nothing at all. The
-    // title screen's night has its own faint whistles.
+    // The dead hear no more of him, but for the whistle their friend hears
+    // while they watch; the paused hear nothing at all. The title screen's
+    // night has its own faint whistles.
     let heard = matches!(state.get(), Flow::Playing | Flow::Title);
-    if !heard || net.status() == 2 {
+    if !heard || (net.status() == 2 && !net.spectating()) {
         phrases.clear();
         return;
     }
@@ -1176,7 +1177,7 @@ fn mix(
             }
             VoiceKind::Crank => v *= if crank_on { 1.0 } else { 0.0 },
             VoiceKind::Radio => v *= if radio_on { 1.0 } else { 0.0 },
-            VoiceKind::Whistle if net.status() == 2 => v = 0.0,
+            VoiceKind::Whistle if net.status() == 2 && !net.spectating() => v = 0.0,
             VoiceKind::Whistle
             | VoiceKind::Effect
             | VoiceKind::Cue

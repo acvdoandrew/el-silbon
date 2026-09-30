@@ -125,6 +125,34 @@ pub(crate) fn eye_transform(
     ))
 }
 
+/// Watching a friend: how far behind, to the right of and above their eye
+/// the view rides (m), and how far it keeps from any wall.
+const SHOULDER_BACK: f32 = 2.2;
+const SHOULDER_SIDE: f32 = 0.45;
+const SHOULDER_RISE: f32 = 0.45;
+const SHOULDER_CLEARANCE: f32 = 0.25;
+
+/// Where a watched friend is seen from: behind and over their shoulder,
+/// looking where they look. Pulled in toward them wherever a wall would come
+/// between, so the view never stands on the far side of a wall from them.
+/// (What of him shows is still only what their own eye sees: the session
+/// decides that, not this camera.)
+pub(crate) fn shoulder_transform(
+    pose: &Pose,
+    tuning: &crate::tuning::Tuning,
+    layout: &crate::geometry::Layout,
+) -> Transform {
+    let eye = pose.eye(tuning, layout);
+    let back = -pose.forward2() * SHOULDER_BACK + pose.right2() * SHOULDER_SIDE;
+    let at = [1.0, 0.75, 0.5, 0.3, 0.15]
+        .into_iter()
+        .map(|k| layout.move_circle(pose.pos, back * k, SHOULDER_CLEARANCE))
+        .find(|&spot| layout.line_of_sight(pose.pos, spot))
+        .unwrap_or(pose.pos);
+    let y = (eye.y + SHOULDER_RISE).max(layout.surface_height(at) + 0.5);
+    Transform::from_translation(Vec3::new(at.x, y, at.y)).looking_at(eye + pose.look_dir() * 6.0, Vec3::Y)
+}
+
 fn spawn_player(
     mut commands: Commands,
     layout: Res<LayoutRes>,
@@ -586,9 +614,10 @@ fn torch_light(
 ) {
     let (torch, mut vis) = torch.into_inner();
     // On the title screen the camera drifts over the llano: no torch in hand
-    // (nor in a trailer's cinematic shots).
-    let title = *state.get() == Flow::Title;
-    let want = if title || !hand.0 {
+    // (nor in a trailer's cinematic shots, nor for the fallen watching a
+    // friend, whose own beam lights the way).
+    let unheld = *state.get() == Flow::Title || net.spectating();
+    let want = if unheld || !hand.0 {
         Visibility::Hidden
     } else {
         Visibility::Inherited
@@ -598,7 +627,7 @@ fn torch_light(
     }
     let charge = net.snapshot().map_or(1.0, |s| s.me.battery);
     let low = tuning.0.battery_low;
-    let level = if title || !torch.on || charge <= 0.0 {
+    let level = if unheld || !torch.on || charge <= 0.0 {
         0.0
     } else if charge >= low {
         1.0
@@ -649,6 +678,7 @@ fn head_bob(
     fright: Res<crate::world::omen::Fright>,
     layout: Res<LayoutRes>,
     tuning: Res<TuningRes>,
+    net: Res<crate::net::Network>,
     mut gait: ResMut<Gait>,
     mut camera: Single<&mut Transform, With<Player>>,
     mut placed: Local<Option<(Transform, Transform)>>,
@@ -674,7 +704,8 @@ fn head_bob(
         gait.amount += (pace - gait.amount) * (dt * 6.0).min(1.0);
         gait.phase = (gait.phase + moved * STRIDE_PER_M) % std::f32::consts::TAU;
     }
-    let a = if settings.head_bob && *state.get() != Flow::Title {
+    // Watching a friend, their stride is theirs, not a head of your own.
+    let a = if settings.head_bob && *state.get() != Flow::Title && !net.spectating() {
         gait.amount
     } else {
         0.0
@@ -803,5 +834,42 @@ mod tests {
             assert!(g.shadows != ColorGradingSection::default());
             assert!(g.shadows == g.midtones && g.midtones == g.highlights);
         }
+    }
+
+    #[test]
+    fn a_friend_is_watched_from_their_own_side_of_every_wall() {
+        let layout = crate::geometry::Layout::new();
+        let tuning = crate::tuning::Tuning::default();
+        let (mut pulled_in, mut open) = (0, 0);
+        // Everywhere a friend can stand in and around the house, facing
+        // every way, the view behind them stays on their side of the walls.
+        for i in 0..60 {
+            for j in 0..60 {
+                let p = layout.spawn + Vec2::new(i as f32 - 30.0, j as f32 - 30.0) * 0.5;
+                if layout.resolve(p, tuning.player_radius) != p {
+                    continue;
+                }
+                for turn in 0..8 {
+                    let pose = Pose {
+                        pos: p,
+                        yaw: turn as f32 * std::f32::consts::FRAC_PI_4,
+                        pitch: -0.1,
+                        lower: 0.0,
+                    };
+                    let tf = shoulder_transform(&pose, &tuning, &layout);
+                    let at = crate::geometry::ground(tf.translation);
+                    assert!(layout.line_of_sight(p, at), "watched from beyond a wall at {p:?}");
+                    assert!(tf.forward().dot(pose.look_dir()) > 0.8, "looking where they look");
+                    let back = at.distance(p);
+                    if back < 1.5 {
+                        pulled_in += 1;
+                    } else if back > 2.2 {
+                        open += 1;
+                    }
+                }
+            }
+        }
+        assert!(pulled_in > 0, "a wall at their back pulls the view in");
+        assert!(open > 0, "in the open it stands back over the shoulder");
     }
 }

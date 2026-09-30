@@ -64,6 +64,8 @@ V / middle click     mark a spot for the party  M   map
                      (down: cry for help from where you lie;
                      he may hear it too)
 X                    aboard the ready truck: drive off now
+A / D                gone for the night: watch another friend
+                     (you see and hear only what they do)
 Esc                  menu (with friends the night goes on)
 F12                  screenshot
 Host:  Enter start · F6 restart · F10 end the session

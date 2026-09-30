@@ -123,6 +123,9 @@ pub(crate) struct DownedText;
 /// The downed player's second line: what they can still do.
 #[derive(Component)]
 pub(crate) struct DownedHelp;
+/// Gone for the night: whom they watch, and how to watch another.
+#[derive(Component)]
+pub(crate) struct WatchLine;
 /// Where a downed friend lies (one per party slot): a diamond over the body
 /// and a label with who and how far.
 #[derive(Component)]
@@ -199,6 +202,7 @@ impl Plugin for HudPlugin {
                         hud::skill_bar,
                         hud::vignette,
                         hud::downed_panel,
+                        hud::watch_line,
                         hud::hints_and_captions,
                         hud::note_panel,
                         hud::lock_panel,
@@ -692,6 +696,25 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, map_image: Res<map
                         ));
                     });
                 });
+
+            // Watching a friend (low centre, over the whistle caption).
+            root.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    bottom: percent(15),
+                    width: percent(100),
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+                Visibility::Hidden,
+                WatchLine,
+                children![(
+                    Text::new(""),
+                    font(&f.serif, 18.0),
+                    TextColor(PALE_BLUE),
+                    TextShadow::default()
+                )],
+            ));
 
             // The map (M).
             map::spawn_map_panel(root, f, &map_image, &layout.0);
