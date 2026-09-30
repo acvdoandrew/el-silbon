@@ -9,7 +9,7 @@ use crate::geometry::{
     Layout, Rect2,
     district::{
         ALTAR_TABLE_HALF, ALTAR_TABLE_OUT, ALTAR_TABLE_TOP, District, LandmarkId, MARSH_WATER, Prop, PropKind, Rail,
-        RailStyle, Shed, ShedStyle, Surface, SurfaceKind,
+        RailStyle, Shed, ShedStyle, Surface, SurfaceKind, WATER_LEVEL,
     },
 };
 use crate::rng::Rng;
@@ -1669,7 +1669,8 @@ fn crossings(k: &mut Kit, layout: &Layout) {
             }
         }
     }
-    // Bridge handrails stop at the banks. Water blockers are authoritative.
+    // Bridge handrails run the deck from bank to bank; the layout's rails
+    // along them keep anyone wading the caño from climbing onto it.
     for rail in bridge_rails(d) {
         k.rail(&rail, &|_: Vec2| 0.);
     }
@@ -2271,7 +2272,7 @@ fn altar(k: &mut Kit, ctx: &SpawnCtx) {
 fn boat(k: &mut Kit, layout: &Layout) {
     let d = &layout.district;
     // Afloat: the hull sits at the flood's surface, not above it.
-    let c = v(d.landmark(LandmarkId::Cano).center + Vec2::new(5., -2.), -0.26);
+    let c = v(d.boat.center(), WATER_LEVEL - 0.13);
     let stations = [(-2.3, 0.06), (-1.5, 0.6), (0., 0.72), (1.5, 0.6), (2.3, 0.06)];
     for pair in stations.windows(2) {
         for side in [-1., 1.] {
@@ -2322,7 +2323,7 @@ fn boat(k: &mut Kit, layout: &Layout) {
     let rope = scale_rgb(wood(), 0.8);
     beam(&mut k.dark, pile, mid, 0.035, 0.035, rope);
     beam(&mut k.dark, mid, tie, 0.035, 0.035, rope);
-    for (p, top) in [(Vec2::new(24.6, -68.9), 0.4), (Vec2::new(28.2, -69.3), 0.25)] {
+    for (p, top) in d.stumps.into_iter().zip([0.4, 0.25]) {
         beam(
             &mut k.dark,
             v(p, layout.terrain(p) - 0.3),
@@ -2553,7 +2554,7 @@ fn fields(k: &mut Kit, layout: &Layout) {
 /// Marsh edge: the broken bank fence carries on into the flood as posts that
 /// stand out of the water at falling heights, with wire sagging between them
 /// and a fallen rail lying at the waterline (the trail itself stays on the
-/// firm bank; these stand in unwalkable deep water).
+/// firm bank; these stand in the marsh, which is never waded).
 fn marsh(k: &mut Kit, layout: &Layout) {
     let water = MARSH_WATER;
     for (n, r) in layout.district.ruins.iter().filter(|r| r.base != 0.).enumerate() {
@@ -2592,6 +2593,7 @@ fn vegetation(ctx: &mut SpawnCtx) {
                     || p.y > 21.
                     || d.route_distance(p) < 0.55
                     || d.grass.iter().any(|g| g.contains(p))
+                    || d.water_at(p)
                     || !ctx.layout.is_free(p, 0.45)
                     || ctx.layout.surface_height(p) > 0.01
                 {
@@ -2660,7 +2662,8 @@ fn vegetation(ctx: &mut SpawnCtx) {
             }
         }
     }
-    // Reed islands are nonblocking decoration inside already bounded water.
+    // Reed islands are nonblocking decoration out in the water: walled off in
+    // the marsh, waded through in the caño.
     let mut reeds = MeshBuilder::new();
     for water in &d.water {
         for _ in 0..45 {

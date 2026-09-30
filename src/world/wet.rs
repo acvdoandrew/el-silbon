@@ -12,6 +12,7 @@ use bevy::shader::ShaderRef;
 
 use super::mesh::{MeshBuilder, mix_rgb, srgb};
 use super::{SpawnCtx, noise2};
+use crate::geometry::district::WATER_LEVEL;
 use crate::geometry::{Layout, Rect2};
 
 /// Rain rings on a lit surface. The uniform is
@@ -183,13 +184,16 @@ pub fn spawn(ctx: &mut SpawnCtx, standard: &Assets<StandardMaterial>, wet: &mut 
         },
     });
 
-    // Floodwater and the ford.
+    // Floodwater and the shallows. A ford inside a basin shows through the
+    // basin's own sheet, paler over its raised bar; a second sheet there
+    // would hide it.
     let mut sheets = MeshBuilder::new();
     for r in &d.water {
-        let s = sheet(ctx, *r, -0.13, 0.5);
+        let s = sheet(ctx, *r, WATER_LEVEL, 0.5);
         sheets.append(s);
     }
-    for r in &d.shallows {
+    let inside = |s: &Rect2| d.water.iter().any(|w| w.contains(s.min) && w.contains(s.max));
+    for r in d.shallows.iter().filter(|s| !inside(s)) {
         let s = sheet(ctx, *r, -0.06, 0.4);
         sheets.append(s);
     }

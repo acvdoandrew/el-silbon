@@ -200,6 +200,10 @@ fn paint(layout: &Layout) -> (Canvas, Vec2, Vec2) {
     for r in &d.water {
         cv.rect(*r, [0.07, 0.15, 0.22, 1.0]);
     }
+    // Water you can wade, paler than the marsh you cannot.
+    for r in &d.channels {
+        cv.rect(*r, [0.1, 0.21, 0.27, 1.0]);
+    }
     for r in &d.shallows {
         cv.rect(*r, [0.13, 0.26, 0.3, 1.0]);
     }

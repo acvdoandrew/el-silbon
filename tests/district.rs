@@ -1,7 +1,11 @@
 use bevy::math::{Vec2, Vec3};
 use el_silbon::{
     control::Pose,
-    geometry::{AimStatus, Layout, district::LandmarkId, ground},
+    geometry::{
+        AimStatus, Layout, Rect2, Wade,
+        district::{LandmarkId, WADE_DEEP, WATER_LEVEL},
+        ground, segment_point_distance,
+    },
     tuning::Tuning,
 };
 
@@ -82,9 +86,9 @@ fn district_boundaries_and_tower_guardrails_prevent_stranding() {
     let l = Layout::new();
     let d = &l.district;
     let canal = d.landmark(LandmarkId::Cano).center;
-    // Deep water south of the bridge is a wall.
-    let blocked = l.move_circle(canal + Vec2::new(-7., 10.), Vec2::new(0., -12.), 0.3);
-    assert!(blocked.y > -61.);
+    // The caño beside the bridge is no wall: you wade into it.
+    let waded = l.move_circle(canal + Vec2::new(-7., 10.), Vec2::new(0., -12.), 0.3);
+    assert!(waded.y < -66.);
     let (deck, _) = walk(
         &l,
         d.landmark(LandmarkId::Watchtower).approach,
@@ -102,7 +106,8 @@ fn district_boundaries_and_tower_guardrails_prevent_stranding() {
     // The ford wades across the same channel, elsewhere.
     let ford = walk(&l, Vec2::new(0., -55.), Vec2::new(0., -75.), 0.3, 2.0).0;
     assert!(ford.y < -74.9);
-    assert!(l.wading(Vec2::new(0., -65.)) && !l.wading(Vec2::new(10., -65.)));
+    assert_eq!(l.wade(Vec2::new(0., -65.)), Wade::Shallow);
+    assert_eq!(l.wade(Vec2::new(10., -65.)), Wade::Deep);
     // The extraction bridge spans its creek along the road; the creek is a wall beside it.
     let over = walk(&l, Vec2::new(50., 31.), Vec2::new(75., 31.), 0.3, 3.6).0;
     assert!(over.x > 74.9, "the road must cross the creek on the bridge");
@@ -110,6 +115,114 @@ fn district_boundaries_and_tower_guardrails_prevent_stranding() {
     assert!(creek.y > 22.0 && creek.y < 30.0);
     let edge = l.move_circle(Vec2::new(30., 34.), Vec2::new(0., 20.), 0.3);
     assert!(edge.y <= l.bounds.max.y);
+}
+
+#[test]
+fn the_cano_is_wadeable_anywhere_and_the_ford_reads_shallower() {
+    let l = Layout::new();
+    let t = Tuning::default();
+    let d = &l.district;
+    let cano = Rect2::new(Vec2::new(-8., -70.), Vec2::new(76., -61.));
+    // Waist-deep out in the channel, shallow on the ford, dry on the bridge
+    // deck and the bank.
+    assert_eq!(l.wade(Vec2::new(40., -65.5)), Wade::Deep);
+    assert_eq!(l.wade(Vec2::new(0., -65.5)), Wade::Shallow);
+    assert_eq!(l.wade(Vec2::new(18., -65.)), Wade::Dry);
+    assert_eq!(l.wade(Vec2::new(40., -57.)), Wade::Dry);
+    // The slowest walker there is, loaded and waist-deep, crosses from bank
+    // to bank wherever nothing solid stands in the channel.
+    let slowest = t.walk_speed * t.carry_floor * t.deep_wade_factor;
+    for x in [-6., 6., 10., 13., 31., 36., 50., 60., 70., 74.] {
+        let (far, _) = walk(&l, Vec2::new(x, -59.5), Vec2::new(x, -71.5), t.player_radius, slowest);
+        assert!(far.y < -71.4, "could not wade across at x = {x}");
+    }
+    // No invisible wall: every spot of the channel, the reedy dry fringe
+    // inside its rectangle included, is open ground away from its fixtures;
+    // and you wade exactly where the water is drawn over the ground.
+    let near = |p: Vec2, r: Rect2| (p - p.clamp(r.min, r.max)).length() < 1.0;
+    let fixture = |p: Vec2| {
+        d.rails.iter().any(|r| segment_point_distance(r.a, r.b, p) < 1.0)
+            || near(p, d.surfaces[0].rect)
+            || near(p, d.watch_ramp)
+            || near(p, d.boat)
+            || d.stumps.iter().any(|s| s.distance(p) < 1.0)
+    };
+    let (mut dry, mut open) = (0, 0);
+    let mut z = cano.min.y;
+    while z <= cano.max.y {
+        let mut x = cano.min.x;
+        while x <= cano.max.x {
+            let p = Vec2::new(x, z);
+            if !fixture(p) {
+                assert!(l.is_free(p, t.player_radius), "an invisible wall at {p:?}");
+                open += 1;
+                let (bed, wade) = (l.terrain(p), l.wade(p));
+                if bed >= WATER_LEVEL {
+                    dry += 1;
+                    assert_eq!(wade, Wade::Dry, "wading on dry ground at {p:?}");
+                } else if bed < WATER_LEVEL - 0.05 {
+                    assert_ne!(wade, Wade::Dry, "dry under the water at {p:?}");
+                }
+                if !d.shallow_at(p) {
+                    assert_eq!(
+                        wade == Wade::Deep,
+                        bed < WATER_LEVEL - WADE_DEEP,
+                        "waist-deep in {:.2} m of water at {p:?}",
+                        WATER_LEVEL - bed
+                    );
+                }
+            }
+            x += 0.5;
+        }
+        z += 0.5;
+    }
+    assert!(open > 2500 && dry > 100, "{open} spots, {dry} of them dry");
+    // The ford is a raised bar across the channel, so it reads.
+    assert!(l.terrain(Vec2::new(0., -65.5)) > l.terrain(Vec2::new(40., -65.5)) + 0.2);
+    // The boat moored in the channel is solid; the marsh is still a wall.
+    assert!(!l.is_free(d.boat.center(), t.player_radius));
+    let marsh = l.move_circle(Vec2::new(-30., -84.), Vec2::new(0., -10.), t.player_radius);
+    assert!(marsh.y > -88.5, "waded into the marsh: {marsh:?}");
+}
+
+#[test]
+fn a_body_in_the_channel_floats_where_a_friend_on_the_bank_can_reach_it() {
+    use el_silbon::control::{SceneData, TargetKind, evaluate_target};
+    let l = Layout::new();
+    let t = Tuning::default();
+    let water = WATER_LEVEL;
+    // Deep water a stride and a half out from dry bank.
+    let (bank, body) = (0..40)
+        .map(|i| 30.0 + i as f32 * 0.25)
+        .find_map(|x| {
+            let bank = (0..40)
+                .map(|k| Vec2::new(x, -61.0 - k as f32 * 0.1))
+                .take_while(|&p| l.wade(p) == Wade::Dry)
+                .last()?;
+            let body = bank - Vec2::new(0., 1.5);
+            (l.wade(body) == Wade::Deep).then_some((bank, body))
+        })
+        .expect("deep water beside the bank");
+    assert!(l.is_free(bank, t.player_radius));
+    // Downed there, their eye stays above the water.
+    let mut downed = Pose::at(body, 0.0);
+    downed.lower = t.downed_lower;
+    assert!(downed.eye(&t, &l).y > water, "drowned view: {:?}", downed.eye(&t, &l));
+    // Their friend kneels on the bank and reaches the body floating there.
+    let data = SceneData {
+        bodies: vec![(2, body)],
+        me: 1,
+        acting: true,
+        battery: 1.0,
+        ..Default::default()
+    };
+    let mut medic = Pose::at(bank, 0.0);
+    medic.look_at(&t, &l, Vec3::new(body.x, water, body.y));
+    let found = evaluate_target(&l, &t, &medic, &data.scene());
+    assert!(
+        found.is_some_and(|f| f.kind == TargetKind::Body(2) && f.usable()),
+        "the body at {body:?} cannot be reached from {bank:?}: {found:?}"
+    );
 }
 
 #[test]

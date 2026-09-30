@@ -1311,6 +1311,78 @@ fn sprinting_is_loud_walking_and_crouching_are_not() {
     }
 }
 
+/// Walk from `from` toward `to` for three seconds on a still, dry night with
+/// him calm and listening a fixed way off: how far the walker got, and
+/// whether he heard a step.
+fn wade(from: Vec2, to: Vec2, listen: f32) -> (f32, bool) {
+    use el_silbon::sim::Variant;
+    let mut r = Rig::new(1);
+    r.calm = true;
+    r.t.rain_mask = 0.0;
+    r.t.thunder_mask = 0.0;
+    r.put(HOST, from);
+    let mut heard = false;
+    for _ in 0..(3.0 / STEP) as usize {
+        let pos = r.pose(HOST).pos;
+        let reach = listen * r.t.hearing_gain(r.s.encounter.pressure) * Variant::of(r.t.seed).hearing();
+        let th = &mut r.s.encounter.threat;
+        th.state = ThreatState::Stalking;
+        th.presence = Presence::Present;
+        th.pos = pos + Vec2::new(0.0, reach);
+        th.focus = None;
+        r.s.players.get_mut(&HOST).unwrap().pose.yaw = Pose::yaw_toward(pos, to);
+        r.send(HOST, [0.0, 1.0], false, false, false);
+        r.tick();
+        heard |= r.s.encounter.threat.focus.is_some();
+    }
+    (r.pose(HOST).pos.distance(from), heard)
+}
+
+#[test]
+fn wading_the_deep_channel_is_slow_and_heard_farther_than_the_ford() {
+    let t = Tuning::default();
+    // Between a ford step and a deep one.
+    let listen = t.noise_walk + 0.5 * (t.noise_wade + t.noise_deep);
+    let (deep, splash) = wade(Vec2::new(30.0, -65.5), Vec2::new(38.0, -65.5), listen);
+    let expected = t.walk_speed * t.deep_wade_factor * 3.0;
+    assert!(
+        (deep - expected).abs() < expected * 0.05,
+        "waded {deep:.2} m in 3 s, not {expected:.2}"
+    );
+    assert!(splash, "he did not hear the channel waded");
+    let (ford, wet) = wade(Vec2::new(0.0, -62.0), Vec2::new(0.0, -69.0), listen);
+    assert!(ford > deep * 1.4, "the ford ({ford:.2} m) is quicker than the channel");
+    assert!(!wet, "the ford carries no farther than a wading step");
+}
+
+#[test]
+fn what_falls_in_the_channel_floats() {
+    let afloat = el_silbon::geometry::district::WATER_LEVEL - 0.2 + 0.35 - 1e-3;
+    let deep = Vec2::new(34.0, -65.5);
+    // Put down by hand.
+    let mut r = Rig::new(1);
+    r.calm = true;
+    r.take(HOST, 0);
+    r.put(HOST, deep);
+    r.idle(0.1);
+    r.act(HOST, Action::Drop).unwrap();
+    let Relic::Ground(at) = r.s.encounter.progress.relics[0] else {
+        panic!("not dropped")
+    };
+    assert!(at.y >= afloat, "the dropped bundle sank: {at:?}");
+    // Let go by someone struck down in the water.
+    let mut r = Rig::new(2);
+    r.take(2, 0);
+    r.put(1, Vec2::new(-30.0, 20.0));
+    doom(&mut r, 2, deep);
+    r.idle(0.05);
+    assert!(r.s.players[&2].status.is_downed());
+    let Relic::Ground(at) = r.s.encounter.progress.relics[0] else {
+        panic!("not released")
+    };
+    assert!(at.y >= afloat, "the released bundle sank: {at:?}");
+}
+
 #[test]
 fn a_crouched_player_in_tall_grass_walks_past_a_watching_threat() {
     // A standing player 10 m from him is warned at once; a crouched one in
@@ -2273,11 +2345,21 @@ fn controls_carry_nothing_while_frozen_dead_or_the_run_is_over() {
     silent(&r, HOST, "won");
 }
 
+/// The night a diagnostic or the sweep measures: `ROUTE_NIGHT=gentle|hard`
+/// (normal by default).
+fn route_night() -> el_silbon::tuning::Night {
+    std::env::var("ROUTE_NIGHT")
+        .ok()
+        .and_then(|v| el_silbon::tuning::Night::parse(&v))
+        .unwrap_or_default()
+}
+
 /// Opt-in measurement for work on the route script: the solo and shared
 /// routes over many storms, each with its own pattern of missed frames. The
 /// driver plays a chaotic game, so one seed passing proves little; this
 /// counts. `cargo test --locked --test session -- --ignored --nocapture`
-/// One seed of the solo route with its log: `ROUTE_LOG=1 ROUTE_SEED=n`.
+/// One seed of the solo route with its log: `ROUTE_LOG=1 ROUTE_SEED=n`
+/// (and `ROUTE_NIGHT`).
 #[test]
 #[ignore = "diagnostic"]
 fn one_solo_seed() {
@@ -2286,14 +2368,15 @@ fn one_solo_seed() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(1);
     solo_route(
-        Tuning::with_seed(seed),
+        Tuning::with_seed(seed).with_night(route_night()),
         seed,
         RouteScript::full,
         &[Outcome::Won, Outcome::Failed],
     );
 }
 
-/// One seed of the shared route with its log: `ROUTE_LOG=1 ROUTE_SEED=n`.
+/// One seed of the shared route with its log: `ROUTE_LOG=1 ROUTE_SEED=n`
+/// (and `ROUTE_NIGHT`).
 #[test]
 #[ignore = "diagnostic"]
 fn one_shared_seed() {
@@ -2301,7 +2384,7 @@ fn one_shared_seed() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1);
-    network_route(Tuning::with_seed(seed), seed);
+    network_route(Tuning::with_seed(seed).with_night(route_night()), seed);
 }
 
 #[test]
@@ -2309,10 +2392,7 @@ fn one_shared_seed() {
 fn the_routes_hold_over_many_storms() {
     let n = 150;
     // `ROUTE_NIGHT=gentle|hard` measures another night (the gate is normal).
-    let night = std::env::var("ROUTE_NIGHT")
-        .ok()
-        .and_then(|v| el_silbon::tuning::Night::parse(&v))
-        .unwrap_or_default();
+    let night = route_night();
     std::panic::set_hook(Box::new(|_| {}));
     let why = |e: Box<dyn std::any::Any + Send>| e.downcast_ref::<String>().cloned().unwrap_or_default();
     let (mut solo, mut shared) = (0, 0);

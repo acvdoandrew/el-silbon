@@ -10,8 +10,16 @@ use crate::noise::fbm2;
 use crate::rng::Rng;
 use bevy::math::{Vec2, Vec3};
 
-/// Still-water level the flooded marsh posts are measured from.
-pub const MARSH_WATER: f32 = -0.13;
+/// Still-water level of every flooded basin: the caño, the marsh, the pond
+/// and the creek. The marsh posts are measured from it.
+pub const WATER_LEVEL: f32 = -0.13;
+pub const MARSH_WATER: f32 = WATER_LEVEL;
+/// Bed of a ford where it crosses a wadeable channel: a raised gravel bar.
+pub const FORD_BED: f32 = -0.3;
+/// Water deeper than this over the bed is waded waist-deep (`Wade::Deep`).
+pub const WADE_DEEP: f32 = 0.3;
+/// Water shallower than this over the bed is only wet ground.
+pub const WADE_WET: f32 = 0.02;
 
 /// The altar table in the ceiba's hollow: top above the ground, its centre
 /// out from the offering point, and half extents (across, outward).
@@ -235,10 +243,19 @@ pub struct District {
     /// datum where nonzero (the waterline), otherwise the terrain.
     pub ruins: Vec<Rail>,
     pub props: Vec<Prop>,
-    /// Deep water: never walkable except across authored surfaces.
+    /// Standing water: a bank wall except where `channels`, `shallows` or
+    /// authored surfaces carve it.
     pub water: Vec<Rect2>,
     /// Walkable water: slow and noisy.
     pub shallows: Vec<Rect2>,
+    /// Standing water you can wade, slowly and loudly: the caño. Each lies
+    /// inside one `water` rect and is never a bank; how deep it is comes
+    /// from the terrain (`Layout::wade`).
+    pub channels: Vec<Rect2>,
+    /// The boat moored in the caño: a solid hull.
+    pub boat: Rect2,
+    /// Mooring stumps standing in the caño off the pier's head.
+    pub stumps: [Vec2; 2],
     pub surfaces: Vec<Surface>,
     /// Tall grass that hides a crouching player.
     pub grass: Vec<Rect2>,
@@ -638,8 +655,9 @@ impl District {
         // Fields.
         prop(Cart, at(Fields, p(4., -3.)), p(1.5, 0.7), 1.0);
         prop(Barrel, at(Fields, p(6., -6.)), p(0.45, 0.45), 0.9);
-        // Caño and watchtower base.
+        // Caño and watchtower base; the boat is moored out in the channel.
         prop(Crates, at(Cano, p(11., -6.)), p(0.8, 0.6), 0.95);
+        let boat = Rect2::from_center(at(Cano, p(5., -2.)), p(2.3, 0.72));
         prop(Barrel, at(Watchtower, p(6., 4.)), p(0.5, 0.5), 1.0);
         prop(Crates, at(Watchtower, p(11., 4.)), p(1.0, 0.6), 0.8);
         // Extraction: the truck, its cargo and the power poles.
@@ -660,8 +678,10 @@ impl District {
             prop(Pole, c, p(0.15, 0.15), 6.0);
         }
 
+        // The caño is waded; the marsh, the pond and the creek keep banks.
+        let cano = rect(-8., -70., 76., -61.);
         let water = vec![
-            rect(-8., -70., 76., -61.),
+            cano,
             rect(-74., -107., 8., -88.),
             rect(-66., -88., -57., -70.),
             rect(-42., 11., -31., 20.),
@@ -1018,6 +1038,9 @@ impl District {
             props,
             water,
             shallows,
+            channels: vec![cano],
+            boat,
+            stumps: [p(24.6, -68.9), p(28.2, -69.3)],
             surfaces,
             grass,
             pads,
@@ -1148,6 +1171,9 @@ impl District {
     pub fn shallow_at(&self, p: Vec2) -> bool {
         self.shallows.iter().any(|r| r.contains(p))
     }
+    pub fn channel_at(&self, p: Vec2) -> bool {
+        self.channels.iter().any(|r| r.contains(p))
+    }
     pub fn tall_grass_at(&self, p: Vec2) -> bool {
         self.grass.iter().any(|r| r.contains(p))
     }
@@ -1221,8 +1247,9 @@ impl District {
         }
         for r in &self.water {
             if r.contains(p) {
-                // The waterline wanders up to ~1.7 m inside the fence line;
-                // walkability still follows the authored rectangle.
+                // The waterline wanders up to ~1.7 m inside the rectangle. A
+                // bank's wall follows the rectangle; in a channel, wading
+                // follows this waterline (`Layout::wade`).
                 let recede = fbm2(p.x * 0.31, p.y * 0.31, 33) * 1.7;
                 h = h.min(-0.65 * ((inner_edge(*r, p) - recede) / 1.1).clamp(0.0, 1.0));
             }
@@ -1230,6 +1257,14 @@ impl District {
         for r in &self.shallows {
             if r.contains(p) {
                 h = h.min(-0.16 * (inner_edge(*r, p) / 1.0).clamp(0.0, 1.0));
+            }
+        }
+        // A ford across a channel is a raised gravel bar, lighter under the
+        // water than the channel's bed on either side of it.
+        if self.channel_at(p) {
+            for r in self.shallows.iter().filter(|r| r.contains(p)) {
+                let t = smooth((p.x - r.min.x).min(r.max.x - p.x) / 1.5);
+                h = h.max(h + (FORD_BED - h) * t);
             }
         }
         h
@@ -1337,9 +1372,9 @@ impl District {
                 kind: BlockerKind::Trunk,
             });
         }
-        // Carve only authored crossings and shallows out of deep water;
-        // everything else has a continuous solid bank. A graph edge is not a
-        // substitute for this.
+        // Carve authored crossings, shallows and wadeable channels out of
+        // standing water; everything else has a continuous solid bank. A
+        // graph edge is not a substitute for this.
         for water in &self.water {
             let mut parts = vec![*water];
             for cut in self
@@ -1347,6 +1382,7 @@ impl District {
                 .iter()
                 .map(|s| s.rect)
                 .chain(self.shallows.iter().copied())
+                .chain(self.channels.iter().copied())
             {
                 let mut next = Vec::new();
                 for r in parts {
@@ -1357,6 +1393,15 @@ impl District {
             for r in parts {
                 add(out, r, Sight::Clear, BlockerKind::Bank);
             }
+        }
+        // What stands in the channel: the moored boat and its stumps.
+        add(out, self.boat, Sight::Clear, BlockerKind::Furniture);
+        for &center in &self.stumps {
+            out.push(Blocker {
+                shape: Shape::Circle { center, radius: 0.12 },
+                sight: Sight::Clear,
+                kind: BlockerKind::Post,
+            });
         }
         let bridge = self.surfaces[0].rect;
         for x in [bridge.min.x, bridge.max.x] {

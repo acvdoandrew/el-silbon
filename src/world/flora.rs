@@ -19,7 +19,7 @@ use bevy::shader::ShaderRef;
 use super::mesh::{MeshBuilder, Rgba, scale_rgb, srgb};
 use super::{SpawnCtx, fbm2};
 use crate::geometry::Rect2;
-use crate::geometry::district::LandmarkId;
+use crate::geometry::district::{LandmarkId, WATER_LEVEL};
 use crate::rng::Rng;
 
 /// Downwind direction on the ground (x, z); the blades' static lean uses it too.
@@ -341,12 +341,13 @@ pub fn spawn(
         let area = (r.max.x - r.min.x) * (r.max.y - r.min.y);
         for _ in 0..(area * 0.9).min(2600.0) as usize {
             let p = Vec2::new(rng.range(r.min.x, r.max.x), rng.range(r.min.y, r.max.y));
-            let depth = -0.13 - layout.terrain(p);
+            let depth = WATER_LEVEL - layout.terrain(p);
             let on_planks = d
                 .surfaces
                 .iter()
                 .any(|s| Rect2::from_center(s.rect.center(), s.rect.half() + Vec2::splat(1.2)).contains(p));
-            if on_planks {
+            // The ford's lane across the caño stays open water.
+            if on_planks || d.shallow_at(p) {
                 continue;
             }
             if (-0.12..0.34).contains(&depth) {

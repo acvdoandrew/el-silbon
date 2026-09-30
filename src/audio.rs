@@ -810,14 +810,15 @@ fn footsteps(
         0.62
     };
     let load = 1.0 + 0.12 * net.carrying() as f32;
+    let (heavy, low) = wading_deep(&layout.0, pos);
     *count += 1;
     const PITCH: [f32; 5] = [0.96, 1.04, 1.0, 0.92, 1.08];
     let clip = &sounds.steps[surface as usize][*count % 3];
     one_shot(
         &mut commands,
         clip,
-        tuning.0.sfx_gain * gait * load * 0.8,
-        PITCH[*count % PITCH.len()],
+        tuning.0.sfx_gain * gait * load * heavy * 0.8,
+        PITCH[*count % PITCH.len()] * low,
         VoiceKind::Effect,
         &settings,
     );
@@ -899,16 +900,31 @@ fn party_steps(
             0.62
         };
         let load = 1.0 + 0.12 * p.carrying as f32;
+        let (heavy, low) = wading_deep(l, pos);
         const PITCH: [f32; 5] = [1.02, 0.95, 1.07, 0.98, 0.93];
         placed_shot(
             &mut commands,
             &ears,
             &sounds.steps[surface as usize][entry.2 % 3],
-            (ears.tuning.0.sfx_gain * gait * load * 0.8, PITCH[entry.2 % PITCH.len()]),
+            (
+                ears.tuning.0.sfx_gain * gait * load * heavy * 0.8,
+                PITCH[entry.2 % PITCH.len()] * low,
+            ),
             Some(Anchor::at(Vec3::new(pos.x, l.surface_height(pos) + 0.1, pos.y))),
             VoiceKind::Effect,
             &settings,
         );
+    }
+}
+
+/// A survivor's step waist-deep in the caño: the water clips, heavier and
+/// lower (gain and pitch factors). Only ever a survivor's: he wades silent,
+/// since a splash would place him.
+fn wading_deep(layout: &crate::geometry::Layout, pos: Vec2) -> (f32, f32) {
+    if layout.wade(pos) == crate::geometry::Wade::Deep {
+        (1.4, 0.85)
+    } else {
+        (1.0, 1.0)
     }
 }
 

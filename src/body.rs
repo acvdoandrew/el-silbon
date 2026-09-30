@@ -5,6 +5,7 @@
 //! where the Silbón is: fear reacts to darkness, company, load and to what
 //! the player can perceive, never to his true distance.
 
+use crate::geometry::Wade;
 use crate::tuning::Tuning;
 
 /// Whether a player can act, is on the ground, or is gone for this run.
@@ -46,7 +47,7 @@ pub struct BodyInput {
 /// The surface underfoot.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Ground {
-    pub wading: bool,
+    pub wade: Wade,
     pub planks: bool,
 }
 
@@ -102,7 +103,11 @@ impl Body {
         if self.stun > 0.0 {
             return 0.0;
         }
-        let wade = if ground.wading { t.wade_factor } else { 1.0 };
+        let wade = match ground.wade {
+            Wade::Dry => 1.0,
+            Wade::Shallow => t.wade_factor,
+            Wade::Deep => t.deep_wade_factor,
+        };
         if downed {
             return t.crawl_speed * wade;
         }
@@ -130,9 +135,11 @@ impl Body {
             t.noise_walk
         };
         let quiet = |k: f32| if self.crouching { k } else { 1.0 };
-        if ground.wading {
-            r += t.noise_wade * quiet(0.4);
-        }
+        r += match ground.wade {
+            Wade::Dry => 0.0,
+            Wade::Shallow => t.noise_wade * quiet(0.4),
+            Wade::Deep => t.noise_deep * quiet(0.4),
+        };
         if ground.planks {
             r += t.noise_plank * quiet(0.3);
         }
@@ -156,7 +163,9 @@ impl Body {
         self.stun = (self.stun - dt).max(0.0);
         self.crouching = input.crouch && !downed;
         let moving = input.moved > 1e-4;
-        let want_sprint = input.sprint && moving && !self.crouching && !downed && self.stun <= 0.0;
+        // Nobody sprints waist-deep.
+        let want_sprint =
+            input.sprint && moving && !self.crouching && !downed && self.stun <= 0.0 && ground.wade != Wade::Deep;
         if self.sprinting {
             self.sprinting = want_sprint && self.stamina > 0.0;
         } else {
@@ -285,38 +294,54 @@ mod tests {
         let mut b = Body::default();
         let heavy = walk(&mut b, &t, stand, 3, ground, 2.0);
         assert!(max(&heavy) > max(&normal));
+        let shallow = Ground {
+            wade: Wade::Shallow,
+            planks: false,
+        };
         let mut b = Body::default();
-        let wet = walk(
-            &mut b,
-            &t,
-            stand,
-            0,
-            Ground {
-                wading: true,
-                planks: false,
-            },
-            2.0,
-        );
+        let wet = walk(&mut b, &t, stand, 0, shallow, 2.0);
         assert!(max(&wet) > max(&normal));
         assert!(
             Body::default().speed(&t, 3, Ground::default(), false)
                 < Body::default().speed(&t, 0, Ground::default(), false)
         );
-        assert!(
-            Body::default().speed(
-                &t,
-                0,
-                Ground {
-                    wading: true,
-                    planks: false
-                },
-                false
-            ) < Body::default().speed(&t, 0, Ground::default(), false)
-        );
+        assert!(Body::default().speed(&t, 0, shallow, false) < Body::default().speed(&t, 0, Ground::default(), false));
         // A crouched load is silent enough to sneak: no rattle.
         let mut b = Body::default();
         let sneaking = walk(&mut b, &t, crouch, 4, ground, 2.0);
         assert!(max(&sneaking) <= t.noise_crouch + 1e-3);
+    }
+
+    #[test]
+    fn deeper_water_is_slower_and_louder_and_waist_deep_there_is_no_sprint() {
+        let t = Tuning::default();
+        let ground = |wade| Ground { wade, planks: false };
+        let depths = [Wade::Dry, Wade::Shallow, Wade::Deep];
+        let max = |v: &[f32]| v.iter().copied().fold(0.0, f32::max);
+        let stand = BodyInput::default();
+        let speeds: Vec<f32> = depths
+            .iter()
+            .map(|&w| Body::default().speed(&t, 0, ground(w), false))
+            .collect();
+        assert!(speeds[0] > speeds[1] && speeds[1] > speeds[2], "{speeds:?}");
+        let steps: Vec<f32> = depths
+            .iter()
+            .map(|&w| max(&walk(&mut Body::default(), &t, stand, 0, ground(w), 4.0)))
+            .collect();
+        assert!(steps[0] < steps[1] && steps[1] < steps[2], "{steps:?}");
+        // Holding sprint waist-deep: no sprint, and no breath spent on one.
+        let sprint = BodyInput {
+            sprint: true,
+            ..Default::default()
+        };
+        let mut b = Body::default();
+        walk(&mut b, &t, sprint, 0, ground(Wade::Deep), 2.0);
+        assert!(!b.sprinting && b.stamina == 1.0, "sprinted in deep water");
+        // Crawling is slowed by the water too.
+        assert!(
+            Body::default().speed(&t, 0, ground(Wade::Deep), true)
+                < Body::default().speed(&t, 0, ground(Wade::Shallow), true)
+        );
     }
 
     #[test]

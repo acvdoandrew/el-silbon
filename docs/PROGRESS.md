@@ -44,6 +44,69 @@
 - Bounds moved: none. Relocated assertion (not a loosening): the old "he heard the screech" check in `long_tasks_ask_…` put him 25 m from the pump, inside the crank's own 34 m pulse, so it passed without the miss noise. `a_miss_carries_beyond_the_noise_of_the_work_it_spoils` replaces it and is strictly harder.
 - The Phase 2 miss rule below is marked superseded. README line 120 ("costs work") is still accurate. Committed on m1b; not pushed.
 
+**River (item 7, roadmap fix 1, Phase 1).**
+- **Decision:** the caño is waded. This reverses "clearly bounded water … no swimming" (annotated in the district-pass notes below) for the caño only. The marsh, the pond and the creek keep their banks, and there is still no swimming. Do not restore the caño's bank.
+- `District::channels` (the caño rect, bound once as `cano`) is carved out of the bank blockers. The boat (`District::boat`, a Furniture rect) and the two mooring stumps (`District::stumps`, Post circles r 0.12) are now layout blockers; `world::district::boat` reads them.
+- Pure `geometry::Wade { Dry, Shallow, Deep }` from `Layout::wade(p)`:
+  - Rect tests come first, then surfaces (deck and pier are Dry).
+  - Authored shallows outside a channel are Shallow.
+  - Inside a channel, the terrain depth under `WATER_LEVEL` (-0.13) decides: Dry at or below `WADE_WET` 0.02, Deep above `WADE_DEEP` 0.3.
+  - A ford inside a channel is never Deep, and its dry ends at the banks are Dry, so wading starts exactly at the drawn waterline. (Deviation from the investigation's "shallow_at → Shallow": the new grid test caught the ford's dry ends being waded.)
+- `wading()` is `wade != Dry`. `water_line()` and `rest_height()` (the ground, or afloat 0.2 under the water) are new.
+- Tuning: `deep_wade_factor` 0.35 and `noise_deep` 14 (×0.4 crouched). Nobody sprints waist-deep, and crawling is slowed too. Neither is night-scaled.
+- Afloat:
+  - The session's `ground_height` is `rest_height` (at spawn, on every move, and in the sack), so a dropped or released bundle floats at WATER_LEVEL + 0.15.
+  - `Pose::eye` never goes below WATER_LEVEL + 0.15, and the body target is `rest_height + 0.3`.
+  - `net::avatars` draws the downed at `rest_height` and the standing at `surface_height` (thigh-deep).
+- The ford: terrain lifts shallows inside a channel toward `FORD_BED` -0.3 (smoothed over 1.5 m from its sides), so the caño sheet is paler and clearer over it. The second shallows sheet is no longer drawn inside a basin, and no shore reeds grow on the ford.
+- No ground grass grows over water, and the map shades channels paler than the marsh.
+- He wades unslowed and silent (sim unchanged). Deep steps, yours and teammates', play the water clips at ×1.4 gain and ×0.85 pitch, never at his position.
+- Route driver (`script.rs`: not a rule, not hashed):
+  - A new A* class `DEEP` costs 6. This deliberately deviates from the roadmap's "TIGHT" (3). At 3 the pier → lookout leg is a coin flip (about 44 vs 45 m), and default gate seed 4 (`the_routes_hold_through_other_storms_and_missed_frames`) waded into a hunt and failed.
+  - The string-pull no longer cuts through deep water that the A* path stayed out of. It did so at the ford's east side (Normal shared 60 and Hard shared 7, which both pass now).
+- Tests. Each new one failed first on the old code for its root cause:
+  - district `the_cano_is_wadeable_anywhere_and_the_ford_reads_shallower`: red, blocked wading across at x = -6. It also checks depth tiers; a 0.5 m grid over the caño that is free except within 1 m of rails, bridge, ramp, boat and stumps; Dry exactly where the bed is above the water; Deep exactly past `WADE_DEEP`; the ford bed more than 0.2 above the channel's; the boat solid; the marsh still a wall.
+  - district `a_body_in_the_channel_floats_where_a_friend_on_the_bank_can_reach_it`: red, "drowned view" at y -0.31.
+  - session `wading_the_deep_channel_is_slow_and_heard_farther_than_the_ford`: red, "waded 8.14 m in 3 s, not 3.78" (pushed out of the bank).
+  - session `what_falls_in_the_channel_floats`: red, "the dropped bundle sank" at y -0.30.
+  - body `deeper_water_is_slower_and_louder_and_waist_deep_there_is_no_sprint`: red, speeds [3.6, 1.98, 1.98].
+  - Inverted on purpose (the reversed decision, not a loosening): `tests/district.rs` :85-87 "deep water is a wall" became "you wade into it", and :105 `!wading(10,-65)` became `wade == Deep`.
+  - `one_solo_seed` and `one_shared_seed` now honour `ROUTE_NIGHT` (they were Normal only).
+- Verified: fmt, check, test (lib 91, district 9, session 46 + 3 ignored), clippy -D warnings clean; the same when rerun at commit.
+- Route sweep on the final tree, rerun and identical (and again at commit): normal solo 150/150, shared 148/150; gentle 150/150, 150/150; hard 150/150, 138/150 (the test's own 97% assert fires on hard, not the bar).
+- Newly failing against the branch baseline (`sweep6-*`), each traced with ROUTE_LOG and a temporary position trace (since removed; at commit each failure line matched the traced run exactly):
+  - Normal shared 35 and Hard shared 4:
+    - Bundle 4 lay at its ground site by the base shed (52.5,-87.5). From the ramp foot, the local A* box holds neither the bridge nor the bank road, so the driver now wades east of the ramp (x ≈ 45.5). Before, `local()` failed there and the driver walked about 100 m of bank road along the patrol network.
+    - Coming back, it was warned waist-deep, turned back, and was hunted down on the far bank (Hard 4: at the south waterline, (41.5,-69.9)). That is deep water doing its job on the fiction's shortcut.
+  - Normal shared 11:
+    - The whole run was dry (bridge, ramp, deck). Coming down the ramp, player 1 was warned from the far bank (28.9,-77.3).
+    - The hunt went straight across the channel, waist-deep and unslowed (the Phase 2A decision), where the bank used to send him round by the bridge.
+  - Hard shared 126:
+    - No water at the end. Player 1 was caught on the ramp from the far bank west of it (39.5,-74.2, him about 36,-74).
+    - That is the signature of baseline Hard shared 5, 30, 43, 70 and 93, reached through a timeline that shifted earlier in the night. The cause of the shift was not traced (neither player 1 nor he waded deep that night).
+  - Hard shared 123:
+    - Player 1 took the base-shed wade above.
+    - Player 2 then died on the walk to the truck (Go (44,30)), caught near (9,14.6) fleeing west on 0.03 stamina. That is the pre-existing pattern of baseline Hard shared 38.
+  - No longer failing: Gentle shared 124. Hard solo 17, 38, 44, 51, 72, 75, 81, 87, 95, 97, 101, 102, 117, 118. Hard shared 28, 34, 63, 70, 73, 75, 82.
+  - Hard solo 17 was traced: its night diverges early, so the Hard solo gain (136 → 150) is observed, not attributed.
+- Fingerprint checkpoint for this tree: 0x078a48644d371cd7, from the same Python model, recomputed at commit (it reproduces the previous 0xc8f0af5d5e118e17 from HEAD). Items 8-11 move it again. No protocol message or wire field changed, and `Wade` is not on the wire. `src/body.rs` briefly had LF endings during the work and is back to CRLF; the fingerprint ignores `\r` either way.
+- Unverified (user-led, rendered):
+  - whether the waterline and the wading start match by eye
+  - the ford's paler bar
+  - whether the boat and stump footprints match their meshes
+  - thigh-deep standing avatars and floating downed ones
+  - the deep-step sound
+  - the map shade
+- Net smoke (headless, two processes from this tree, 127.0.0.1:5311), run twice at commit, about 9 min each: `NET SMOKE PASS host` and `NET SMOKE PASS client` both times. Run 1: client exit 0; the host outlived the 540 s wait and its code was not captured. Run 2: host 0, client 0.
+- Open:
+  - The marsh and the pond keep the dry-shore invisible wall along their rectangles (Phase 2D).
+  - The reflex's `rate()` still counts deep water as only +3 wet, so a hide spot waist-deep is a trap.
+  - Tureco crosses the caño unslowed, like him.
+  - The catch cinematic's fallen eye (`lunge_frame` at `player.rs` :613 and :694, and `world/silbon.rs` :1031) still reads `surface_height`, so a player caught waist-deep watches the catch from about -0.31, under the water sheet. This is presentation only, outside this item's three sites.
+  - Phase 2 (soaked torch, drifting bundle) has not started.
+  - Lore page 5 is untouched.
+- Bounds moved: none. Invariant tests are untouched (hunt and stalk slower than walking, warnings over 1.5 s, continuous pressure hidden). Committed on m1b; not pushed.
+
 ## Current handoff — 2026-09-30 (M1a landed: fingerprint-neutral, pairs with test.1)
 
 **Audio mix (fix 3).**
@@ -2739,6 +2802,8 @@ was searched. They were not copied into runtime assets.
 - Preserve chunky original geometry, cool moonlight, warm practical accents
   and open Llanos silhouettes. Replace the reference's dangerous deep-water
   travel with clearly bounded water and safe crossings; no swimming/climbing.
+  (Reversed for the caño only in M1b item 7: it is waded, slow and loud.
+  The marsh, the pond and the creek stay banks; still no swimming.)
 - Movement remains planar in X/Z, with a shared authored surface-height query
   for the 6.4 m lookout deck, 26 m guarded ramp, bridge and stilt-hut platform.
   Camera/aim, host movement, remote avatars, threat presentation and dropped

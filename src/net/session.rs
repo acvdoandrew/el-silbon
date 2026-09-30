@@ -62,7 +62,7 @@ pub struct Participant {
 impl Participant {
     fn new(pose: Pose, seed: u64, layout: &Layout) -> Self {
         Self {
-            ground_height: layout.surface_height(pose.pos),
+            ground_height: layout.rest_height(pose.pos),
             pose,
             status: Status::Active,
             body: Body::default(),
@@ -710,7 +710,7 @@ impl Session {
             let downed = p.status.is_downed();
             let pos = p.pose.pos;
             let ground_kind = Ground {
-                wading: layout.wading(pos),
+                wade: layout.wade(pos),
                 planks: layout
                     .district
                     .surface_at(pos)
@@ -742,7 +742,7 @@ impl Session {
                 p.battery = (p.battery - dt / tuning.battery_life).max(0.0);
             }
             p.light = p.input.light && p.battery > 0.0;
-            p.ground_height = layout.surface_height(p.pose.pos);
+            p.ground_height = layout.rest_height(p.pose.pos);
         }
     }
 
@@ -1133,7 +1133,7 @@ impl Session {
             let (at, facing) = (self.encounter.threat.pos, self.encounter.threat.facing);
             if let Some(p) = self.players.get_mut(&id) {
                 p.pose.pos = layout.move_circle(at, -facing * 0.5, 0.2);
-                p.ground_height = layout.surface_height(p.pose.pos);
+                p.ground_height = layout.rest_height(p.pose.pos);
                 p.revive = 0.0;
             }
         }

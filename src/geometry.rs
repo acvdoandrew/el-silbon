@@ -957,10 +957,59 @@ impl Layout {
             .any(|l| (!l.powered || circuits & (1 << l.circuit) != 0) && ground(l.pos).distance(p) <= l.radius)
     }
 
+    /// How deep in water `p` stands. Rect tests come first and the terrain
+    /// is sampled only inside a channel, so this is cheap enough for every
+    /// path-search cell and every frame's eye. Decks and piers are dry and
+    /// authored shallows are shallow. A channel is as deep as the still water
+    /// over its bed, so it is dry exactly where the drawn waterline ends; a
+    /// ford across it is never more than shallow.
+    pub fn wade(&self, p: Vec2) -> Wade {
+        let d = &self.district;
+        let (shallow, channel) = (d.shallow_at(p), d.channel_at(p));
+        if !(shallow || channel) || d.surface_at(p).is_some() {
+            return Wade::Dry;
+        }
+        if !channel {
+            return Wade::Shallow;
+        }
+        let depth = district::WATER_LEVEL - self.terrain(p);
+        if depth <= district::WADE_WET {
+            Wade::Dry
+        } else if shallow || depth <= district::WADE_DEEP {
+            Wade::Shallow
+        } else {
+            Wade::Deep
+        }
+    }
+
     /// Walkable water: slow, splashing footsteps.
     pub fn wading(&self, p: Vec2) -> bool {
-        self.district.shallow_at(p)
+        self.wade(p) != Wade::Dry
     }
+
+    /// The still water's surface over `p`, if `p` is waded.
+    pub fn water_line(&self, p: Vec2) -> Option<f32> {
+        self.wading(p).then_some(district::WATER_LEVEL)
+    }
+
+    /// Where something lying at `p` rests: the ground, or afloat just under
+    /// the water where it is deeper than that. Downed bodies and dropped
+    /// bundles lie here, so a friend can find them.
+    pub fn rest_height(&self, p: Vec2) -> f32 {
+        let ground = self.surface_height(p);
+        self.water_line(p).map_or(ground, |w| ground.max(w - 0.2))
+    }
+}
+
+/// How deep the water is where someone stands.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Wade {
+    #[default]
+    Dry,
+    /// Ankle to knee deep: a ford, a pond's margin, a channel's edge.
+    Shallow,
+    /// Waist-deep in a channel.
+    Deep,
 }
 
 /// Unit vector perpendicular to an axis-aligned direction, as absolute values.

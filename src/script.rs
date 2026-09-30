@@ -42,7 +42,7 @@ use bevy::math::{Vec2, Vec3};
 
 use crate::control::{Intent, Pose, Target, TargetKind, evaluate_target, wrap_angle};
 use crate::geometry::district::LandmarkId;
-use crate::geometry::{Layout, Shape, Sight, ground};
+use crate::geometry::{Layout, Shape, Sight, Wade, ground};
 use crate::net::protocol::{Action, PlayerId, Snapshot};
 use crate::sim::{Encounter, Outcome};
 use crate::tuning::Tuning;
@@ -173,15 +173,20 @@ const UNKNOWN: u8 = 0;
 const OPEN: u8 = 1;
 const MID: u8 = 2;
 const TIGHT: u8 = 3;
-const BLOCKED: u8 = 4;
+/// Waist-deep water, whatever the room.
+const DEEP: u8 = 4;
+const BLOCKED: u8 = 5;
 /// Path cost multiplier by clearance class: prefer open ground, squeeze
-/// through doors when nothing else exists.
-const COST: [f32; 5] = [0.0, 1.0, 1.5, 3.0, f32::INFINITY];
+/// through doors when nothing else exists. Wading waist-deep takes about
+/// three times as long as walking and everything hears it, so it costs
+/// twice that: the ford and the bridge, unless wading saves a long way.
+const COST: [f32; 6] = [0.0, 1.0, 1.5, 3.0, 6.0, f32::INFINITY];
 
-/// How much room a walker of `radius` has at `p`.
+/// How much room a walker of `radius` has at `p`, or waist-deep water.
 fn classify(layout: &Layout, radius: f32, p: Vec2) -> u8 {
     let b = layout.bounds;
-    if p.x < b.min.x + radius || p.x > b.max.x - radius || p.y < b.min.y + radius || p.y > b.max.y - radius {
+    let class = if p.x < b.min.x + radius || p.x > b.max.x - radius || p.y < b.min.y + radius || p.y > b.max.y - radius
+    {
         BLOCKED
     } else if layout.is_free(p, radius + 0.25) {
         OPEN
@@ -191,6 +196,11 @@ fn classify(layout: &Layout, radius: f32, p: Vec2) -> u8 {
         TIGHT
     } else {
         BLOCKED
+    };
+    if class != BLOCKED && layout.wade(p) == Wade::Deep {
+        DEEP
+    } else {
+        class
     }
 }
 
@@ -198,6 +208,12 @@ fn classify(layout: &Layout, radius: f32, p: Vec2) -> u8 {
 fn segment_free(layout: &Layout, a: Vec2, b: Vec2, clearance: f32) -> bool {
     let steps = ((a.distance(b) / 0.2).ceil() as usize).max(1);
     (0..=steps).all(|k| layout.is_free(a.lerp(b, k as f32 / steps as f32), clearance))
+}
+
+/// Somewhere along a → b is waist-deep water.
+fn segment_deep(layout: &Layout, a: Vec2, b: Vec2) -> bool {
+    let steps = ((a.distance(b) / 0.2).ceil() as usize).max(1);
+    (0..=steps).any(|k| layout.wade(a.lerp(b, k as f32 / steps as f32)) == Wade::Deep)
 }
 
 fn poly_len(from: Vec2, path: &[Vec2]) -> f32 {
@@ -375,12 +391,22 @@ impl Nav {
         }
         points.push(from);
         points.reverse();
-        // String-pull: the farthest corner still reachable in a straight line.
+        // String-pull: the farthest corner still reachable in a straight line,
+        // never cutting through deep water the search kept out of (deep[k]:
+        // how many of the first k cells were waist-deep).
         let clearance = radius + 0.06;
+        let mut deep = vec![0u32; points.len() + 1];
+        for (k, &p) in points.iter().enumerate() {
+            deep[k + 1] = deep[k] + u32::from(layout.wade(p) == Wade::Deep);
+        }
+        let straight = |i: usize, j: usize| {
+            segment_free(layout, points[i], points[j], clearance)
+                && (deep[j + 1] > deep[i] || !segment_deep(layout, points[i], points[j]))
+        };
         let mut i = 0;
         while i + 1 < points.len() {
             let mut j = (i + 60).min(points.len() - 1);
-            while j > i + 1 && !segment_free(layout, points[i], points[j], clearance) {
+            while j > i + 1 && !straight(i, j) {
                 j -= 1;
             }
             out.push(points[j]);

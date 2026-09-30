@@ -76,6 +76,9 @@ pub struct Tuning {
     pub sprint_factor: f32,
     /// Wading speed as a fraction of the current gait.
     pub wade_factor: f32,
+    /// Speed waist-deep in a channel, as a fraction of the current gait; no
+    /// sprinting there.
+    pub deep_wade_factor: f32,
     /// Crawling speed of a downed player.
     pub crawl_speed: f32,
     /// Speed lost per carried bone bundle (fraction of walking).
@@ -259,6 +262,9 @@ pub struct Tuning {
     /// Added radius when wading or crossing planks.
     pub noise_wade: f32,
     pub noise_plank: f32,
+    /// Added radius of a step waist-deep in a channel: a walker there is
+    /// heard as far as a sprinter.
+    pub noise_deep: f32,
     /// Added radius per carried bone bundle (they rattle) while not crouched.
     pub noise_carry: f32,
     pub noise_pump: f32,
@@ -410,6 +416,7 @@ impl Default for Tuning {
             crouch_factor: 0.5,
             sprint_factor: 1.45,
             wade_factor: 0.55,
+            deep_wade_factor: 0.35,
             crawl_speed: 0.9,
             carry_slow: 0.06,
             carry_floor: 0.62,
@@ -506,6 +513,7 @@ impl Default for Tuning {
             noise_sprint: 22.0,
             noise_wade: 8.0,
             noise_plank: 6.0,
+            noise_deep: 14.0,
             noise_carry: 1.6,
             noise_pump: 34.0,
             noise_altar: 22.0,

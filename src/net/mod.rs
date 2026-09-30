@@ -695,7 +695,13 @@ fn avatars(
         motion.down = p.status != 0;
         motion.carrying = p.carrying > 0;
         let pos = Vec2::from_array(p.position);
-        let ground = layout.0.surface_height(pos);
+        // On their feet they wade, sunk to the thigh; down, they float where
+        // a friend can find them (and where the body target is).
+        let ground = if p.status != 0 {
+            layout.0.rest_height(pos)
+        } else {
+            layout.0.surface_height(pos)
+        };
         // Standing, crouched, or down on the ground. A rigged survivor
         // crouches and leans by their own joints; the stand-in is squashed
         // and tipped instead.

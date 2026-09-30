@@ -66,12 +66,12 @@ impl Pose {
         }
     }
 
+    /// The eye: standing, crouched or lying on the ground, and never under
+    /// the water (someone downed in a channel floats, face up).
     pub fn eye(&self, tuning: &Tuning, layout: &Layout) -> Vec3 {
-        Vec3::new(
-            self.pos.x,
-            tuning.eye_height - self.lower + layout.surface_height(self.pos),
-            self.pos.y,
-        )
+        let y = tuning.eye_height - self.lower + layout.surface_height(self.pos);
+        let y = layout.water_line(self.pos).map_or(y, |w| y.max(w + 0.15));
+        Vec3::new(self.pos.x, y, self.pos.y)
     }
 
     pub fn forward2(&self) -> Vec2 {
@@ -346,7 +346,8 @@ pub fn evaluate_target(layout: &Layout, tuning: &Tuning, pose: &Pose, scene: &Sc
     }
     for &(id, at) in scene.bodies {
         if id != scene.me {
-            let y = layout.surface_height(at) + 0.3;
+            // Where the body lies: afloat in deep water.
+            let y = layout.rest_height(at) + 0.3;
             candidates.push((
                 TargetKind::Body(id),
                 Vec3::new(at.x, y, at.y),
