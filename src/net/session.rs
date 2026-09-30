@@ -12,6 +12,7 @@ use crate::{
     control::{Pose, SceneData, TargetKind, evaluate_target},
     director::{Director, Mood, Omen},
     geometry::{Layout, district::SurfaceKind, ground},
+    pacing::{self, Inputs, Menace, Respiro},
     perception::{CueDirector, DogSense, dog_senses},
     rng::Rng,
     sim::{Encounter, Event, Outcome, Presence, Prey, Relic, ThreatState, Variant},
@@ -178,6 +179,9 @@ pub struct Session {
     pub outbox: Vec<(PlayerId, ServerMessage)>,
     /// Who each player is (kept across restarts, given out in the lobby).
     survivors: BTreeMap<PlayerId, Survivor>,
+    /// El Respiro: when he may press and when the night breathes. Hidden AI
+    /// state, never on the wire.
+    pub pacing: Respiro,
 }
 
 impl Session {
@@ -202,6 +206,7 @@ impl Session {
             events: Vec::new(),
             outbox: Vec::new(),
             survivors: BTreeMap::new(),
+            pacing: Respiro::new(tuning.night, tuning.seed),
         };
         s.add_player(HOST, layout, tuning).expect("empty host session");
         s
@@ -530,12 +535,17 @@ impl Session {
         let mut ev = Vec::new();
         match target.kind {
             TargetKind::Relic(i) => {
+                if self.encounter.progress.carried_by(id) >= pacing::carry_max(tuning.night) {
+                    return Err("Your arms are full: lay a bundle down first.".into());
+                }
                 if !self.encounter.take_relic(i as usize, id, &mut ev) {
                     return Err("That bundle is already taken.".into());
                 }
                 if self.encounter.threat.state == ThreatState::Dormant {
                     let watchers = self.active_positions();
                     self.encounter.manifest(layout, tuning, &watchers, &mut ev);
+                    // He has risen: the grace begins.
+                    self.pacing.begin();
                 }
                 self.noises.push((pose.pos, tuning.noise_pickup));
             }
@@ -736,6 +746,7 @@ impl Session {
         self.beacon_pulse = 0.0;
         self.tell = tuning.tell_every.0;
         self.tell_rng = Rng::fork(tuning.seed, 0x7E11);
+        self.pacing = Respiro::new(tuning.night, tuning.seed);
         for (index, (&id, p)) in self.players.iter_mut().enumerate() {
             *p = Participant::new(Self::spawn_pose(layout, index), tuning.seed ^ id, layout);
         }
@@ -1034,10 +1045,18 @@ impl Session {
                 Pulse::Missed => self.check_result(id, kind, Verdict::Miss, layout, tuning),
                 Pulse::Quiet | Pulse::Stalled => {}
             }
+            // Working the rite, the pump, the engine or the beacon pushes
+            // the night on; lifting and carrying bones does not.
+            if matches!(kind, 3 | 4) || ev.iter().any(|e| matches!(e, Event::RelicDelivered | Event::BeaconLit)) {
+                self.pacing.push_forward(self.encounter.progress.delivered());
+            }
             if ev.contains(&Event::TruckStarted) {
                 let watchers = self.active_positions();
                 let mut more = Vec::new();
                 self.encounter.rouse(layout, tuning, &watchers, &mut more);
+                if more.contains(&Event::ThreatManifested) {
+                    self.pacing.begin();
+                }
                 ev.extend(more);
             }
             if let Some(p) = self.players.get_mut(&id) {
@@ -1194,14 +1213,66 @@ impl Session {
         }
     }
 
+    /// El Respiro reads the night's truth and gives its orders before he
+    /// moves: a floor under his warning, a leash, a fade.
+    fn pace(&mut self, target: Option<PlayerId>, dt: f32) {
+        if self.encounter.dawn {
+            self.encounter.threat.leash = None;
+            return;
+        }
+        let th = &self.encounter.threat;
+        let present = th.state != ThreatState::Dormant && matches!(th.presence, Presence::Present);
+        let menace: Vec<Menace> = self
+            .players
+            .iter()
+            .filter(|(_, p)| p.status.is_active())
+            .map(|(&id, p)| Menace {
+                id,
+                seen: present && th.has_sight && target == Some(id),
+                near: present && p.pose.pos.distance(th.pos) < pacing::NEAR,
+                lure: p.light && p.pulse[4] > 0.0,
+                growl: self.dog.growling && self.dog.owner == Some(id),
+                afraid: p.body.fear >= pacing::AFRAID,
+            })
+            .collect();
+        let nearest = if present {
+            self.active_positions()
+                .iter()
+                .map(|p| p.distance(th.pos))
+                .fold(f32::INFINITY, f32::min)
+        } else {
+            f32::INFINITY
+        };
+        let input = Inputs {
+            players: &menace,
+            nearest,
+            calm: th.state == ThreatState::Stalking,
+            present: matches!(th.presence, Presence::Present | Presence::Rising { .. }),
+            laid: self.encounter.progress.delivered(),
+        };
+        let orders = self.pacing.tick(&input, dt);
+        let th = &mut self.encounter.threat;
+        if let Some(floor) = orders.floor {
+            th.cooldown = th.cooldown.max(floor);
+        }
+        th.leash = orders.leash;
+        if orders.withdraw {
+            self.encounter.withdraw();
+        }
+    }
+
     fn threat_step(&mut self, layout: &Layout, tuning: &Tuning, dt: f32) {
         self.light_lure(layout, tuning);
         let masking = storm::masking(tuning, self.encounter.elapsed);
         for (pos, radius) in std::mem::take(&mut self.noises) {
+            if radius >= pacing::PUSH_NOISE {
+                self.pacing.push_forward(self.encounter.progress.delivered());
+            }
             self.encounter.hear(tuning, pos, radius * masking);
         }
         let watchers = self.active_positions();
         let target = self.choose_prey(layout);
+        self.pace(target, dt);
         let prey = target.and_then(|id| self.players.get(&id)).map(|p| Prey {
             pos: p.pose.pos,
             sight: (if p.body.crouching { tuning.sight_crouch } else { 1.0 })
@@ -1252,6 +1323,11 @@ impl Session {
                     }
                 }
                 Event::HuntBegan | Event::WarningAverted | Event::LostTrack | Event::ThreatReturned => {
+                    match e {
+                        Event::HuntBegan => self.pacing.hunt_began(),
+                        Event::LostTrack => self.pacing.hunt_resolved(),
+                        _ => {}
+                    }
                     if let Some(id) = target {
                         self.events.push((Some(id), e));
                     }
@@ -1505,6 +1581,22 @@ impl Session {
 
     fn outcome_step(&mut self, layout: &Layout, tuning: &Tuning) {
         self.check_failure();
+        // The rooster crows: he sinks for the night. With bones still out
+        // the night ends there; with them all home, the way out stays open.
+        if !self.encounter.outcome.is_over()
+            && !self.encounter.dawn
+            && self.encounter.elapsed >= pacing::dawn(tuning.night_length)
+        {
+            let mut ev = Vec::new();
+            self.encounter.dawn(&mut ev);
+            if ev.contains(&Event::SackDropped) {
+                self.release_captive(tuning);
+            }
+            if !self.encounter.progress.bones_home() {
+                self.encounter.outcome = Outcome::Dawn;
+            }
+            self.events.extend(ev.into_iter().map(|e| (None, e)));
+        }
         if self.encounter.outcome.is_over() || !self.encounter.progress.truck_ready(tuning) {
             return;
         }

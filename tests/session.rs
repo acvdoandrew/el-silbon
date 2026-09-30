@@ -2762,3 +2762,144 @@ fn the_routes_hold_over_many_storms() {
         "fewer than 97% of routes held"
     );
 }
+
+/// One tick with the host standing at `me` facing him, pinned present at
+/// `him`; the events the host was sent.
+fn face_him(r: &mut Rig, me: Vec2, him: Vec2) -> Vec<Event> {
+    r.stand(HOST, me, Vec3::new(him.x, 2.0, him.y));
+    let th = &mut r.s.encounter.threat;
+    th.pos = him;
+    th.presence = Presence::Present;
+    r.send(HOST, [0.0; 2], false, false, false);
+    r.tick();
+    r.events(HOST)
+}
+
+/// El Respiro: a player in plain view 10 m from him is never warned during
+/// the grace after the first pickup (nor the Build after it), nor during a
+/// Relax; the very same stand in a Peak is warned at once.
+#[test]
+fn a_player_in_plain_view_ten_metres_from_him_is_never_warned_during_grace_or_relax() {
+    use el_silbon::pacing::{Phase, RELAX_FLOOR, grace};
+    let mut r = Rig::new(1);
+    r.take(HOST, 0);
+    assert_eq!(r.s.pacing.phase(), Phase::Grace, "the first pickup begins the grace");
+    let (me, him) = (Vec2::new(0.0, 8.0), Vec2::new(0.0, 18.0));
+    assert!(r.l.line_of_sight(me, him), "plain view");
+    let mut grace_secs = 0.0;
+    while r.s.pacing.phase() != Phase::Peak {
+        let ev = face_him(&mut r, me, him);
+        if r.s.pacing.phase() == Phase::Grace {
+            grace_secs += STEP;
+        }
+        assert!(
+            !ev.contains(&Event::WarningBegan) && r.s.encounter.threat.state == ThreatState::Stalking,
+            "warned in the {:?} at {:.1} s",
+            r.s.pacing.phase(),
+            r.s.encounter.elapsed
+        );
+        assert!(r.s.encounter.elapsed < 600.0, "no Peak");
+    }
+    assert!(
+        grace_secs >= grace(r.t.night) - 1.0,
+        "the grace lasted {grace_secs:.1} s"
+    );
+    // The same stand in a Peak: he warns at once.
+    let mut warned = false;
+    for _ in 0..(3.0 / STEP) as usize {
+        warned |= face_him(&mut r, me, him).contains(&Event::WarningBegan);
+    }
+    assert!(warned, "in a Peak the same stand is warned");
+    // Out of his sight behind the house wall until the Peak fades.
+    let (hid, hidden_him) = (Vec2::new(8.0, -4.0), Vec2::new(0.0, -4.0));
+    assert!(!r.l.line_of_sight(hid, hidden_him));
+    while r.s.pacing.phase() != Phase::Relax {
+        face_him(&mut r, hid, hidden_him);
+        assert!(r.s.encounter.threat.state != ThreatState::Hunting, "hunted unseen");
+        assert!(r.s.encounter.elapsed < 1000.0, "no Relax");
+    }
+    // A Relax: in plain view again, and walked up to, for all of its floor.
+    for _ in 0..((RELAX_FLOOR - 1.0) / STEP) as usize {
+        let ev = face_him(&mut r, me, him);
+        assert_eq!(
+            r.s.pacing.phase(),
+            Phase::Relax,
+            "nothing ends a Relax before its floor"
+        );
+        assert!(
+            !ev.contains(&Event::WarningBegan) && r.s.encounter.threat.state == ThreatState::Stalking,
+            "warned in a Relax at {:.1} s",
+            r.s.encounter.elapsed
+        );
+    }
+}
+
+/// The rooster crows at 1.5 night lengths: with bones still out the night
+/// ends as Dawn; with them all home he sinks for good and the way out stays
+/// open.
+#[test]
+fn dawn_ends_a_night_with_bones_out_at_one_and_a_half_night_lengths() {
+    let dawn_at = |t: &Tuning| el_silbon::pacing::dawn(t.night_length);
+    let mut r = Rig::new(1);
+    // A short night keeps the test quick; the rule is the same.
+    r.t.night_length = 100.0;
+    assert_eq!(dawn_at(&r.t), 150.0);
+    r.take(HOST, 0);
+    r.calm = true;
+    r.idle(dawn_at(&r.t) - r.s.encounter.elapsed - 0.5);
+    assert_eq!(r.s.encounter.outcome, Outcome::Running, "not before the rooster");
+    r.events(HOST);
+    r.idle(1.0);
+    assert_eq!(r.s.encounter.outcome, Outcome::Dawn, "bones out at dawn");
+    assert!((r.s.encounter.elapsed - dawn_at(&r.t)).abs() < 0.1);
+    assert!(r.events(HOST).contains(&Event::Dawn), "the rooster is heard");
+    assert_eq!(r.s.snapshot(HOST, &r.l, &r.t).outcome(), Outcome::Dawn, "and told");
+    assert!(r.act(HOST, Action::Interact).is_err(), "the night is over");
+
+    // Every bone home: he sinks for the night and the engine cannot call him.
+    let mut r = Rig::new(1);
+    r.t.night_length = 100.0;
+    r.take(HOST, 0);
+    r.calm = true;
+    for relic in r.s.encounter.progress.relics.iter_mut() {
+        *relic = Relic::Delivered;
+    }
+    r.idle(dawn_at(&r.t) - r.s.encounter.elapsed + r.t.sink_time + 1.0);
+    assert_eq!(r.s.encounter.outcome, Outcome::Running, "the way out stays open");
+    assert!(r.s.encounter.dawn);
+    assert!(matches!(r.s.encounter.threat.presence, Presence::Hidden), "he sank");
+    let (l, t) = (&r.l, &r.t);
+    let mut ev = Vec::new();
+    r.s.encounter.rouse(l, t, &[Vec2::ZERO], &mut ev);
+    assert!(
+        matches!(r.s.encounter.threat.presence, Presence::Hidden) && ev.is_empty(),
+        "the engine does not call him back after dawn"
+    );
+}
+
+/// Two bundles at a time (three on a Gentle night): at least three trips.
+#[test]
+fn nobody_carries_more_bones_than_the_night_allows() {
+    for (night, most) in [
+        (el_silbon::tuning::Night::Normal, 2),
+        (el_silbon::tuning::Night::Hard, 2),
+        (el_silbon::tuning::Night::Gentle, 3),
+    ] {
+        let mut r = Rig::new(1);
+        r.t = r.t.clone().with_night(night);
+        r.calm = true;
+        for i in 0..most {
+            r.take(HOST, i);
+        }
+        let at = r.l.district.relics[most];
+        let stand = r.stand_for(at);
+        r.stand(HOST, stand, at);
+        assert!(r.act(HOST, Action::Interact).is_err(), "{night:?}: arms full");
+        assert!(matches!(r.s.encounter.progress.relics[most], Relic::Ground(_)));
+        // Put one down and the next can be lifted.
+        r.act(HOST, Action::Drop).unwrap();
+        r.stand(HOST, stand, at);
+        r.act(HOST, Action::Interact).unwrap();
+        assert_eq!(r.s.encounter.progress.carried_by(HOST), most, "{night:?}");
+    }
+}

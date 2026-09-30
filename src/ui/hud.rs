@@ -890,6 +890,7 @@ pub(crate) fn hints_and_captions(
             Event::CattleSpooked => show(&mut hint, "The cattle bellow. Everything heard that.", 5.0, 2),
             Event::BeaconLit => show(&mut hint, "The beacon flares. He turns toward the light.", 5.0, 2),
             Event::Prayed => show(&mut hint, "The fear eases.", 3.0, 1),
+            Event::Dawn => show(&mut hint, "A rooster crows. Dawn: he sinks into the grass.", 6.0, 3),
             _ => {}
         }
     }

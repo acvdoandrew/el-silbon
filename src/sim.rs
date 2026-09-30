@@ -21,6 +21,8 @@ pub enum Outcome {
     Won,
     /// Nobody is left on their feet.
     Failed,
+    /// The rooster crowed with bones still out: you lived, but he will be back.
+    Dawn,
 }
 
 impl Outcome {
@@ -162,10 +164,12 @@ pub enum Event {
     OmenStolenLight,
     OmenFootsteps,
     OmenFalseMark,
+    /// The rooster crows: he sinks for the night.
+    Dawn,
 }
 
 impl Event {
-    pub const ALL: [Event; 51] = [
+    pub const ALL: [Event; 52] = [
         Event::RelicTaken,
         Event::ThreatManifested,
         Event::WarningBegan,
@@ -217,6 +221,7 @@ impl Event {
         Event::OmenStolenLight,
         Event::OmenFootsteps,
         Event::OmenFalseMark,
+        Event::Dawn,
     ];
 
     pub fn from_code(code: u8) -> Option<Event> {
@@ -282,6 +287,9 @@ pub struct Threat {
     /// Hauling: the node he is making for, and seconds since he took them.
     pub haul_to: usize,
     pub hauled: f32,
+    /// While stalking he keeps at least this far from every watcher (the
+    /// pacing director's grace and Relax).
+    pub leash: Option<f32>,
 }
 
 impl Threat {
@@ -309,6 +317,7 @@ impl Threat {
             averts: 0,
             haul_to: 0,
             hauled: 0.0,
+            leash: None,
         }
     }
 
@@ -524,6 +533,8 @@ pub struct Encounter {
     pub stats: Stats,
     /// 0..1, recomputed every tick from the night and the run's progress.
     pub pressure: f32,
+    /// The rooster has crowed: he is gone for the night.
+    pub dawn: bool,
 }
 
 impl Encounter {
@@ -536,6 +547,7 @@ impl Encounter {
             elapsed: 0.0,
             stats: Stats::default(),
             pressure: 0.0,
+            dawn: false,
         }
     }
 
@@ -794,6 +806,9 @@ impl Encounter {
 
     /// The engine roars: whatever he was doing, he comes. Wakes him if needed.
     pub fn rouse(&mut self, layout: &Layout, tuning: &Tuning, watchers: &[Vec2], events: &mut Vec<Event>) {
+        if self.dawn {
+            return;
+        }
         if self.threat.state == ThreatState::Dormant || matches!(self.threat.presence, Presence::Hidden) {
             self.manifest(layout, tuning, watchers, events);
         }
@@ -842,10 +857,41 @@ impl Encounter {
         true
     }
 
+    /// The rooster crows: he sinks for the night and rises no more. Whoever
+    /// is in his sack falls out.
+    pub fn dawn(&mut self, events: &mut Vec<Event>) {
+        if self.dawn {
+            return;
+        }
+        self.dawn = true;
+        events.push(Event::Dawn);
+        let th = &mut self.threat;
+        if th.state == ThreatState::Dormant {
+            return;
+        }
+        if th.state == ThreatState::Hauling {
+            events.push(Event::SackDropped);
+        }
+        th.set_state(ThreatState::Stalking);
+        th.exposure = 0.0;
+        th.has_sight = false;
+        th.movement = Movement::Still;
+        th.focus = None;
+        th.counting = 0.0;
+        th.leash = None;
+        th.presence = match th.presence {
+            Presence::Hidden => Presence::Hidden,
+            _ => Presence::Sinking {
+                t: 0.0,
+                relocate: false,
+            },
+        };
+    }
+
     /// He backs off after a capture, or when his prey vanishes.
     pub fn withdraw(&mut self) {
         let th = &mut self.threat;
-        if th.state == ThreatState::Dormant {
+        if th.state == ThreatState::Dormant || self.dawn {
             return;
         }
         th.set_state(ThreatState::Stalking);
@@ -1035,7 +1081,7 @@ impl Encounter {
 
         match self.threat.state {
             ThreatState::Stalking => {
-                self.stalk(layout, tuning, prey, dt);
+                self.stalk(layout, tuning, prey, watchers, dt);
                 let th = &mut self.threat;
                 let dist = th.pos.distance(prey.pos);
                 if th.state == ThreatState::Stalking && th.has_sight && dist <= notice && th.cooldown <= 0.0 {
@@ -1168,15 +1214,35 @@ impl Encounter {
     /// Stalking: walk the patrol toward what interests him, lurk at a
     /// standoff from a player he cannot see, investigate noise, creep in on a
     /// visible player, and roam when bored.
-    fn stalk(&mut self, layout: &Layout, tuning: &Tuning, prey: Prey, dt: f32) {
+    fn stalk(&mut self, layout: &Layout, tuning: &Tuning, prey: Prey, watchers: &[Vec2], dt: f32) {
         let patrol = &layout.patrol;
         let noise = self.threat.focus.map(|f| f.pos);
         let attention = noise.unwrap_or(prey.pos);
-        let target = if noise.is_some() {
+        let mut target = if noise.is_some() {
             patrol.nearest(attention)
         } else {
             patrol.lurk_node(attention, tuning.standoff)
         };
+        // Leashed: he keeps his distance from everyone standing. He still
+        // walks and still turns toward a noise, but only as near as the leash
+        // lets him, and he roams no farther than it allows.
+        let leash = self.threat.leash.filter(|_| !watchers.is_empty());
+        let clearance = |p: Vec2| watchers.iter().map(|w| p.distance(*w)).fold(f32::INFINITY, f32::min);
+        let held = |p: Vec2| leash.is_some_and(|r| clearance(p) < r);
+        if let Some(r) = leash {
+            self.threat.circling = false;
+            if clearance(patrol.nodes[target]) < r {
+                let want = patrol.nodes[target];
+                target = (0..patrol.len())
+                    .filter(|&i| clearance(patrol.nodes[i]) >= r)
+                    .min_by(|&a, &b| {
+                        patrol.nodes[a]
+                            .distance_squared(want)
+                            .total_cmp(&patrol.nodes[b].distance_squared(want))
+                    })
+                    .unwrap_or_else(|| patrol.farthest_from(watchers).0);
+            }
+        }
         let dist_prey = self.threat.pos.distance(prey.pos);
         let notice = tuning.warn_distance * prey.sight;
         if self.threat.has_sight {
@@ -1205,7 +1271,7 @@ impl Encounter {
                         to: patrol.next_hop(i, target),
                     }
                 } else if noise.is_some() {
-                    if th.pos.distance(attention) > 3.0 {
+                    if th.pos.distance(attention) > 3.0 && !held(attention) {
                         Movement::Investigate { home: i }
                     } else {
                         th.search = tuning.search_time;
@@ -1279,6 +1345,7 @@ impl Encounter {
             }
             Movement::Investigate { home } => match noise {
                 None => Movement::Return { home },
+                Some(spot) if held(spot) => Movement::Return { home },
                 Some(spot) => {
                     if self.threat.pos.distance(spot) <= 3.0 {
                         self.threat.search = tuning.search_time;

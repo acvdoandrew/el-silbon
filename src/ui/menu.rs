@@ -436,13 +436,14 @@ fn rows(menu: &Menu, settings: &Settings, ctx: &Context, profile: &ProfileRes) -
             (
                 "Journal".into(),
                 format!(
-                    "Pages of the tale found: {}/{}   ·   Nights: {}   ·   Escapes: {}   ·   Laid to rest: {}   ·   Caught: {}   ·   Fastest: {fastest}",
+                    "Pages of the tale found: {}/{}   ·   Nights: {}   ·   Escapes: {}   ·   Laid to rest: {}   ·   Caught: {}   ·   Lived till dawn: {}   ·   Fastest: {fastest}",
                     ctx.read.0.len(),
                     crate::lore::PAGES,
                     t.nights,
                     t.escapes,
                     t.banishments,
-                    t.caught
+                    t.caught,
+                    t.dawns
                 ),
                 rows,
             )
@@ -1339,6 +1340,8 @@ fn remember(
             let left_behind = net.id().is_some_and(|me| s.left_behind.contains(&me));
             let ending = if s.outcome() == crate::sim::Outcome::Failed || left_behind {
                 crate::profile::Ending::Caught
+            } else if s.outcome() == crate::sim::Outcome::Dawn {
+                crate::profile::Ending::Dawn
             } else if s.world.banished {
                 crate::profile::Ending::Banished { seconds }
             } else {
