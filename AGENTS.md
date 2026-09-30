@@ -41,10 +41,11 @@ an API — do not mix older Bevy idioms.
 - **Pure truth, no ECS**: `tuning`, `geometry`, `sim`, `perception`, `control`,
   `script`, `rng`, `noise`, `body`, `storm`, `skill` (skill checks),
   `director` (omens), `pacing` (El Respiro, the pacing director), `mix`
-  (volume curve, buses, glide), `radio` (the dial and the numbers hour) and
+  (volume curve, buses, glide), `radio` (the dial and the numbers hour),
   `display`
-  (brightness and contrast as the camera's grade) stay headless and
-  unit-tested.
+  (brightness and contrast as the camera's grade) and `lang` (the English /
+  Spanish tables; a local choice, never on the wire or in the fingerprint)
+  stay headless and unit-tested.
   ECS modules (`app`, `player`, `encounter`, `audio`, `ui`,
   `world`, `debug`) adapt them.
 - **One layout**: every coordinate (walls, openings, fences, ceiba, props,

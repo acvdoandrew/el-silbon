@@ -412,7 +412,8 @@ pub(crate) fn spawn_map_panel(root: &mut ChildSpawnerCommands<'_>, f: &Fonts, ma
                 }
             });
             c.spawn((
-                Text::new("N is up · you are the bright marker · V marks a spot for everyone · M closes"),
+                Tr(crate::lang::panel::MAP_LEGEND),
+                Text::new(crate::lang::panel::MAP_LEGEND.en),
                 font(&f.sans, 13.0),
                 TextColor(DIM),
             ));

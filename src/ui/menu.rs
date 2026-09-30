@@ -4,7 +4,9 @@
 //! One model drives every page: a page is a heading, some words and a list
 //! of rows (buttons, `‹ value ›` choosers and small text fields). The rows
 //! are rebuilt when the page changes; their text and focus are refreshed
-//! every frame. Keyboard (arrows or WASD, Enter, Esc) and mouse both work.
+//! every frame. Keyboard (arrows or WASD, Enter, Esc) and mouse both work,
+//! through one rule (`choose`): a click on ‹ is the left key, on › the
+//! right one, on the row itself Enter; left and right only turn choosers.
 //! Nothing here touches the rules: a night begins or ends through
 //! `net::StartRun` / `net::LeaveRun`, restarts through the session command.
 
@@ -19,6 +21,7 @@ use super::{AMBER, DIM, Fonts, INK, PALE_BLUE, RED, font, set_text, set_vis};
 use crate::app::{DisplayMode, Flow, GameSet, Launch, ProfileRes, Settings, Truth, TuningRes, VolumePreview};
 use crate::display;
 use crate::encounter::PagesRead;
+use crate::lang::{Lang, menu as m};
 use crate::mix::Bus;
 use crate::net::transport::Mode;
 use crate::net::{LeaveRun, NetControl, Network, StartRun, protocol::Action};
@@ -76,6 +79,8 @@ enum Knob {
     HeadBob,
     Captions,
     DisplayMode,
+    /// English or Spanish (this player's alone).
+    Language,
 }
 
 impl Knob {
@@ -115,6 +120,14 @@ enum Act {
     Chapter(u8),
 }
 
+impl Act {
+    /// A chooser: its ‹ and › (and the left and right keys) turn it one
+    /// step either way. Every other row is a button.
+    fn turns(self) -> bool {
+        matches!(self, Act::Difficulty | Act::Survivor | Act::Adjust(_))
+    }
+}
+
 struct Row {
     label: String,
     value: Option<String>,
@@ -143,6 +156,67 @@ impl Row {
         self.enabled = false;
         self
     }
+}
+
+/// A run of a page's rows laid side by side in `cols` columns, each filled
+/// top to bottom, so the order of the rows (and Up / Down through them)
+/// reads down one column and on into the next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Columns {
+    start: usize,
+    len: usize,
+    cols: usize,
+}
+
+impl Columns {
+    /// Rows in each column.
+    fn lines(self) -> usize {
+        self.len.div_ceil(self.cols)
+    }
+    /// Row `i`'s column and line, if it is in this run.
+    fn place(self, i: usize) -> Option<(usize, usize)> {
+        let k = i.checked_sub(self.start).filter(|&k| k < self.len)?;
+        Some((k / self.lines(), k % self.lines()))
+    }
+}
+
+/// The page's rows that sit in columns: the Journal's twenty pages and six
+/// chapters, two columns each (one long list outgrows a 720-px screen).
+/// Every other row is a full-width line of its own.
+fn columns(page: Page) -> Vec<Columns> {
+    let pages = crate::lore::PAGES as usize;
+    match page {
+        Page::Journal => vec![
+            Columns {
+                start: 0,
+                len: pages,
+                cols: 2,
+            },
+            Columns {
+                start: pages,
+                len: crate::lore::CHAPTERS as usize,
+                cols: 2,
+            },
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// Left (-1) or right (+1) from row `focus` across its run of columns: the
+/// row that can be chosen in the next column that way, nearest in line
+/// (the higher on a tie). Nowhere to go keeps the focus.
+fn across(rows: &[Row], runs: &[Columns], focus: usize, dir: i32) -> usize {
+    let Some((run, (col, line))) = runs.iter().find_map(|r| r.place(focus).map(|p| (*r, p))) else {
+        return focus;
+    };
+    let Some(to) = col.checked_add_signed(dir.signum() as isize).filter(|&c| c < run.cols) else {
+        return focus;
+    };
+    (run.start..run.start + run.len)
+        .filter(|&i| rows.get(i).is_some_and(|r| r.enabled))
+        .filter_map(|i| run.place(i).filter(|&(c, _)| c == to).map(|(_, l)| (i, l)))
+        .min_by_key(|&(_, l)| l.abs_diff(line))
+        .map_or(focus, |(i, _)| i)
 }
 
 /// The menus' state: the page, the focused row, where Back goes, and the
@@ -233,60 +307,36 @@ fn lan_address() -> String {
         .map_or_else(|| "127.0.0.1".to_string(), |ip| ip.to_string())
 }
 
-fn parse_addr(text: &str) -> Result<SocketAddr, String> {
+fn parse_addr(text: &str, l: Lang) -> Result<SocketAddr, String> {
     let text = text.trim();
     let full = if text.contains(':') {
         text.to_string()
     } else {
         format!("{text}:5000")
     };
-    let addr: SocketAddr = full
-        .parse()
-        .map_err(|_| format!("\"{text}\" is not an address like 192.168.1.20:5000"))?;
+    let addr: SocketAddr = full.parse().map_err(|_| match l {
+        Lang::En => format!("\"{text}\" is not an address like 192.168.1.20:5000"),
+        Lang::Es => format!("\"{text}\" no es una dirección como 192.168.1.20:5000"),
+    })?;
     crate::net::transport::local_address(addr)
 }
 
-fn night_label(n: Night) -> &'static str {
-    match n {
-        Night::Gentle => "Gentle",
-        Night::Normal => "Normal",
-        Night::Hard => "Hard",
-    }
+/// A night's difficulty, as the menus name it.
+pub(crate) fn night_label(n: Night, l: Lang) -> &'static str {
+    l.say(match n {
+        Night::Gentle => m::GENTLE,
+        Night::Normal => m::NORMAL,
+        Night::Hard => m::HARD,
+    })
 }
 
-fn night_blurb(n: Night) -> &'static str {
-    match n {
-        Night::Gentle => "For learning the llano: he notices you later, the torch lasts, the rhythm forgives.",
-        Night::Normal => "The night as it was meant to be.",
-        Night::Hard => "He notices you farther off, the torch dies sooner, every rite angers him more.",
-    }
+fn night_blurb(n: Night, l: Lang) -> &'static str {
+    l.say(match n {
+        Night::Gentle => m::GENTLE_BLURB,
+        Night::Normal => m::NORMAL_BLURB,
+        Night::Hard => m::HARD_BLURB,
+    })
 }
-
-const HOW_TO: &str = "\
-Lay the five bundles of the father's bones at the ceiba's roots, bring the power back at the windmill, \
-open the padlocked key box (the house radio reads its three numbers out; the tag on the padlock names the \
-station) and start the truck \
-at the bridge. Survive its warm-up, everyone aboard. Or learn which of him walks tonight and name him \
-at the ceiba (N) once every bone is home.\n\n\
-The whistle lies: loud means he is far, thin and faint means he is near. Walls, trunks and tall grass \
-break his sight; crouch to move quietly, running is heard far away. Your torch runs down, and its beam \
-draws him. Lamplight and company calm fear; the dark and being alone feed it.\n\n\
-While you lay bones, crank or turn the engine over, press Space as the needle crosses the marked zone. \
-Ají stops him to count his bones. Tureco, tied behind the house, knows where he truly is. Caught with \
-friends standing, you are carried off in his sack: pepper in his path drops you. With friends, whoever \
-is aboard the ready truck can drive off without the others (X).\n\n\
-WASD move · mouse look · Shift run · Ctrl/C crouch · E use (hold at sites) · F torch · Space rhythm · \
-G drop a bundle · Q ají · V mark · M map · N name him · X drive off · Esc menu · F12 screenshot";
-
-const CREDITS: &str = "\
-EL SILBÓN — The Return\n\n\
-A game by Andrew Acevedo Mirena, made with Claude Code.\n\n\
-Engine: Bevy 0.19 · Networking: Renet\n\
-Fonts: Noto Sans and Noto Serif (SIL Open Font License)\n\
-Every mesh, texture and sound is original, generated in code.\n\n\
-The legend of El Silbón belongs to the llanos of Venezuela and Colombia. The Hacienda Santa Rosa, its \
-people and every page in this game are fiction inspired by it.\n\n\
-Thank you for playing.";
 
 /// Everything a menu choice may change.
 #[derive(SystemParam)]
@@ -311,6 +361,7 @@ struct Context<'w> {
 }
 
 fn rows(menu: &Menu, settings: &Settings, ctx: &Context, profile: &ProfileRes) -> (String, String, Vec<Row>) {
+    let l = settings.lang;
     let host_side = ctx.launch.network.is_host();
     let solo = ctx.launch.network.is_solo();
     let field = |text: &str, empty: &str| {
@@ -320,105 +371,105 @@ fn rows(menu: &Menu, settings: &Settings, ctx: &Context, profile: &ProfileRes) -
             text.to_string()
         }
     };
-    let on = |b: bool| if b { "‹ On ›" } else { "‹ Off ›" };
+    // Choosers show their value bare: their ‹ and › are buttons of their own
+    // (see `build`).
+    let on = |b: bool| l.say(if b { m::ON } else { m::OFF }).to_string();
     let brightness = || {
         Row::value(
-            "Brightness",
-            format!("‹ {:+.1} ›", settings.brightness),
+            l.say(m::BRIGHTNESS),
+            format!("{:+.1}", settings.brightness),
             Act::Adjust(Knob::Brightness),
         )
     };
     let contrast = || {
         Row::value(
-            "Contrast",
-            format!("‹ {:.2} ›", settings.contrast),
+            l.say(m::CONTRAST),
+            format!("{:.2}", settings.contrast),
             Act::Adjust(Knob::Contrast),
         )
     };
+    let back = || Row::go(l.say(m::BACK), Act::Back);
+    let saved = || l.say(m::SAVED).to_string();
     match menu.page {
         Page::Main => (
             String::new(),
             String::new(),
             vec![
-                Row::go("Play", Act::Go(Page::Solo)),
-                Row::go("Play with friends", Act::Go(Page::Multiplayer)),
-                Row::go("Journal", Act::Go(Page::Journal)),
-                Row::go("Settings", Act::Go(Page::Settings)),
-                Row::go("How to play", Act::Go(Page::HowTo)),
-                Row::go("Credits", Act::Go(Page::Credits)),
-                Row::go("Quit", Act::Go(Page::ConfirmQuit)),
+                Row::go(l.say(m::PLAY), Act::Go(Page::Solo)),
+                Row::go(l.say(m::PLAY_FRIENDS), Act::Go(Page::Multiplayer)),
+                Row::go(l.say(m::JOURNAL), Act::Go(Page::Journal)),
+                Row::go(l.say(m::SETTINGS), Act::Go(Page::Settings)),
+                Row::go(l.say(m::HOW_TO_PLAY), Act::Go(Page::HowTo)),
+                Row::go(l.say(m::CREDITS), Act::Go(Page::Credits)),
+                Row::go(l.say(m::QUIT), Act::Go(Page::ConfirmQuit)),
             ],
         ),
         Page::Solo => (
-            "A night alone".into(),
-            format!(
-                "{}\nLeave the night blank for a new one, or type a night's number to play it again (friends can share numbers).",
-                night_blurb(menu.night)
-            ),
+            l.say(m::SOLO_HEADING).into(),
+            format!("{}\n{}", night_blurb(menu.night, l), l.say(m::SOLO_BODY)),
             vec![
                 Row::value(
-                    "Difficulty",
-                    format!("‹ {} ›", night_label(menu.night)),
+                    l.say(m::DIFFICULTY),
+                    night_label(menu.night, l).to_string(),
                     Act::Difficulty,
                 ),
-                Row::value("Night", field(&menu.seed, "a new night"), Act::Edit(Field::Seed)),
-                Row::go("Begin the night", Act::Solo),
-                Row::go("Back", Act::Back),
+                Row::value(
+                    l.say(m::NIGHT),
+                    field(&menu.seed, l.say(m::A_NEW_NIGHT_FIELD)),
+                    Act::Edit(Field::Seed),
+                ),
+                Row::go(l.say(m::BEGIN), Act::Solo),
+                back(),
             ],
         ),
         Page::Multiplayer => (
-            "With friends".into(),
-            "Up to four players on the same local network, or far apart on a private VPN such as Tailscale. \
-             One hosts the night; the others join with the host's address and receive the host's night and \
-             difficulty.\nChoose who the others will see. \
-             If a friend is already them, you are someone else (F7 in the lobby changes)."
-                .into(),
+            l.say(m::FRIENDS_HEADING).into(),
+            l.say(m::FRIENDS_BODY).into(),
             vec![
                 Row::value(
-                    "Who you are",
+                    l.say(m::WHO_YOU_ARE),
                     format!(
-                        "‹ {} · {} ›",
+                        "{} · {}",
                         profile.profile.survivor.name(),
-                        profile.profile.survivor.role()
+                        profile.profile.survivor.role(l)
                     ),
                     Act::Survivor,
                 ),
-                Row::go("Host a night", Act::Go(Page::Host)),
-                Row::go("Join a friend", Act::Go(Page::Join)),
-                Row::go("Back", Act::Back),
+                Row::go(l.say(m::HOST), Act::Go(Page::Host)),
+                Row::go(l.say(m::JOIN_FRIEND), Act::Go(Page::Join)),
+                back(),
             ],
         ),
         Page::Host => (
-            "Host a night".into(),
-            format!(
-                "Give your friends this address. When everyone is in, press Enter in the night to begin.\n{}",
-                night_blurb(menu.night)
-            ),
+            l.say(m::HOST).into(),
+            format!("{}\n{}", l.say(m::HOST_BODY), night_blurb(menu.night, l)),
             vec![
-                Row::value("Your address", menu.host.clone(), Act::Edit(Field::HostAddr)),
+                Row::value(l.say(m::YOUR_ADDRESS), menu.host.clone(), Act::Edit(Field::HostAddr)),
                 Row::value(
-                    "Difficulty",
-                    format!("‹ {} ›", night_label(menu.night)),
+                    l.say(m::DIFFICULTY),
+                    night_label(menu.night, l).to_string(),
                     Act::Difficulty,
                 ),
-                Row::value("Night", field(&menu.seed, "a new night"), Act::Edit(Field::Seed)),
-                Row::go("Open the session", Act::Host),
-                Row::go("Back", Act::Back),
+                Row::value(
+                    l.say(m::NIGHT),
+                    field(&menu.seed, l.say(m::A_NEW_NIGHT_FIELD)),
+                    Act::Edit(Field::Seed),
+                ),
+                Row::go(l.say(m::OPEN_SESSION), Act::Host),
+                back(),
             ],
         ),
         Page::Join => (
-            "Join a friend".into(),
-            "Type the address your host gave you (for example 192.168.1.20:5000). Their night and difficulty \
-             come with the session."
-                .into(),
+            l.say(m::JOIN_FRIEND).into(),
+            l.say(m::JOIN_BODY).into(),
             vec![
                 Row::value(
-                    "Host's address",
-                    field(&menu.join, "type it here"),
+                    l.say(m::HOSTS_ADDRESS),
+                    field(&menu.join, l.say(m::TYPE_IT_HERE)),
                     Act::Edit(Field::JoinAddr),
                 ),
-                Row::go("Join", Act::Join),
-                Row::go("Back", Act::Back),
+                Row::go(l.say(m::JOIN), Act::Join),
+                back(),
             ],
         ),
         Page::Journal => {
@@ -430,203 +481,191 @@ fn rows(menu: &Menu, settings: &Settings, ctx: &Context, profile: &ProfileRes) -
                 .map(|id| {
                     let page = crate::lore::note(id);
                     if ctx.read.0.contains(&id) {
-                        Row::go(page.title, Act::Read(id))
+                        Row::go(l.say(page.title), Act::Read(id))
                     } else {
-                        Row::go("· · ·  not yet found", Act::None).off()
+                        Row::go(l.say(m::NOT_FOUND), Act::None).off()
                     }
                 })
                 .collect();
             // The Madrina's tale, as far as it has been told.
             for n in 1..=crate::lore::CHAPTERS {
                 match crate::lore::chapter(n) {
-                    Some(c) if profile.profile.chapters.contains(&n) => rows.push(Row::go(c.title, Act::Chapter(n))),
-                    _ => rows.push(Row::go("· · ·  the Madrina has not told it yet", Act::None).off()),
+                    Some(c) if profile.profile.chapters.contains(&n) => {
+                        rows.push(Row::go(l.say(c.title), Act::Chapter(n)))
+                    }
+                    _ => rows.push(Row::go(l.say(m::NOT_TOLD), Act::None).off()),
                 }
             }
-            rows.push(Row::go("Back", Act::Back));
-            (
-                "Journal".into(),
-                format!(
-                    "Pages of the tale found: {}/{}   ·   Nights: {}   ·   Escapes: {}   ·   Laid to rest: {}   ·   Caught: {}   ·   Lived till dawn: {}   ·   Fastest: {fastest}",
-                    ctx.read.0.len(),
-                    crate::lore::PAGES,
-                    t.nights,
-                    t.escapes,
-                    t.banishments,
-                    t.caught,
-                    t.dawns
+            rows.push(back());
+            let found = ctx.read.0.len();
+            let pages = crate::lore::PAGES;
+            let body = match l {
+                Lang::En => format!(
+                    "Pages of the tale found: {found}/{pages}   ·   Nights: {}   ·   Escapes: {}   ·   Laid to rest: {}   ·   Caught: {}   ·   Lived till dawn: {}   ·   Fastest: {fastest}",
+                    t.nights, t.escapes, t.banishments, t.caught, t.dawns
                 ),
-                rows,
-            )
+                Lang::Es => format!(
+                    "Páginas del cuento encontradas: {found}/{pages}   ·   Noches: {}   ·   Escapes: {}   ·   Lo hiciste descansar: {}   ·   Atrapado: {}   ·   Hasta el alba: {}   ·   La más rápida: {fastest}",
+                    t.nights, t.escapes, t.banishments, t.caught, t.dawns
+                ),
+            };
+            (l.say(m::JOURNAL).into(), body, rows)
         }
         Page::Chapter(n) => {
-            let (title, es, en) = crate::lore::chapter(n).map_or(("", "", ""), |c| (c.title, c.es, c.en));
-            (
-                format!("La Madrina — {title}"),
-                format!("{es}\n\n{en}"),
-                vec![Row::go("Back", Act::Back)],
-            )
+            let (title, text) = crate::lore::chapter(n).map_or(("", ""), |c| (l.say(c.title), c.text(l)));
+            (format!("La Madrina — {title}"), text.to_string(), vec![back()])
         }
         Page::Reading(id) => {
             // No page carries a night's digits: the radio reads them out.
             let page = crate::lore::note(id);
             (
-                format!("{} — {}", page.medium.label(), page.title),
-                format!("{}\n\n{}\n\n{}", page.es, page.by, page.en),
-                vec![Row::go("Back", Act::Back)],
+                format!("{} — {}", page.medium.label(l), l.say(page.title)),
+                format!("{}\n\n{}", page.text(l), l.say(page.by)),
+                vec![back()],
             )
         }
         Page::Settings => (
-            "Settings".into(),
-            "Saved as you change them.".into(),
+            l.say(m::SETTINGS).into(),
+            saved(),
             vec![
-                Row::go("Video", Act::Go(Page::Video)),
-                Row::go("Audio", Act::Go(Page::Audio)),
-                Row::go("Controls", Act::Go(Page::Controls)),
-                Row::go("Calibrate brightness", Act::Go(Page::Calibrate)),
-                Row::go("Back", Act::Back),
+                Row::go(l.say(m::VIDEO), Act::Go(Page::Video)),
+                Row::go(l.say(m::AUDIO), Act::Go(Page::Audio)),
+                Row::go(l.say(m::CONTROLS), Act::Go(Page::Controls)),
+                Row::go(l.say(m::CALIBRATE), Act::Go(Page::Calibrate)),
+                // Named in both languages, so it can be found from either.
+                Row::value(m::LANGUAGE, l.name().to_string(), Act::Adjust(Knob::Language)),
+                back(),
             ],
         ),
         Page::Video => {
             let display = if ctx.launch.windowed {
                 // `--windowed` keeps this launch in a window and leaves the
                 // saved choice alone, so the row cannot change it.
-                Row::value("Display mode", "Window (--windowed)".into(), Act::None).off()
+                Row::value(l.say(m::DISPLAY_MODE), l.say(m::WINDOWED_LAUNCH).into(), Act::None).off()
             } else {
                 let mode = match settings.display_mode {
-                    DisplayMode::Fullscreen => "Fullscreen",
-                    DisplayMode::Window => "Window",
+                    DisplayMode::Fullscreen => m::FULLSCREEN,
+                    DisplayMode::Window => m::WINDOW,
                 };
-                Row::value("Display mode", format!("‹ {mode} ›"), Act::Adjust(Knob::DisplayMode))
+                Row::value(
+                    l.say(m::DISPLAY_MODE),
+                    l.say(mode).to_string(),
+                    Act::Adjust(Knob::DisplayMode),
+                )
             };
             (
-                "Video".into(),
-                "Saved as you change them.".into(),
+                l.say(m::VIDEO).into(),
+                saved(),
                 vec![
                     display,
-                    Row::value(
-                        "Field of view",
-                        format!("‹ {:.0}° ›", settings.fov),
-                        Act::Adjust(Knob::Fov),
-                    ),
+                    Row::value(l.say(m::FOV), format!("{:.0}°", settings.fov), Act::Adjust(Knob::Fov)),
                     brightness(),
                     contrast(),
-                    Row::go("Calibrate brightness", Act::Go(Page::Calibrate)),
-                    Row::value("Head bob", on(settings.head_bob).into(), Act::Adjust(Knob::HeadBob)),
-                    Row::go("Back", Act::Back),
+                    Row::go(l.say(m::CALIBRATE), Act::Go(Page::Calibrate)),
+                    Row::value(l.say(m::HEAD_BOB), on(settings.head_bob), Act::Adjust(Knob::HeadBob)),
+                    back(),
                 ],
             )
         }
         Page::Calibrate => (
-            "Brightness".into(),
+            l.say(m::BRIGHTNESS).into(),
             format!(
-                "Raise Brightness until the middle hat is just barely visible. If the left one shows too, \
-                 raise Contrast until it is gone. The right one should be plain.{}",
-                if solo {
-                    ""
-                } else {
-                    "\nThe shared night goes on behind this page."
-                }
+                "{}{}",
+                l.say(m::CALIBRATE_BODY),
+                if solo { "" } else { l.say(m::SHARED_BEHIND) }
             ),
             vec![
                 brightness(),
                 contrast(),
-                Row::go("Defaults", Act::PictureDefaults),
-                Row::go("Done", Act::Back),
+                Row::go(l.say(m::DEFAULTS), Act::PictureDefaults),
+                Row::go(l.say(m::DONE), Act::Back),
             ],
         ),
         Page::Audio => {
-            let level = |v: f32| format!("‹ {:.0}% ›", v * 100.0);
+            let level = |v: f32| format!("{:.0}%", v * 100.0);
             (
-                "Audio".into(),
-                "Saved as you change them. His whistle follows the master volume alone.".into(),
+                l.say(m::AUDIO).into(),
+                l.say(m::AUDIO_BODY).into(),
                 vec![
-                    Row::value("Master volume", level(settings.master), Act::Adjust(Knob::Master)),
-                    Row::value("Music", level(settings.music), Act::Adjust(Knob::Music)),
-                    Row::value("Ambience", level(settings.ambience), Act::Adjust(Knob::Ambience)),
-                    Row::value("Effects", level(settings.effects), Act::Adjust(Knob::Effects)),
+                    Row::value(l.say(m::MASTER), level(settings.master), Act::Adjust(Knob::Master)),
+                    Row::value(l.say(m::MUSIC), level(settings.music), Act::Adjust(Knob::Music)),
                     Row::value(
-                        "Whistle captions",
-                        on(settings.captions).into(),
-                        Act::Adjust(Knob::Captions),
+                        l.say(m::AMBIENCE),
+                        level(settings.ambience),
+                        Act::Adjust(Knob::Ambience),
                     ),
-                    Row::go("Back", Act::Back),
+                    Row::value(l.say(m::EFFECTS), level(settings.effects), Act::Adjust(Knob::Effects)),
+                    Row::value(l.say(m::CAPTIONS), on(settings.captions), Act::Adjust(Knob::Captions)),
+                    back(),
                 ],
             )
         }
         Page::Controls => (
-            "Controls".into(),
-            "Saved as you change them.".into(),
+            l.say(m::CONTROLS).into(),
+            saved(),
             vec![
                 Row::value(
-                    "Mouse sensitivity",
-                    format!("‹ {:.1}× ›", settings.sensitivity),
+                    l.say(m::SENSITIVITY),
+                    format!("{:.1}×", settings.sensitivity),
                     Act::Adjust(Knob::Sensitivity),
                 ),
-                Row::value(
-                    "Invert mouse Y",
-                    on(settings.invert_y).into(),
-                    Act::Adjust(Knob::InvertY),
-                ),
-                Row::go("Back", Act::Back),
+                Row::value(l.say(m::INVERT_Y), on(settings.invert_y), Act::Adjust(Knob::InvertY)),
+                back(),
             ],
         ),
-        Page::HowTo => ("How to play".into(), HOW_TO.into(), vec![Row::go("Back", Act::Back)]),
-        Page::Credits => ("Credits".into(), CREDITS.into(), vec![Row::go("Back", Act::Back)]),
+        Page::HowTo => (l.say(m::HOW_TO_PLAY).into(), l.say(m::HOW_TO).into(), vec![back()]),
+        Page::Credits => (l.say(m::CREDITS).into(), l.say(m::CREDITS_TEXT).into(), vec![back()]),
         Page::Pause => {
             let mut v = vec![
-                Row::go("Resume", Act::Resume),
-                Row::go("Settings", Act::Go(Page::Settings)),
-                Row::go("Journal", Act::Go(Page::Journal)),
-                Row::go("How to play", Act::Go(Page::HowTo)),
+                Row::go(l.say(m::RESUME), Act::Resume),
+                Row::go(l.say(m::SETTINGS), Act::Go(Page::Settings)),
+                Row::go(l.say(m::JOURNAL), Act::Go(Page::Journal)),
+                Row::go(l.say(m::HOW_TO_PLAY), Act::Go(Page::HowTo)),
             ];
             if host_side {
-                v.push(Row::go("Restart the night", Act::Restart));
+                v.push(Row::go(l.say(m::RESTART), Act::Restart));
             }
             v.push(Row::go(
-                if solo || !host_side {
-                    "Leave to the title"
+                l.say(if solo || !host_side {
+                    m::LEAVE_TO_TITLE
                 } else {
-                    "End the night for everyone"
-                },
+                    m::END_FOR_ALL
+                }),
                 Act::Go(Page::ConfirmLeave),
             ));
             (
-                "Paused".into(),
-                if solo {
-                    "The night holds its breath. The mouse is free.".into()
-                } else {
-                    "Only your controls stop: the shared night goes on.".into()
-                },
+                l.say(m::PAUSED).into(),
+                l.say(if solo { m::PAUSED_SOLO } else { m::PAUSED_SHARED }).into(),
                 v,
             )
         }
         Page::Outcome => {
             let mut v = Vec::new();
             if host_side {
-                v.push(Row::go("Play the night again", Act::Restart));
+                v.push(Row::go(l.say(m::PLAY_AGAIN), Act::Restart));
             }
             if solo {
-                v.push(Row::go("A new night", Act::NewNight));
+                v.push(Row::go(l.say(m::NEW_NIGHT), Act::NewNight));
             }
-            v.push(Row::go("Title menu", Act::Title));
-            v.push(Row::go("Quit", Act::Go(Page::ConfirmQuit)));
+            v.push(Row::go(l.say(m::TITLE_MENU), Act::Title));
+            v.push(Row::go(l.say(m::QUIT), Act::Go(Page::ConfirmQuit)));
             let _ = &ctx.truth;
             (String::new(), String::new(), v)
         }
         Page::ConfirmLeave => (
-            "Leave the night?".into(),
-            if !solo && host_side {
-                "Everyone in your session goes back to their title screen.".into()
+            l.say(m::LEAVE_HEADING).into(),
+            l.say(if !solo && host_side {
+                m::LEAVE_SHARED
             } else {
-                "This night's progress is lost; pages you read stay in your journal.".into()
-            },
-            vec![Row::go("Stay", Act::Back), Row::go("Leave", Act::Leave)],
+                m::LEAVE_SOLO
+            })
+            .into(),
+            vec![Row::go(l.say(m::STAY), Act::Back), Row::go(l.say(m::LEAVE), Act::Leave)],
         ),
         Page::ConfirmQuit => (
-            "Quit the game?".into(),
+            l.say(m::QUIT_HEADING).into(),
             String::new(),
-            vec![Row::go("Stay", Act::Back), Row::go("Quit", Act::Quit)],
+            vec![Row::go(l.say(m::STAY), Act::Back), Row::go(l.say(m::QUIT), Act::Quit)],
         ),
     }
 }
@@ -647,6 +686,36 @@ struct MenuRow(usize);
 struct RowLabel(usize);
 #[derive(Component)]
 struct RowValue(usize);
+/// A chooser's ‹ (`dir` -1) or › (+1): a button of its own inside the row,
+/// so a click on it turns the value that way and never presses the row.
+#[derive(Component)]
+struct RowArrow {
+    row: usize,
+    dir: i32,
+}
+/// The glyph on a chooser's arrow, coloured with its row.
+#[derive(Component)]
+struct ArrowGlyph(usize);
+
+/// One of a chooser's arrows.
+fn arrow(fonts: &Fonts, row: usize, dir: i32, color: Color) -> impl Bundle {
+    (
+        Button,
+        RowArrow { row, dir },
+        Node {
+            padding: UiRect::axes(px(10), px(0)),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        },
+        children![(
+            ArrowGlyph(row),
+            Text::new(if dir < 0 { "‹" } else { "›" }),
+            font(&fonts.sans, 22.0),
+            TextColor(color),
+        )],
+    )
+}
 
 fn spawn_menu(mut commands: Commands) {
     commands.spawn((
@@ -661,6 +730,72 @@ fn spawn_menu(mut commands: Commands) {
         Visibility::Hidden,
         GlobalZIndex(20),
     ));
+}
+
+/// One row: its label, and its value or chooser (`‹ value ›`) at the right.
+/// A row with no `min_width` (the Journal's, in columns) is compact:
+/// smaller, and as wide as its column.
+fn spawn_row(
+    c: &mut ChildSpawnerCommands<'_>,
+    fonts: &Fonts,
+    i: usize,
+    row: &Row,
+    focused: bool,
+    min_width: Option<f32>,
+) {
+    let compact = min_width.is_none();
+    let (text, bg, edge) = row_colors(focused, row.enabled);
+    c.spawn((
+        Button,
+        MenuRow(i),
+        Node {
+            flex_direction: FlexDirection::Row,
+            justify_content: JustifyContent::SpaceBetween,
+            align_items: AlignItems::Center,
+            padding: UiRect::axes(px(14), px(if compact { 3.0 } else { 7.0 })),
+            border: UiRect::left(px(3)),
+            min_width: min_width.map_or(Val::Auto, px),
+            ..default()
+        },
+        BackgroundColor(bg),
+        BorderColor::all(edge),
+    ))
+    .with_children(|row_ui| {
+        row_ui.spawn((
+            RowLabel(i),
+            Text::new(row.label.clone()),
+            font(&fonts.sans, if compact { 15.0 } else { 20.0 }),
+            TextColor(text),
+        ));
+        let value = |v: &String| {
+            (
+                RowValue(i),
+                Text::new(v.clone()),
+                font(&fonts.sans, 18.0),
+                TextColor(text),
+            )
+        };
+        match &row.value {
+            // A chooser: ‹ value ›, each arrow its own button.
+            Some(v) if row.act.turns() => {
+                row_ui
+                    .spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    })
+                    .with_children(|chooser| {
+                        chooser.spawn(arrow(fonts, i, -1, text));
+                        chooser.spawn(value(v));
+                        chooser.spawn(arrow(fonts, i, 1, text));
+                    });
+            }
+            Some(v) => {
+                row_ui.spawn(value(v));
+            }
+            None => {}
+        }
+    });
 }
 
 /// The rows' look when focused or not.
@@ -692,6 +827,7 @@ fn build(
     body: &str,
     rows: &[Row],
     portrait: Option<(Handle<Image>, crate::survivor::Survivor)>,
+    lang: Lang,
 ) {
     commands.entity(root).despawn_children();
     // The title screen keeps its rail; a paused night shows a card; after a
@@ -704,6 +840,16 @@ fn build(
         menu.page,
         Page::Reading(_) | Page::Chapter(_) | Page::HowTo | Page::Credits
     );
+    let runs = columns(menu.page);
+    let journal = !runs.is_empty();
+    // Rails and cards widen for a page to read, and more for columns.
+    let wide = if journal {
+        860.0
+    } else if reading {
+        760.0
+    } else {
+        0.0
+    };
     commands.entity(root).with_children(|r| {
         // Where the rows sit: a dark rail on the left of the title screen,
         // a centred card in a run, a row of choices under the outcome.
@@ -724,7 +870,8 @@ fn build(
             column.margin = UiRect::left(px(-260));
             column.padding = UiRect::all(px(18));
             bg = BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.85));
-            for (i, label) in ["should vanish", "barely visible", "plainly seen"]
+            for (i, label) in [m::HAT_VANISH, m::HAT_BARELY, m::HAT_PLAIN]
+                .map(|w| lang.say(w))
                 .into_iter()
                 .enumerate()
             {
@@ -751,7 +898,7 @@ fn build(
             column.left = px(0);
             column.top = px(0);
             column.height = percent(100);
-            column.width = px(if reading { 760.0 } else { 600.0 });
+            column.width = px(if wide > 0.0 { wide } else { 600.0 });
             column.padding = UiRect::new(px(64), px(40), px(56), px(40));
             column.justify_content = JustifyContent::Center;
             gradient = Some(BackgroundGradient::from(LinearGradient::to_right(vec![
@@ -763,8 +910,9 @@ fn build(
             column.position_type = PositionType::Absolute;
             column.left = percent(50);
             column.top = percent(50);
-            column.width = px(if reading { 760.0 } else { 520.0 });
-            column.margin = UiRect::new(px(if reading { -380.0 } else { -260.0 }), px(0), px(-300), px(0));
+            let width = if wide > 0.0 { wide } else { 520.0 };
+            column.width = px(width);
+            column.margin = UiRect::new(px(-width / 2.0), px(0), px(-300), px(0));
             column.padding = UiRect::all(px(28));
             column.border = UiRect::all(px(1));
             column.border_radius = BorderRadius::all(px(8));
@@ -798,7 +946,7 @@ fn build(
                     },
                 ));
                 p.spawn((Text::new(who.name()), font(&fonts.serif, 30.0), TextColor(INK)));
-                p.spawn((Text::new(who.role()), font(&fonts.italic, 18.0), TextColor(AMBER)));
+                p.spawn((Text::new(who.role(lang)), font(&fonts.italic, 18.0), TextColor(AMBER)));
             });
         }
         let mut col = r.spawn((column, bg));
@@ -821,7 +969,7 @@ fn build(
                     },
                 ));
                 c.spawn((
-                    Text::new("Si lo oyes cerca, está lejos. Si lo oyes lejos, ya está aquí."),
+                    Text::new(lang.say(m::TAGLINE)),
                     font(&fonts.italic, 16.0),
                     TextColor(PALE_BLUE),
                     Node {
@@ -848,45 +996,46 @@ fn build(
                     TextColor(if reading { INK } else { DIM }),
                     Node {
                         margin: UiRect::bottom(px(18)),
-                        max_width: px(if reading { 660.0 } else { 470.0 }),
+                        max_width: px(if wide > 0.0 { wide - 100.0 } else { 470.0 }),
                         ..default()
                     },
                 ));
             }
-            let journal = menu.page == Page::Journal;
-            for (i, row) in rows.iter().enumerate() {
-                let (text, bg, edge) = row_colors(i == menu.focus, row.enabled);
-                c.spawn((
-                    Button,
-                    MenuRow(i),
-                    Node {
-                        flex_direction: FlexDirection::Row,
-                        justify_content: JustifyContent::SpaceBetween,
-                        align_items: AlignItems::Center,
-                        padding: UiRect::axes(px(14), px(if journal { 3.0 } else { 7.0 })),
-                        border: UiRect::left(px(3)),
-                        min_width: px(if menu.page == Page::Outcome { 360.0 } else { 440.0 }),
-                        ..default()
-                    },
-                    BackgroundColor(bg),
-                    BorderColor::all(edge),
-                ))
-                .with_children(|row_ui| {
-                    row_ui.spawn((
-                        RowLabel(i),
-                        Text::new(row.label.clone()),
-                        font(&fonts.sans, if journal { 15.0 } else { 20.0 }),
-                        TextColor(text),
-                    ));
-                    if let Some(v) = &row.value {
-                        row_ui.spawn((
-                            RowValue(i),
-                            Text::new(v.clone()),
-                            font(&fonts.sans, 18.0),
-                            TextColor(text),
-                        ));
+            // Rows in a run of columns sit side by side (see `columns`);
+            // the rest are full-width lines.
+            let width = (!journal).then_some(if menu.page == Page::Outcome { 360.0 } else { 440.0 });
+            let mut i = 0;
+            while i < rows.len() {
+                let Some(run) = runs.iter().find(|r| r.start == i && r.len > 0) else {
+                    spawn_row(c, fonts, i, &rows[i], i == menu.focus, width);
+                    i += 1;
+                    continue;
+                };
+                c.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    column_gap: px(14),
+                    margin: UiRect::bottom(px(8)),
+                    ..default()
+                })
+                .with_children(|grid| {
+                    for col in 0..run.cols {
+                        let from = run.start + col * run.lines();
+                        let to = (from + run.lines()).min(run.start + run.len);
+                        grid.spawn(Node {
+                            flex_direction: FlexDirection::Column,
+                            flex_basis: px(0),
+                            flex_grow: 1.0,
+                            row_gap: px(2),
+                            ..default()
+                        })
+                        .with_children(|column| {
+                            for (k, row) in rows.iter().enumerate().take(to).skip(from) {
+                                spawn_row(column, fonts, k, row, k == menu.focus, None);
+                            }
+                        });
                     }
                 });
+                i = (run.start + run.len).max(i + 1);
             }
             c.spawn((
                 MenuNote,
@@ -970,6 +1119,7 @@ fn draw(
         Query<(&RowValue, &mut Text, &mut TextColor)>,
         Query<&mut Text, With<MenuNote>>,
         Query<&mut Text, With<MenuBody>>,
+        Query<(&ArrowGlyph, &mut TextColor)>,
     )>,
 ) {
     let (root, mut vis) = root.into_inner();
@@ -1011,6 +1161,7 @@ fn draw(
             &body,
             &rows,
             portrait,
+            settings.lang,
         );
         menu.built = Some(shape);
         return;
@@ -1060,6 +1211,13 @@ fn draw(
     for mut t in &mut texts.p3() {
         set_text(&mut t, &body);
     }
+    for (glyph, mut c) in &mut texts.p4() {
+        let Some(r) = rows.get(glyph.0) else { continue };
+        let (color, ..) = row_colors(glyph.0 == menu.focus, r.enabled);
+        if c.0 != color {
+            c.0 = color;
+        }
+    }
 }
 
 fn field_text(menu: &Menu, act: Act) -> Option<&str> {
@@ -1071,6 +1229,54 @@ fn field_text(menu: &Menu, act: Act) -> Option<&str> {
     }
 }
 
+/// One frame of the player's hands on a page, as read from the devices.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Input {
+    /// Left (-1) or right (+1): the arrow keys, or A / D outside a text
+    /// field.
+    turn: i32,
+    /// Enter.
+    enter: bool,
+    /// The row the pointer came onto (over the row or one of its arrows).
+    hover: Option<usize>,
+    /// A click on a row, anywhere but its arrows.
+    click: Option<usize>,
+    /// A click on one of a chooser's arrows: its row, and -1 for ‹ or +1
+    /// for ›.
+    arrow: Option<(usize, i32)>,
+}
+
+/// Where the focus goes and what is done, in which direction, for one
+/// frame's input. The mouse and the keys meet here: a click on ‹ is the
+/// left key, a click on › the right one, a click on the row is Enter. Left
+/// and right (keys or arrows) only turn choosers, both ways; they never
+/// press a button. A row that cannot be chosen takes neither focus nor
+/// clicks.
+fn choose(rows: &[Row], focus: usize, input: Input) -> (usize, Option<(Act, i32)>) {
+    let usable = |i: usize| rows.get(i).filter(|r| r.enabled).map(|r| r.act);
+    let mut focus = focus;
+    let mut chosen = None;
+    if let Some(i) = input.hover.filter(|&i| usable(i).is_some()) {
+        focus = i;
+    }
+    if let Some((i, act)) = input.click.and_then(|i| usable(i).map(|a| (i, a))) {
+        focus = i;
+        chosen = Some((act, 1));
+    }
+    if let Some((i, dir, act)) = input.arrow.and_then(|(i, d)| usable(i).map(|a| (i, d, a))) {
+        focus = i;
+        chosen = act.turns().then_some((act, dir.signum()));
+    }
+    let act = usable(focus).unwrap_or(Act::None);
+    if input.turn != 0 && act.turns() {
+        chosen = Some((act, input.turn.signum()));
+    }
+    if input.enter {
+        chosen = Some((act, 1));
+    }
+    (focus, chosen.filter(|(a, _)| *a != Act::None))
+}
+
 /// Keyboard and mouse on the menus.
 #[allow(clippy::too_many_arguments)]
 fn navigate(
@@ -1078,7 +1284,7 @@ fn navigate(
     keys: Res<ButtonInput<KeyCode>>,
     mut typed: MessageReader<KeyboardInput>,
     buttons: Query<(&Interaction, &MenuRow), Changed<Interaction>>,
-    mouse: Res<ButtonInput<MouseButton>>,
+    arrows: Query<(&Interaction, &RowArrow), Changed<Interaction>>,
     ctx: Context,
     mut menu: ResMut<Menu>,
     mut fx: Effects,
@@ -1143,43 +1349,37 @@ fn navigate(
     if keys.any_just_pressed([KeyCode::ArrowUp]) || (!editing && keys.just_pressed(KeyCode::KeyW)) {
         step(&mut menu, -1);
     }
-    let mut chosen: Option<(Act, i32)> = None;
+    let mut input = Input::default();
     for (interaction, row) in &buttons {
         match interaction {
-            Interaction::Hovered => {
-                if rows.get(row.0).is_some_and(|r| r.enabled) {
-                    menu.focus = row.0;
-                }
-            }
-            Interaction::Pressed => {
-                if let Some(r) = rows.get(row.0).filter(|r| r.enabled) {
-                    menu.focus = row.0;
-                    chosen = Some((r.act, 1));
-                }
-            }
+            Interaction::Hovered => input.hover = Some(row.0),
+            Interaction::Pressed => input.click = Some(row.0),
             Interaction::None => {}
         }
     }
-    let _ = mouse;
-    let act = rows.get(menu.focus).map(|r| r.act).unwrap_or(Act::None);
+    // An arrow is a button inside its row: pressed, the row is not.
+    for (interaction, arrow) in &arrows {
+        match interaction {
+            Interaction::Hovered => input.hover = Some(arrow.row),
+            Interaction::Pressed => input.arrow = Some((arrow.row, arrow.dir)),
+            Interaction::None => {}
+        }
+    }
     if !typed_any {
         if keys.any_just_pressed([KeyCode::ArrowLeft]) || (!editing && keys.just_pressed(KeyCode::KeyA)) {
-            chosen = Some((act, -1));
+            input.turn = -1;
         }
         if keys.any_just_pressed([KeyCode::ArrowRight]) || (!editing && keys.just_pressed(KeyCode::KeyD)) {
-            chosen = Some((act, 1));
+            input.turn = 1;
         }
     }
-    if keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) {
-        chosen = Some((act, 1));
+    // Left and right cross the Journal's columns (its rows turn nothing).
+    if input.turn != 0 && !rows.get(menu.focus).is_some_and(|r| r.act.turns()) {
+        menu.focus = across(&rows, &columns(menu.page), menu.focus, input.turn);
     }
-    // Left/right only turn choosers; they do not press buttons.
-    if let Some((a, dir)) = chosen
-        && dir < 0
-        && !matches!(a, Act::Difficulty | Act::Survivor | Act::Adjust(_))
-    {
-        chosen = None;
-    }
+    input.enter = keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]);
+    let (focus, mut chosen) = choose(&rows, menu.focus, input);
+    menu.focus = focus;
     if keys.just_pressed(KeyCode::Escape) {
         match menu.page {
             Page::Pause => chosen = Some((Act::Resume, 1)),
@@ -1238,6 +1438,10 @@ fn activate(act: Act, dir: i32, menu: &mut Menu, ctx: &Context, fx: &mut Effects
             if let Some(bus) = knob.bus() {
                 fx.preview.write(VolumePreview(bus));
             }
+            // Every word on the page changes with the language.
+            if knob == Knob::Language {
+                menu.built = None;
+            }
         }
         Act::Solo => {
             fx.starts.write(StartRun {
@@ -1246,7 +1450,7 @@ fn activate(act: Act, dir: i32, menu: &mut Menu, ctx: &Context, fx: &mut Effects
                 night: menu.night,
             });
         }
-        Act::Host => match parse_addr(&menu.host) {
+        Act::Host => match parse_addr(&menu.host, fx.settings.lang) {
             Ok(addr) => {
                 fx.starts.write(StartRun {
                     mode: Mode::Host(addr),
@@ -1256,7 +1460,7 @@ fn activate(act: Act, dir: i32, menu: &mut Menu, ctx: &Context, fx: &mut Effects
             }
             Err(e) => menu.note = e,
         },
-        Act::Join => match parse_addr(&menu.join) {
+        Act::Join => match parse_addr(&menu.join, fx.settings.lang) {
             Ok(addr) => {
                 fx.profile.profile.join = menu.join.trim().to_string();
                 fx.profile.save();
@@ -1314,6 +1518,7 @@ fn adjust(knob: Knob, dir: i32, s: &mut Settings, tuning: &TuningRes) {
         Knob::Captions => s.captions = !s.captions,
         // The window follows in `app::apply_display`.
         Knob::DisplayMode => s.display_mode = s.display_mode.toggled(),
+        Knob::Language => s.lang = s.lang.toggled(),
     }
 }
 
@@ -1396,4 +1601,157 @@ pub(crate) fn plugin(app: &mut App) {
                 (draw, remember).in_set(GameSet::Present),
             ),
         );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A page with a slider, a chooser, a button and a row that cannot be
+    /// chosen.
+    fn page() -> Vec<Row> {
+        vec![
+            Row::value("volume", "100%".into(), Act::Adjust(Knob::Master)),
+            Row::value("difficulty", "Normal".into(), Act::Difficulty),
+            Row::go("back", Act::Back),
+            Row::value("display", "Window".into(), Act::None).off(),
+        ]
+    }
+
+    fn with(f: impl FnOnce(&mut Input)) -> Input {
+        let mut input = Input::default();
+        f(&mut input);
+        input
+    }
+
+    #[test]
+    fn a_click_on_an_arrow_is_the_key_that_way_and_a_click_on_the_row_is_enter() {
+        let rows = page();
+        for row in [0, 1] {
+            let act = rows[row].act;
+            for dir in [-1, 1] {
+                // From anywhere on the page: the arrow takes its row's focus
+                // and turns it exactly as the key does from there.
+                let clicked = choose(&rows, 2, with(|i| i.arrow = Some((row, dir))));
+                assert_eq!(clicked, (row, Some((act, dir))), "row {row}, arrow {dir}");
+                assert_eq!(
+                    clicked,
+                    choose(&rows, row, with(|i| i.turn = dir)),
+                    "row {row}, key {dir}"
+                );
+            }
+            let on_row = choose(&rows, 2, with(|i| i.click = Some(row)));
+            assert_eq!(on_row, (row, Some((act, 1))));
+            assert_eq!(on_row, choose(&rows, row, with(|i| i.enter = true)));
+        }
+    }
+
+    #[test]
+    fn left_and_right_never_press_a_button_and_a_dead_row_takes_nothing() {
+        let rows = page();
+        for dir in [-1, 1] {
+            assert_eq!(
+                choose(&rows, 2, with(|i| i.turn = dir)),
+                (2, None),
+                "key {dir} on a button"
+            );
+        }
+        assert_eq!(choose(&rows, 2, with(|i| i.enter = true)), (2, Some((Act::Back, 1))));
+        assert_eq!(choose(&rows, 2, with(|i| i.click = Some(2))), (2, Some((Act::Back, 1))));
+        // The row that cannot be chosen takes neither the pointer nor a click.
+        assert_eq!(choose(&rows, 2, with(|i| i.hover = Some(3))), (2, None));
+        assert_eq!(choose(&rows, 2, with(|i| i.click = Some(3))), (2, None));
+        // The pointer alone only moves the focus.
+        assert_eq!(choose(&rows, 2, with(|i| i.hover = Some(0))), (0, None));
+    }
+
+    #[test]
+    fn left_and_right_cross_the_journal_columns_to_a_page_that_was_found() {
+        let runs = columns(Page::Journal);
+        let total = runs.iter().map(|r| r.len).sum::<usize>() + 1;
+        let found = [2, 11, 14, 17];
+        let rows: Vec<Row> = (0..total)
+            .map(|i| {
+                let row = Row::go("", Act::Read(i as u8));
+                if found.contains(&i) || i >= crate::lore::PAGES as usize {
+                    row
+                } else {
+                    row.off()
+                }
+            })
+            .collect();
+        let pages = runs[0];
+        let line = |i: usize| pages.place(i).unwrap().1;
+        // From the left column to the nearest found page on the right.
+        let right = across(&rows, &runs, 2, 1);
+        assert_eq!(pages.place(right).unwrap().0, 1);
+        assert!(found.contains(&right));
+        let nearest = found[1..].iter().map(|&i| line(i).abs_diff(line(2))).min().unwrap();
+        assert_eq!(line(right).abs_diff(line(2)), nearest);
+        // And back again; the outer edges and full-width rows stay put.
+        assert_eq!(across(&rows, &runs, right, -1), 2);
+        assert_eq!(across(&rows, &runs, 2, -1), 2);
+        assert_eq!(across(&rows, &runs, right, 1), right);
+        assert_eq!(across(&rows, &runs, total - 1, 1), total - 1);
+        // The chapters cross their own two columns, never into the pages.
+        let chapters = runs[1];
+        let first = chapters.start;
+        let other = across(&rows, &runs, first, 1);
+        assert_eq!(chapters.place(other), Some((1, 0)));
+        assert_eq!(across(&rows, &runs, other, -1), first);
+    }
+
+    #[test]
+    fn the_arrows_lower_and_raise_every_setting_from_either_end() {
+        let tuning = TuningRes(crate::tuning::Tuning::default());
+        let press = |s: &mut Settings, knob: Knob, dir: i32| {
+            let row = [Row::value("", String::new(), Act::Adjust(knob))];
+            match choose(&row, 0, with(|i| i.arrow = Some((0, dir)))) {
+                (_, Some((Act::Adjust(k), d))) => adjust(k, d, s, &tuning),
+                other => panic!("{knob:?}: the arrow did nothing ({other:?})"),
+            }
+        };
+        let sliders: [(Knob, fn(&Settings) -> f32); 8] = [
+            (Knob::Master, |s| s.master),
+            (Knob::Music, |s| s.music),
+            (Knob::Ambience, |s| s.ambience),
+            (Knob::Effects, |s| s.effects),
+            (Knob::Sensitivity, |s| s.sensitivity),
+            (Knob::Fov, |s| s.fov),
+            (Knob::Brightness, |s| s.brightness),
+            (Knob::Contrast, |s| s.contrast),
+        ];
+        for (knob, read) in sliders {
+            let mut s = Settings::default();
+            for _ in 0..200 {
+                press(&mut s, knob, 1);
+            }
+            let top = read(&s);
+            press(&mut s, knob, -1);
+            assert!(read(&s) < top, "{knob:?}: ‹ lowers it from the top");
+            for _ in 0..200 {
+                press(&mut s, knob, -1);
+            }
+            let bottom = read(&s);
+            assert!(bottom < top, "{knob:?}");
+            press(&mut s, knob, 1);
+            assert!(read(&s) > bottom, "{knob:?}: › raises it from the bottom");
+        }
+        // Two-way choices flip whichever arrow is pressed.
+        for knob in [
+            Knob::InvertY,
+            Knob::HeadBob,
+            Knob::Captions,
+            Knob::DisplayMode,
+            Knob::Language,
+        ] {
+            for dir in [-1, 1] {
+                let mut s = Settings::default();
+                press(&mut s, knob, dir);
+                assert_ne!(s, Settings::default(), "{knob:?}, arrow {dir}");
+                press(&mut s, knob, dir);
+                assert_eq!(s, Settings::default(), "{knob:?}, arrow {dir}");
+            }
+        }
+    }
 }

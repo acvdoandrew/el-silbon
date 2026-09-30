@@ -300,14 +300,16 @@ impl Network {
         Some(felt(self.snapshot()?, self.id()))
     }
     /// What the fallen are told: whom they watch, and how to watch another.
-    pub fn watch_label(&self) -> Option<String> {
+    pub fn watch_label(&self, lang: crate::lang::Lang) -> Option<String> {
         let (s, me) = (self.snapshot()?, self.id()?);
         let friend = watched(s, Some(me))?;
         let who = Survivor::from_code(friend.survivor).name();
+        let watching = lang.pick("Watching", "Mirando a");
         Some(if cycle_watch(s, me, 1).is_some_and(|next| next != friend.id) {
-            format!("Watching {who}   ·   A / D  another friend")
+            let another = lang.pick("another friend", "otro amigo");
+            format!("{watching} {who}   ·   A / D  {another}")
         } else {
-            format!("Watching {who}")
+            format!("{watching} {who}")
         })
     }
     /// The skill check in flight for this player and its needle now.
@@ -951,10 +953,13 @@ fn ground_torches(
 fn banner(
     net: Res<Network>,
     flow: Res<State<Flow>>,
+    settings: Res<crate::app::Settings>,
     banner: Option<Single<(&mut Text, &mut Node, &mut Visibility), With<NetBanner>>>,
     mut buffer: Local<String>,
 ) {
+    use crate::lang::{Lang, net as tn};
     use std::fmt::Write;
+    let l = settings.lang;
     let Some(banner) = banner else {
         return;
     };
@@ -984,46 +989,62 @@ fn banner(
     }
     buffer.clear();
     let Some(e) = &net.endpoint else {
-        let _ = write!(&mut *buffer, "Cannot open session: {}\nEsc: menu / Quit", net.error);
+        let _ = match l {
+            Lang::En => write!(&mut *buffer, "Cannot open session: {}\nEsc: menu / Quit", net.error),
+            Lang::Es => write!(
+                &mut *buffer,
+                "No se pudo abrir la sesión: {}\nEsc: menú / Salir",
+                net.error
+            ),
+        };
         if text.0 != *buffer {
             text.0.clone_from(&buffer);
         }
         return;
     };
-    let role = if e.mode.is_host() { "HOST" } else { "CLIENT" };
+    let role = match (l, e.mode.is_host()) {
+        (Lang::En, true) => "HOST",
+        (Lang::En, false) => "CLIENT",
+        (Lang::Es, true) => "ANFITRIÓN",
+        (Lang::Es, false) => "INVITADO",
+    };
     if e.closed {
         buffer.push_str(&e.status);
     } else if let Some(s) = &e.snapshot {
-        let watching = net.watch_label();
+        let watching = net.watch_label(l);
         let state = if !s.started {
-            "Lobby: the host presses Enter when everyone is connected | F7: be someone else"
+            l.say(tn::LOBBY)
         } else if s.outcome == 1 {
-            "SHARED VICTORY: the truck is away with everyone still standing."
+            l.say(tn::VICTORY)
         } else if s.outcome == 2 {
-            "SHARED FAILURE: nobody is left on their feet. The host can restart."
+            l.say(tn::FAILURE)
         } else if s.outcome == 3 {
-            "SHARED DAWN: the rooster crowed with bones still out. He will be back. The host can restart."
+            l.say(tn::DAWN)
         } else if net.me().is_some_and(|p| p.hauled) {
-            "IN HIS SACK: ají in his path, or Tureco's bark, makes him drop you."
+            l.say(tn::SACK)
         } else if net.status() == 1 {
-            "DOWN: crawl toward your friends | V: call for help (he may hear it too)."
+            l.say(tn::DOWN)
         } else if net.status() == 2 {
-            watching.as_deref().unwrap_or("You are gone for the night.")
+            watching.as_deref().unwrap_or(l.say(tn::GONE))
         } else {
-            "V: mark | Q: pepper | G: put a bundle down | Esc: local menu (world continues)"
+            l.say(tn::KEYS)
         };
-        let _ = write!(
-            &mut *buffer,
-            "{role} | player {} | {} connected | run {}\n{state}\nF6: host restart | F10: {}",
-            e.id.unwrap_or(0),
-            s.players.len(),
-            s.run,
-            if e.mode.is_host() {
-                "end session"
-            } else {
-                "leave session"
-            }
-        );
+        let end = l.say(if e.mode.is_host() {
+            tn::END_SESSION
+        } else {
+            tn::LEAVE_SESSION
+        });
+        let (id, players, run) = (e.id.unwrap_or(0), s.players.len(), s.run);
+        let _ = match l {
+            Lang::En => write!(
+                &mut *buffer,
+                "{role} | player {id} | {players} connected | run {run}\n{state}\nF6: host restart | F10: {end}"
+            ),
+            Lang::Es => write!(
+                &mut *buffer,
+                "{role} | jugador {id} | {players} conectados | ronda {run}\n{state}\nF6: el anfitrión reinicia | F10: {end}"
+            ),
+        };
         if !e.last_error.is_empty() {
             let _ = write!(&mut *buffer, "\n{}", e.last_error);
         }

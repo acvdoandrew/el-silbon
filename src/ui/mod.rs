@@ -14,6 +14,7 @@ pub(crate) mod title;
 use bevy::prelude::*;
 
 use crate::app::{Flow, GameSet, Launch, LayoutRes, RunReset, Settings, Truth, TuningRes};
+use crate::lang::{Lang, Words, outcome as o, panel as tp};
 use crate::net::Network;
 use crate::perception::WhistleVariant;
 
@@ -185,6 +186,10 @@ pub(crate) struct NotePaper;
 #[derive(Component)]
 pub(crate) struct NoteCount;
 
+/// Words spawned once that follow the language setting (`translate`).
+#[derive(Component)]
+pub(crate) struct Tr(pub Words);
+
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MenuAction {
     Begin,
@@ -209,7 +214,8 @@ impl Plugin for HudPlugin {
                 (
                     reset_ui.in_set(GameSet::Control),
                     (
-                        buttons,
+                        // Nested: a chained tuple holds at most 20.
+                        (translate, buttons),
                         panels,
                         hud::objectives,
                         hud::status_text,
@@ -280,7 +286,7 @@ pub(crate) fn label(fonts: &Fonts, text: &str, size: f32, color: Color, italic: 
     )
 }
 
-fn button(fonts: &Fonts, text: &str, action: MenuAction, width: f32) -> impl Bundle {
+fn button(fonts: &Fonts, text: Words, action: MenuAction, width: f32) -> impl Bundle {
     (
         Button,
         action,
@@ -296,7 +302,7 @@ fn button(fonts: &Fonts, text: &str, action: MenuAction, width: f32) -> impl Bun
         },
         BorderColor::all(Color::srgba(0.8, 0.62, 0.38, 0.5)),
         BackgroundColor(BUTTON),
-        children![(Text::new(text), font(&fonts.sans, 17.0), TextColor(INK))],
+        children![(Tr(text), Text::new(text.en), font(&fonts.sans, 17.0), TextColor(INK))],
     )
 }
 
@@ -402,7 +408,10 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, map_image: Res<map
                 BackgroundGradient::from(RadialGradient::new(
                     UiPosition::CENTER,
                     RadialGradientShape::FarthestCorner,
-                    vec![ColorStop::percent(Color::NONE, 45), ColorStop::percent(Color::NONE, 100)],
+                    vec![
+                        ColorStop::percent(Color::NONE, 45),
+                        ColorStop::percent(Color::NONE, 100),
+                    ],
                 )),
             ));
             // Full-screen wash (susto flash, downed).
@@ -433,7 +442,11 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, map_image: Res<map
                 BackgroundColor(PANEL_BG),
             ))
             .with_children(|p| {
-                p.spawn((Text::new("EL SILBÓN — THE RETURN"), font(&f.serif, 12.5), TextColor(AMBER)));
+                p.spawn((
+                    Text::new("EL SILBÓN — THE RETURN"),
+                    font(&f.serif, 12.5),
+                    TextColor(AMBER),
+                ));
                 for i in 0..3 {
                     p.spawn((ObjectiveLine(i), label(f, "", 16.0, INK, false)));
                 }
@@ -517,9 +530,10 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, map_image: Res<map
                 },
                 BackgroundColor(PANEL_BG),
                 ControlsLine,
+                // Its words are set each frame by `hud::watch_line`.
                 children![label(
                     f,
-                    "WASD move · Shift run · Ctrl crouch · E use / hold · F light · G drop · Q ají · V mark (down: cry for help) · M map · Esc",
+                    crate::lang::hud::CONTROLS.en,
                     12.0,
                     Color::srgb(0.62, 0.62, 0.58),
                     false,
@@ -794,82 +808,74 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, map_image: Res<map
             map::spawn_map_panel(root, f, &map_image, &layout.0);
 
             // --- Overlays.
-            root.spawn((BriefingPanel, overlay(), BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.4)), GlobalZIndex(10)))
-                .with_children(|o| {
-                    o.spawn(card(860.0)).with_children(|c| {
-                        c.spawn((Text::new("EL SILBÓN"), font(&f.serif, 64.0), TextColor(INK)));
-                        c.spawn((
-                            Text::new("The Return — some whistles should never be followed"),
-                            font(&f.italic, 22.0),
-                            TextColor(AMBER),
-                        ));
-                        c.spawn((
-                            Text::new(
-                                "Los Llanos, 1998. Your truck died at the river bridge and the road home is thirty \
-                                 kilometres of dark. Ahead: a hacienda with a lamp still burning, a windmill that \
-                                 could bring the power back, and five bundles of bones taken from El Silbón's sack. \
-                                 He is out in the rain, he wants them back, and he listens to everything.",
-                            ),
-                            font(&f.sans, 16.0),
-                            TextColor(INK),
-                            TextLayout::justify(Justify::Center),
-                        ));
-                        c.spawn((
-                            Text::new(
-                                "The whistle lies: loud means he is far, thin means he is near. Walls, trunks and tall \
-                                 grass break his sight. Everything you do makes a sound — crouch to sneak, run to be \
-                                 heard; rain and thunder hide your steps. Fear grows in the dark and alone.",
-                            ),
-                            font(&f.italic, 17.0),
-                            TextColor(PALE_BLUE),
-                            TextLayout::justify(Justify::Center),
-                        ));
-                        c.spawn((
-                            Text::new(
-                                "Find the five bundles and lay them at the ceiba · restore power at the windmill · open \
-                                 the padlocked key box (the house radio reads its numbers out) · start the truck and survive its \
-                                 roar. Or learn which of him walks tonight and name him at the ceiba. Keep the rhythm \
-                                 of the work (Space). Your torch runs down and its beam draws him. Ají stops him for a \
-                                 while; Tureco, if you untie him, knows where he is. Get the fallen out of his sack.",
-                            ),
-                            font(&f.sans, 15.0),
-                            TextColor(AMBER),
-                            TextLayout::justify(Justify::Center),
-                        ));
-                        c.spawn((
-                            Text::new(
-                                "WASD move · Mouse look · Shift run · Ctrl/C crouch · E or click use (hold at sites) · F flashlight\n\
-                                 Space skill check · G put a bundle down · Q scatter ají · V mark a spot (down: cry for help) · N name him (at the ceiba) · X drive off (with friends)\n\
-                                 M map · Esc pause · F12 screenshot",
-                            ),
-                            font(&f.sans, 14.0),
-                            TextColor(DIM),
-                            TextLayout::justify(Justify::Center),
-                        ));
-                        c.spawn((
-                            BriefingNight,
-                            Text::new(""),
-                            font(&f.italic, 14.0),
-                            TextColor(DIM),
-                        ));
-                        c.spawn(button(f, "Begin — click to capture the mouse", MenuAction::Begin, 420.0));
-                        c.spawn(button(f, "Back to the title", MenuAction::Title, 240.0));
-                    });
+            root.spawn((
+                BriefingPanel,
+                overlay(),
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.4)),
+                GlobalZIndex(10),
+            ))
+            .with_children(|o| {
+                o.spawn(card(860.0)).with_children(|c| {
+                    c.spawn((Text::new("EL SILBÓN"), font(&f.serif, 64.0), TextColor(INK)));
+                    c.spawn((
+                        Tr(tp::BRIEFING_SUBTITLE),
+                        Text::new(tp::BRIEFING_SUBTITLE.en),
+                        font(&f.italic, 22.0),
+                        TextColor(AMBER),
+                    ));
+                    c.spawn((
+                        Tr(tp::BRIEFING_STORY),
+                        Text::new(tp::BRIEFING_STORY.en),
+                        font(&f.sans, 16.0),
+                        TextColor(INK),
+                        TextLayout::justify(Justify::Center),
+                    ));
+                    c.spawn((
+                        Tr(tp::BRIEFING_RULES),
+                        Text::new(tp::BRIEFING_RULES.en),
+                        font(&f.italic, 17.0),
+                        TextColor(PALE_BLUE),
+                        TextLayout::justify(Justify::Center),
+                    ));
+                    c.spawn((
+                        Tr(tp::BRIEFING_GOALS),
+                        Text::new(tp::BRIEFING_GOALS.en),
+                        font(&f.sans, 15.0),
+                        TextColor(AMBER),
+                        TextLayout::justify(Justify::Center),
+                    ));
+                    c.spawn((
+                        Tr(tp::BRIEFING_KEYS),
+                        Text::new(tp::BRIEFING_KEYS.en),
+                        font(&f.sans, 14.0),
+                        TextColor(DIM),
+                        TextLayout::justify(Justify::Center),
+                    ));
+                    c.spawn((BriefingNight, Text::new(""), font(&f.italic, 14.0), TextColor(DIM)));
+                    c.spawn(button(f, tp::BEGIN, MenuAction::Begin, 420.0));
+                    c.spawn(button(f, tp::BACK_TO_TITLE, MenuAction::Title, 240.0));
                 });
+            });
 
-            root.spawn((OutcomePanel, overlay(), Visibility::Hidden, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)), GlobalZIndex(10)))
-                .with_children(|o| {
-                    o.spawn(card(700.0)).with_children(|c| {
-                        c.spawn((OutcomeTitle, Text::new(""), font(&f.serif, 44.0), TextColor(INK)));
-                        c.spawn((
-                            OutcomeBody,
-                            Text::new(""),
-                            font(&f.sans, 17.0),
-                            TextColor(INK),
-                            TextLayout::justify(Justify::Center),
-                        ));
-                    });
+            root.spawn((
+                OutcomePanel,
+                overlay(),
+                Visibility::Hidden,
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+                GlobalZIndex(10),
+            ))
+            .with_children(|o| {
+                o.spawn(card(700.0)).with_children(|c| {
+                    c.spawn((OutcomeTitle, Text::new(""), font(&f.serif, 44.0), TextColor(INK)));
+                    c.spawn((
+                        OutcomeBody,
+                        Text::new(""),
+                        font(&f.sans, 17.0),
+                        TextColor(INK),
+                        TextLayout::justify(Justify::Center),
+                    ));
                 });
+            });
 
             // The key box's padlock: three dials, low on the screen so the
             // night stays in view while you fiddle with it.
@@ -901,7 +907,8 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, map_image: Res<map
                 ))
                 .with_children(|c| {
                     c.spawn((
-                        Text::new("CANDADO · PADLOCK"),
+                        Tr(tp::PADLOCK),
+                        Text::new(tp::PADLOCK.en),
                         font(&f.serif, 13.0),
                         TextColor(Color::srgb(0.75, 0.75, 0.78)),
                     ));
@@ -912,7 +919,8 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, map_image: Res<map
                         TextColor(Color::srgb(0.92, 0.9, 0.84)),
                     ));
                     c.spawn((
-                        Text::new("1 · 2 · 3 turn the dials (Shift back)   ·   Enter tries   ·   E closes\nA wrong try rattles — and the llano hears."),
+                        Tr(tp::PADLOCK_HELP),
+                        Text::new(tp::PADLOCK_HELP.en),
                         font(&f.sans, 13.0),
                         TextColor(Color::srgb(0.7, 0.68, 0.64)),
                         TextLayout::justify(Justify::Center),
@@ -948,7 +956,8 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, map_image: Res<map
                 ))
                 .with_children(|c| {
                     c.spawn((
-                        Text::new("¿CUÁL DE ÉL CAMINA ESTA NOCHE? · WHICH OF HIM WALKS TONIGHT?"),
+                        Tr(tp::WHICH_OF_HIM),
+                        Text::new(tp::WHICH_OF_HIM.en),
                         font(&f.serif, 13.0),
                         TextColor(Color::srgb(0.85, 0.72, 0.5)),
                     ));
@@ -960,44 +969,58 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, map_image: Res<map
                         TextLayout::justify(Justify::Center),
                     ));
                     c.spawn((
-                        Text::new("1 · 2 · 3 choose   ·   Enter names him   ·   N closes\nA wrong name enrages him, and the ceiba will not listen for a while."),
+                        Tr(tp::NAMING_HELP),
+                        Text::new(tp::NAMING_HELP.en),
                         font(&f.sans, 13.0),
                         TextColor(Color::srgb(0.7, 0.66, 0.6)),
                         TextLayout::justify(Justify::Center),
                     ));
                 });
             });
-            root.spawn((NotePanel, overlay(), Visibility::Hidden, GlobalZIndex(9))).with_children(|o| {
-                o.spawn((
-                    NotePaper,
-                    Node {
-                        width: px(640),
-                        max_height: percent(92),
-                        flex_direction: FlexDirection::Column,
-                        padding: UiRect::all(px(30)),
-                        row_gap: px(12),
-                        border_radius: BorderRadius::all(px(3)),
-                        overflow: Overflow::clip_y(),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgba(0.78, 0.72, 0.58, 0.96)),
-                ))
-                .with_children(|c| {
-                    let ink = Color::srgb(0.16, 0.12, 0.1);
-                    c.spawn((NoteTitle, Text::new(""), font(&f.serif, 14.0), TextColor(ink)));
-                    c.spawn((NoteEs, Text::new(""), font(&f.italic, 21.0), TextColor(ink)));
-                    c.spawn((NoteBy, Text::new(""), font(&f.italic, 17.0), TextColor(ink)));
-                    c.spawn((NoteEn, Text::new(""), font(&f.sans, 15.0), TextColor(Color::srgb(0.25, 0.2, 0.16))));
-                    c.spawn((
-                        NoteCount,
-                        Text::new("[E] put the page down"),
-                        font(&f.sans, 14.0),
-                        TextColor(Color::srgb(0.3, 0.24, 0.18)),
-                    ));
+            root.spawn((NotePanel, overlay(), Visibility::Hidden, GlobalZIndex(9)))
+                .with_children(|o| {
+                    o.spawn((
+                        NotePaper,
+                        Node {
+                            width: px(640),
+                            max_height: percent(92),
+                            flex_direction: FlexDirection::Column,
+                            padding: UiRect::all(px(30)),
+                            row_gap: px(12),
+                            border_radius: BorderRadius::all(px(3)),
+                            overflow: Overflow::clip_y(),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.78, 0.72, 0.58, 0.96)),
+                    ))
+                    .with_children(|c| {
+                        let ink = Color::srgb(0.16, 0.12, 0.1);
+                        c.spawn((NoteTitle, Text::new(""), font(&f.serif, 14.0), TextColor(ink)));
+                        c.spawn((NoteEs, Text::new(""), font(&f.italic, 21.0), TextColor(ink)));
+                        c.spawn((NoteBy, Text::new(""), font(&f.italic, 17.0), TextColor(ink)));
+                        c.spawn((
+                            NoteEn,
+                            Text::new(""),
+                            font(&f.sans, 15.0),
+                            TextColor(Color::srgb(0.25, 0.2, 0.16)),
+                        ));
+                        c.spawn((
+                            NoteCount,
+                            Text::new(tp::PUT_PAGE_DOWN.en),
+                            font(&f.sans, 14.0),
+                            TextColor(Color::srgb(0.3, 0.24, 0.18)),
+                        ));
+                    });
                 });
-            });
         });
     commands.insert_resource(fonts);
+}
+
+/// The words spawned once follow the language chosen in Settings.
+fn translate(settings: Res<Settings>, mut texts: Query<(&Tr, &mut Text)>) {
+    for (tr, mut t) in &mut texts {
+        set_text(&mut t, settings.lang.say(tr.0));
+    }
 }
 
 fn buttons(
@@ -1027,6 +1050,7 @@ fn panels(
     state: Res<State<Flow>>,
     menu: Res<menu::Menu>,
     launch: Res<Launch>,
+    settings: Res<Settings>,
     fright: Res<crate::world::omen::Fright>,
     mut q: ParamSet<(
         Query<&mut Visibility, With<BriefingPanel>>,
@@ -1050,11 +1074,17 @@ fn panels(
         set_vis(&mut v, s == Flow::Briefing);
     }
     if s == Flow::Briefing {
-        let line = format!(
-            "Night #{} ({}) — the bundles, the padlock and which of him walks change with every night.",
-            launch.seed,
-            launch.night.label()
-        );
+        let kind = self::menu::night_label(launch.night, settings.lang).to_lowercase();
+        let line = match settings.lang {
+            Lang::En => format!(
+                "Night #{} ({kind}) — the bundles, the padlock and which of him walks change with every night.",
+                launch.seed
+            ),
+            Lang::Es => format!(
+                "Noche #{} ({kind}) — los atados, el candado y cuál de él camina cambian con cada noche.",
+                launch.seed
+            ),
+        };
         for mut t in &mut night {
             set_text(&mut t, &line);
         }
@@ -1076,7 +1106,7 @@ fn panels(
 }
 
 /// The night's awards, one line per player who earned any.
-fn night_awards(net: &Network) -> String {
+fn night_awards(net: &Network, l: Lang) -> String {
     use crate::awards::Award;
     let Some(s) = net.snapshot().filter(|s| !s.deeds.is_empty()) else {
         return String::new();
@@ -1087,19 +1117,21 @@ fn night_awards(net: &Network) -> String {
         dog_friend: (s.dog.owner != 0).then_some(s.dog.owner),
     };
     let given = crate::awards::awards(&night);
-    let label = |a: Award| match a {
-        Award::LeftBehind => "Left behind on the llano",
-        Award::SackRider => "Rode in his sack",
-        Award::FirstToFall => "First to fall",
-        Award::Screamer => "Screamed the most",
-        Award::Butterfingers => "Butterfingers (dropped the bones)",
-        Award::HisFavourite => "His favourite (warned the most)",
-        Award::GuardianAngel => "Guardian angel (got someone up)",
-        Award::BoneBearer => "Bone bearer (laid the most)",
-        Award::PepperHand => "Ají in every pocket",
-        Award::Stampede => "Started a stampede",
-        Award::TurecosFriend => "Tureco's friend",
-        Award::Untouched => "Untouched (never warned, never scared)",
+    let label = |a: Award| {
+        l.say(match a {
+            Award::LeftBehind => o::LEFT_BEHIND,
+            Award::SackRider => o::SACK_RIDER,
+            Award::FirstToFall => o::FIRST_TO_FALL,
+            Award::Screamer => o::SCREAMER,
+            Award::Butterfingers => o::BUTTERFINGERS,
+            Award::HisFavourite => o::FAVOURITE,
+            Award::GuardianAngel => o::GUARDIAN,
+            Award::BoneBearer => o::BEARER,
+            Award::PepperHand => o::PEPPER_HAND,
+            Award::Stampede => o::STAMPEDE,
+            Award::TurecosFriend => o::TURECOS_FRIEND,
+            Award::Untouched => o::UNTOUCHED,
+        })
     };
     let me = net.id();
     let solo = s.deeds.len() < 2;
@@ -1114,9 +1146,9 @@ fn night_awards(net: &Network) -> String {
             continue;
         }
         let who = if solo {
-            "You".to_string()
+            l.say(o::YOU).to_string()
         } else if Some(p.id) == me {
-            format!("P{} (you)", slot + 1)
+            format!("P{}{}", slot + 1, l.say(crate::lang::hud::YOU_SUFFIX))
         } else {
             format!("P{}", slot + 1)
         };
@@ -1125,42 +1157,44 @@ fn night_awards(net: &Network) -> String {
     if lines.is_empty() {
         String::new()
     } else {
-        format!("\n\nTonight's awards\n{}", lines.join("\n"))
+        format!("\n\n{}\n{}", l.say(o::AWARDS), lines.join("\n"))
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fill_outcome(
     truth: Res<Truth>,
     net: Res<Network>,
     tuning: Res<TuningRes>,
+    settings: Res<Settings>,
     read: Res<crate::encounter::PagesRead>,
     mut q: ParamSet<(
         Query<&mut Text, With<OutcomeTitle>>,
         Query<&mut Text, With<OutcomeBody>>,
     )>,
 ) {
+    let l = settings.lang;
     let enc = &truth.encounter;
     let secs = enc.elapsed.max(0.0) as u32;
     let (home, total) = net.snapshot().map_or((0, 5), |s| (s.world.delivered, s.world.total));
-    let stats = format!(
-        "Time: {}:{:02}  ·  Bones at rest: {home}/{total}  ·  Times he warned: {}  ·  Slipped his sight: {}\n\
-         Times downed: {}  ·  Revived: {}  ·  Pages of the tale found: {}/{}",
-        secs / 60,
-        secs % 60,
-        enc.stats.warnings,
-        enc.stats.recoveries,
-        enc.stats.downs,
-        enc.stats.revives,
-        read.0.len(),
-        crate::lore::PAGES,
-    );
+    let (mm, ss) = (secs / 60, secs % 60);
+    let st = &enc.stats;
+    let (found, pages) = (read.0.len(), crate::lore::PAGES);
+    let stats = match l {
+        Lang::En => format!(
+            "Time: {mm}:{ss:02}  ·  Bones at rest: {home}/{total}  ·  Times he warned: {}  ·  Slipped his sight: {}\n\
+             Times downed: {}  ·  Revived: {}  ·  Pages of the tale found: {found}/{pages}",
+            st.warnings, st.recoveries, st.downs, st.revives,
+        ),
+        Lang::Es => format!(
+            "Tiempo: {mm}:{ss:02}  ·  Huesos en paz: {home}/{total}  ·  Veces que te vio: {}  ·  Escapes de su vista: {}\n\
+             Veces caído: {}  ·  Levantados: {}  ·  Páginas del cuento encontradas: {found}/{pages}",
+            st.warnings, st.recoveries, st.downs, st.revives,
+        ),
+    };
     // Every page read: the tale is whole, and it says so.
-    let stats = if read.0.len() >= crate::lore::PAGES as usize {
-        format!(
-            "{stats}\n\nThe whole tale is told: the son, the deer, the father, the grandfather's curse, \
-             the torn sack and the ranch that tried to lay the father down. \
-             Somewhere the radio still says: if you hear the whistle, remember…"
-        )
+    let stats = if found >= pages as usize {
+        format!("{stats}\n\n{}", l.say(o::WHOLE_TALE))
     } else {
         stats
     };
@@ -1172,96 +1206,73 @@ fn fill_outcome(
         .zip(net.id())
         .is_some_and(|(s, me)| s.left_behind.contains(&me));
     // Who walked tonight, told afterwards: the signs are there to learn.
-    let who = match crate::sim::Variant::of(tuning.0.seed) {
-        crate::sim::Variant::Borracho => "the drunkard's return (El Borracho)",
-        crate::sim::Variant::Hijo => "the son himself (El Hijo)",
-        crate::sim::Variant::Arriero => "the drover (El Arriero)",
-    };
+    let who = l.say(match crate::sim::Variant::of(tuning.0.seed) {
+        crate::sim::Variant::Borracho => o::BORRACHO,
+        crate::sim::Variant::Hijo => o::HIJO,
+        crate::sim::Variant::Arriero => o::ARRIERO,
+    });
     let won = enc.outcome == crate::sim::Outcome::Won;
     let mut marks: Vec<&str> = Vec::new();
     if won && enc.stats.warnings == 0 {
-        marks.push("Silent as the grass (he never saw you)");
+        marks.push(l.say(o::SILENT));
     }
     if won && enc.stats.downs == 0 {
-        marks.push("Unbroken (nobody fell)");
+        marks.push(l.say(o::UNBROKEN));
     }
     if won && enc.stats.revives > 0 {
-        marks.push("Nobody left behind (the fallen got up)");
+        marks.push(l.say(o::NOBODY_LEFT));
     }
     if banished {
-        marks.push("The one who named him");
+        marks.push(l.say(o::NAMED_HIM));
     }
     if won && secs < 8 * 60 {
-        marks.push("Quick hands (out before eight minutes)");
+        marks.push(l.say(o::QUICK));
     }
-    if read.0.len() >= crate::lore::PAGES as usize {
-        marks.push("Keeper of the tale (every page read)");
+    if found >= pages as usize {
+        marks.push(l.say(o::KEEPER));
     }
     if won && left > 0 && !abandoned {
-        marks.push("Every one for themselves (drove off early)");
+        marks.push(l.say(o::EACH_ALONE));
     }
     let marks = if marks.is_empty() {
         String::new()
     } else {
         format!("\n\n{}", marks.join("  ·  "))
     };
-    let stats = format!(
-        "{stats}\n\nTonight it was {who}. Night #{}.{marks}{}",
-        tuning.0.seed,
-        night_awards(&net)
-    );
-    let (title, body) = if enc.outcome == crate::sim::Outcome::Won && banished {
-        (
-            "He is laid to rest.",
-            format!(
-                "You named him at the roots of the ceiba, with his father's bones all home. The whistle unwinds, \
-                 lower and lower, into the rain, and the llano is only the llano again.\n\n{stats}"
-            ),
-        )
+    let seed = tuning.0.seed;
+    let awards = night_awards(&net, l);
+    let stats = match l {
+        Lang::En => format!("{stats}\n\nTonight it was {who}. Night #{seed}.{marks}{awards}"),
+        Lang::Es => format!("{stats}\n\nEsta noche fue {who}. Noche #{seed}.{marks}{awards}"),
+    };
+    let (title, tale) = if enc.outcome == crate::sim::Outcome::Won && banished {
+        (o::RESTED_TITLE, l.say(o::RESTED).to_string())
     } else if won && abandoned {
-        (
-            "They left without you.",
-            format!(
-                "The truck's lights shrink down the road and the engine fades into the rain. The llano is very \
-                 quiet. Somewhere a whistle starts, thin and far away…\n\n{stats}"
-            ),
-        )
+        (o::LEFT_YOU_TITLE, l.say(o::LEFT_YOU).to_string())
     } else if won && left > 0 {
-        (
-            "The truck pulls away.",
-            format!(
-                "You did not wait. In the mirror the llano closes over the ones you left, and somewhere out there \
-                 a whistle goes thin and far away…\n\n{stats}"
-            ),
-        )
+        (o::AWAY_TITLE, l.say(o::LEFT_THEM).to_string())
     } else if enc.outcome == crate::sim::Outcome::Dawn {
-        (
-            "You lived, but he will be back.",
-            format!(
+        let tale = match l {
+            Lang::En => format!(
                 "A rooster crows over the llano and the grey comes up through the rain. The whistle stops mid-note \
                  and he sinks into the grass. {home} of {total} bundles rest in the ceiba's roots; the rest are \
-                 still out there, and so is he.\n\n{stats}"
+                 still out there, and so is he."
             ),
-        )
+            Lang::Es => format!(
+                "Un gallo canta sobre el llano y el gris sube entre la lluvia. El silbido se corta a media nota \
+                 y él se hunde en la paja. {home} de {total} atados descansan en las raíces de la ceiba; los demás \
+                 siguen allá afuera, y él también."
+            ),
+        };
+        (o::DAWN_TITLE, tale)
     } else if enc.outcome == crate::sim::Outcome::Won {
-        (
-            "The truck pulls away.",
-            format!(
-                "Behind you the rain hushes the llano. The bones rest in the ceiba's roots, and somewhere out there \
-                 a whistle goes thin and far away… for now.\n\n{stats}"
-            ),
-        )
+        (o::AWAY_TITLE, l.say(o::AWAY).to_string())
     } else {
-        (
-            "He found you.",
-            format!(
-                "The whistle had gone thin and far away — he was already near.\n\
-                 Next time: stay together, stay in the light, and put walls between you when it fades.\n\n{stats}"
-            ),
-        )
+        (o::FOUND_TITLE, l.say(o::FOUND).to_string())
     };
+    let body = format!("{tale}\n\n{stats}");
     for mut t in &mut q.p0() {
-        set_text(&mut t, title);
+        set_text(&mut t, l.say(title));
     }
     for mut t in &mut q.p1() {
         set_text(&mut t, &body);
