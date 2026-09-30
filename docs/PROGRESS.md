@@ -2,6 +2,17 @@
 
 ## Current handoff — M1b (branch m1b)
 
+**test.4 (merged): verified and tagged `v0.1.0-test.4` (local, not pushed).**
+- Tree: m1b 524a765, clean, Windows/MSVC. The tests and the net smoke ran on the debug build, the zip on the release build, all from this one tree. This note's commit changes only docs, which the fingerprint does not hash.
+- Gate: fmt, check, test (lib 124, district 9, session 64 + 3 ignored), clippy -D warnings, all clean.
+- Route sweeps (150 seeds each, `target\t4\sweep-{normal,gentle,hard}.log`):
+  - Normal: solo 148/150, shared 150/150 (bar 146 met). Failing seeds are solo 76 and 141, the same two recorded below.
+  - Gentle: solo 150/150, shared 150/150 (bar 146 met).
+  - Hard (informational): solo 149/150, shared 145/150 (river baseline 150/141). Failing seeds are solo 147 and shared 13, 19, 61, 94, 127, identical to the wiring-time sweep. The test's own 97% assert fires on the shared 145, as it does at the river baseline; it is not the bar.
+- Net smoke (headless, two processes from this tree's debug exe, 127.0.0.1:5361, about 12.8 minutes): `NET SMOKE PASS host` and `NET SMOKE PASS client`. Fingerprint `NET fingerprint 0x7447a278f501d3ce` on both sides. The exit-code watcher recorded nothing, so the PASS lines and both processes having exited are the evidence (logs `target\t4\host.err`, `client.err`).
+- Package: `tools\package.ps1 0.1.0-test.4` built release and wrote `target\dist\el_silbon-0.1.0-test.4-windows.zip` (109.1 MB, 117 entries). It holds `el_silbon.exe` (byte-identical to `target\release`), `PLAYING.txt`, `assets\branding\whistle-cover.png`, all 82 WAVs (`sting_rage.wav` and the five radio clips, pips included) and no `assets\audio\source`. The exe embeds one icon group with seven images; the extracted 32x32 icon is the hat-and-face silhouette.
+- Still unverified (rendered, user-led): the splash, the SHARED DAWN line, the single strip at a laying, the dots for a watcher at the radio. The net smoke does not reach the 1800 s Dawn; physical-LAN and internet play are untested.
+
 **Integration: the four lanes, the branding, and their wiring (merge commits plus one wiring commit).**
 - Merged into m1b with `git merge --no-ff`, in this order: m1b-rage b8ef64d (4b8de7d), m1b-respiro 47c0a33 (70cfd81), m1b-radio ebc3b3d (ac4c1ca), m1b-spec 4167cb1 (e793303), main c5dd566 (6b768c5). After each merge `cargo check --locked` and `cargo test --locked --lib` were green (lib 102, 108, 115, 115, 124), and after the radio merge every test binary built.
 - Resolutions that carry numbers:
