@@ -472,6 +472,7 @@ fn smoke_exit(
     mut smoke: ResMut<Smoke>,
     screenshots: Query<(), With<Screenshot>>,
     truth: Res<Truth>,
+    net: Res<Network>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(n) = smoke.exit_in else {
@@ -483,6 +484,20 @@ fn smoke_exit(
         return;
     }
     let s = truth.encounter.stats;
+    // DEBUG ONLY: El Respiro's beats from the authoritative session (hidden
+    // AI state, never on the wire): seconds per phase, peaks, hunts and
+    // Relaxes a push ended early, for the first timed nights.
+    if let Some(b) = net
+        .endpoint
+        .as_ref()
+        .and_then(|e| e.debug_session())
+        .map(|s| s.pacing.beats())
+    {
+        info!(
+            "SMOKE PACING (this run): grace {:.0}s build {:.0}s peak {:.0}s fade {:.0}s relax {:.0}s; peaks {} hunts {} early relax exits {}",
+            b.grace, b.build, b.peak, b.fade, b.relax, b.peaks, b.hunts, b.early_exits
+        );
+    }
     if !smoke.frame_ms.is_empty() {
         smoke.frame_ms.sort_by(f64::total_cmp);
         let n = smoke.frame_ms.len();

@@ -1726,7 +1726,7 @@ fn fail_run(s: &mut Vec<Step>, layout: &Layout) {
         },
         Await {
             cond: Cond::Outcome(Outcome::Failed),
-            timeout: 900.0,
+            timeout: 1500.0,
             guard: false,
             leash: Leash::Free,
         },
@@ -1848,7 +1848,7 @@ impl RouteScript {
             Log("waiting for the partner"),
             Await {
                 cond: Cond::Party(2),
-                timeout: 900.0,
+                timeout: 1500.0,
                 guard: false,
                 leash: Leash::Free,
             },
@@ -1906,7 +1906,7 @@ impl RouteScript {
             },
             Await {
                 cond: Cond::Outcome(Outcome::Failed),
-                timeout: 900.0,
+                timeout: 1500.0,
                 guard: false,
                 leash: Leash::Free,
             },
@@ -1950,7 +1950,7 @@ impl RouteScript {
         let mut s = vec![
             Await {
                 cond: Cond::Started,
-                timeout: 900.0,
+                timeout: 1500.0,
                 guard: false,
                 leash: Leash::Free,
             },
@@ -1995,7 +1995,7 @@ impl RouteScript {
             },
             Await {
                 cond: Cond::Outcome(Outcome::Won),
-                timeout: 900.0,
+                timeout: 1500.0,
                 guard: true,
                 leash: Leash::Truck,
             },
@@ -2015,7 +2015,7 @@ impl RouteScript {
             },
             Await {
                 cond: Cond::Outcome(Outcome::Failed),
-                timeout: 900.0,
+                timeout: 1500.0,
                 guard: false,
                 leash: Leash::Free,
             },

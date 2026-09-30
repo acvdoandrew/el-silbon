@@ -23,14 +23,23 @@ pub struct Tally {
     pub caught: u32,
     /// Fastest win, in seconds of the night.
     pub fastest: Option<f32>,
+    /// Nights the rooster ended with bones still out.
+    #[serde(default)]
+    pub dawns: u32,
 }
 
 /// How a night ended, for the tally.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Ending {
-    Escaped { seconds: f32 },
-    Banished { seconds: f32 },
+    Escaped {
+        seconds: f32,
+    },
+    Banished {
+        seconds: f32,
+    },
     Caught,
+    /// Lived till dawn with bones still out: no win, no loss.
+    Dawn,
 }
 
 impl Tally {
@@ -47,6 +56,10 @@ impl Tally {
             }
             Ending::Caught => {
                 self.caught += 1;
+                None
+            }
+            Ending::Dawn => {
+                self.dawns += 1;
                 None
             }
         };
@@ -131,9 +144,11 @@ mod tests {
         p.tally.record(Ending::Escaped { seconds: 500.0 });
         p.tally.record(Ending::Caught);
         p.tally.record(Ending::Banished { seconds: 420.0 });
+        p.tally.record(Ending::Dawn);
         let back = Profile::from_json(&p.to_json()).expect("round trip");
         assert_eq!(back, p);
-        assert_eq!(back.tally.nights, 3);
+        assert_eq!(back.tally.nights, 4);
+        assert_eq!(back.tally.dawns, 1);
         assert_eq!(back.tally.fastest, Some(420.0));
         // A file from an older build (fewer fields) still loads, with defaults.
         let old = Profile::from_json(r#"{"pages":[1,2]}"#).expect("old file");

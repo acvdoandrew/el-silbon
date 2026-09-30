@@ -10,6 +10,7 @@
 //! - [`storm`]: rain, lightning and thunder as functions of the run clock.
 //! - [`skill`]: skill checks while working a long task.
 //! - [`director`]: when the night sends one player an omen.
+//! - [`pacing`]: El Respiro, when he may press and when the night breathes.
 //! - [`survivor`]: who each player is, and how a party shares them out.
 //! - [`mix`]: the volume sliders' decibel curve, the buses and the glide.
 //! - [`display`]: brightness and contrast as the camera's grade.
@@ -36,6 +37,7 @@ pub mod lore;
 pub mod mix;
 pub mod net;
 pub mod noise;
+pub mod pacing;
 pub mod perception;
 pub mod photos;
 pub mod player;

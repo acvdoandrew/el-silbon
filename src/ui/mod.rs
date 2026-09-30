@@ -1160,6 +1160,15 @@ fn fill_outcome(
                  a whistle goes thin and far away…\n\n{stats}"
             ),
         )
+    } else if enc.outcome == crate::sim::Outcome::Dawn {
+        (
+            "You lived, but he will be back.",
+            format!(
+                "A rooster crows over the llano and the grey comes up through the rain. The whistle stops mid-note \
+                 and he sinks into the grass. {home} of {total} bundles rest in the ceiba's roots; the rest are \
+                 still out there, and so is he.\n\n{stats}"
+            ),
+        )
     } else if enc.outcome == crate::sim::Outcome::Won {
         (
             "The truck pulls away.",

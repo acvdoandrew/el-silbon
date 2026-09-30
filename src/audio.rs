@@ -736,7 +736,7 @@ fn play_effects(
             Event::CattleSpooked => (&sounds.cattle, g, 1.0),
             Event::BeaconLit => (&sounds.beacon, g, 1.0),
             Event::Prayed => (&sounds.pray, g * 0.8, 1.0),
-            Event::Escaped => (&sounds.dawn, g * 0.9, 1.0),
+            Event::Escaped | Event::Dawn => (&sounds.dawn, g * 0.9, 1.0),
             _ => continue,
         };
         let kind = match e {

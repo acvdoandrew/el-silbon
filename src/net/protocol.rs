@@ -399,7 +399,7 @@ pub enum ServerMessage {
 /// The sources that decide shared play, the seeded generator they all draw
 /// from and the world noise that shapes the district's terrain and trunks
 /// included.
-const GAMEPLAY: [&str; 15] = [
+const GAMEPLAY: [&str; 16] = [
     include_str!("protocol.rs"),
     include_str!("session.rs"),
     include_str!("../geometry.rs"),
@@ -415,6 +415,7 @@ const GAMEPLAY: [&str; 15] = [
     include_str!("../rng.rs"),
     include_str!("../noise.rs"),
     include_str!("../../Cargo.lock"),
+    include_str!("../pacing.rs"),
 ];
 
 /// Exact gameplay build + seed handshake, rather than assuming layouts/config
@@ -456,6 +457,7 @@ pub fn outcome(code: u8) -> crate::sim::Outcome {
     match code {
         0 => Outcome::Running,
         1 => Outcome::Won,
+        3 => Outcome::Dawn,
         _ => Outcome::Failed,
     }
 }
@@ -466,6 +468,7 @@ pub fn outcome_code(o: crate::sim::Outcome) -> u8 {
         Outcome::Running => 0,
         Outcome::Won => 1,
         Outcome::Failed => 2,
+        Outcome::Dawn => 3,
     }
 }
 
@@ -524,6 +527,7 @@ mod tests {
             crate::sim::Outcome::Running,
             crate::sim::Outcome::Won,
             crate::sim::Outcome::Failed,
+            crate::sim::Outcome::Dawn,
         ] {
             assert_eq!(outcome(outcome_code(o)), o);
         }
