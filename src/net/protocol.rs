@@ -249,6 +249,9 @@ pub struct WorldView {
     pub cattle: f32,
     /// 0..1 through the night.
     pub night: f32,
+    /// The shelf radio's dial (0 off, `i + 1` for `radio::STOPS[i]`).
+    #[serde(default)]
+    pub radio: u8,
 }
 
 /// Tureco as everyone sees him: where he is and faces, and what he does
@@ -399,7 +402,7 @@ pub enum ServerMessage {
 /// The sources that decide shared play, the seeded generator they all draw
 /// from and the world noise that shapes the district's terrain and trunks
 /// included.
-const GAMEPLAY: [&str; 16] = [
+const GAMEPLAY: [&str; 17] = [
     include_str!("protocol.rs"),
     include_str!("session.rs"),
     include_str!("../geometry.rs"),
@@ -416,6 +419,7 @@ const GAMEPLAY: [&str; 16] = [
     include_str!("../noise.rs"),
     include_str!("../../Cargo.lock"),
     include_str!("../pacing.rs"),
+    include_str!("../radio.rs"),
 ];
 
 /// Exact gameplay build + seed handshake, rather than assuming layouts/config

@@ -113,10 +113,12 @@ pub fn note(id: u8) -> Page {
             es: "Aquí también se escucha.\n\
                  Quien reza en voz alta calma el susto, pero la ceiba oye, y él también.\n\
                  Ponga los huesos en sus raíces, uno por uno.\n\
-                 Y para la cajita de la llave: el primer número es el {D1}, como las velas que no se apagan.",
+                 Y para la cajita de la llave: los números no están escritos. Los dice la radio de la casa, \
+                 la Voz del Llano; la etiqueta del candado dice dónde buscarla en el dial.",
             en: "Here, too, he listens. Whoever prays aloud eases their fright, but the ceiba hears, and so does he. \
                  Lay the bones at its roots, one by one. \
-                 And for the little key box: the first number is {D1}, like the candles that never go out.",
+                 And for the little key box: the numbers are not written down. The house radio says them, \
+                 La Voz del Llano; the tag on the padlock says where to find it on the dial.",
             by: "— la Madrina",
         },
         4 => Page {
@@ -124,10 +126,12 @@ pub fn note(id: u8) -> Page {
             title: "En la cabina de la torre · In the lookout cabin",
             es: "Encendí el farol de la torre y vino derecho a la luz. Dura poco y tarda en poder encenderse otra vez.\n\
                  Desde arriba se ve todo el llano.\n\
-                 El capataz me dio el último número del candado: {D3}. Que no se me olvide.",
+                 El capataz no escribe los números del candado: los dicta la radio, pitido por pitido. \
+                 Un pitido largo es un cero.",
             en: "I lit the tower lantern and he came straight to the light. It burns briefly and takes a long while \
                  before it can be lit again. From up here you can see the whole llano. A friend on the ground can work in peace. \
-                 The foreman gave me the padlock's last number: {D3}. I must not forget it.",
+                 The foreman won't write the padlock's numbers down: the radio reads them out, pip by pip. \
+                 A long tone is a zero.",
             by: "— guardia, turno de noche",
         },
         5 => Page {
@@ -278,15 +282,15 @@ pub fn note(id: u8) -> Page {
                  14 nov. — Llevamos dos a la ceiba. Desde entonces silba más seguido y ya no espera.\n\
                  15 nov. — Rufino no volvió del caño.\n\
                  16 nov. — Dejé la camioneta en el puente, lista. La llave, en la cajita sobre las cajas del molino, con candado de tres \
-                 números: el primero lo guarda la Madrina en la ceiba, el segundo es el {D2}, el tercero se lo di al guardia \
-                 de la torre. Cuando ronque el motor, él viene: hay que aguantar a que caliente y subirse todos. Todos.",
+                 números. No los apunto, que él lee: los repite la radio del estante, en la frecuencia de la etiqueta del \
+                 candado. Si truena, hay que esperar la vuelta siguiente. Cuando ronque el motor, él viene: hay que aguantar a que caliente y subirse todos. Todos.",
             en: "12 Nov. — Another steer woke up with white eyes.\n\
                  13 Nov. — We gathered the bones into five sacks. They weigh more than they should.\n\
                  14 Nov. — We took two to the ceiba. Since then he whistles more often and no longer waits.\n\
                  15 Nov. — Rufino did not come back from the caño.\n\
                  16 Nov. — I left the truck at the bridge, ready. The key is in the little box on the crates by the windmill, under a \
-                 three-number padlock: the Madrina keeps the first at the ceiba, the second is {D2}, the third I gave to the \
-                 tower guard. When the engine roars he comes: you have to hold out until it warms up, and everyone get on. Everyone.",
+                 three-number padlock. I won't write them down, he reads: the shelf radio repeats them, on the frequency on \
+                 the padlock's tag. If it thunders, wait for the next round. When the engine roars he comes: you have to hold out until it warms up, and everyone get on. Everyone.",
             by: "— el capataz",
         },
         17 => Page {
@@ -344,19 +348,74 @@ pub fn note(id: u8) -> Page {
     }
 }
 
-/// A page's words with the night's padlock digits written in (`{D1}`,
-/// `{D2}`, `{D3}`).
-pub fn fill(text: &str, code: [u8; 3]) -> String {
-    text.replace("{D1}", &code[0].to_string())
-        .replace("{D2}", &code[1].to_string())
-        .replace("{D3}", &code[2].to_string())
+/// La Madrina's tale, one chapter for each bundle laid at the ceiba and a
+/// last one when all the bones are home. The last line of each hints at
+/// what he learns as his anger grows.
+pub struct Chapter {
+    pub title: &'static str,
+    pub es: &'static str,
+    pub en: &'static str,
 }
 
-/// A page's words as the journal keeps them: a dot where a padlock digit
-/// was. The journal outlives the night, so its copy carries no code; each
-/// night's digits are read on the pages where they lie.
-pub fn keep(text: &str) -> String {
-    text.replace("{D1}", "·").replace("{D2}", "·").replace("{D3}", "·")
+/// How many chapters the Madrina tells.
+pub const CHAPTERS: u8 = 6;
+
+/// Chapter `n` (1..=`CHAPTERS`).
+pub fn chapter(n: u8) -> Option<Chapter> {
+    let c = |title, es, en| Some(Chapter { title, es, en });
+    match n {
+        1 => c(
+            "I · Las asaduras · The entrails",
+            "Era un muchacho malcriado. Le pidió a su padre las asaduras de un venado, y no quiso otra cosa.\n\
+             Cada hueso que vuelve a la ceiba lo despierta más: silbará más seguido.",
+            "He was a spoiled boy. He demanded a deer's entrails from his father, and would have nothing else. \
+             Every bone that comes home to the ceiba wakes him more: he will whistle more often.",
+        ),
+        2 => c(
+            "II · El padre · The father",
+            "El padre volvió sin venado. El muchacho lo mató, le sacó las asaduras y se las llevó a su madre para que las cocinara.\n\
+             Ahora una linterna encendida lo llama desde más lejos.",
+            "The father came home without a deer. The boy killed him, took out his entrails and brought them to his mother to cook. \
+             Now a lit torch calls him from farther away.",
+        ),
+        3 => c(
+            "III · El botalón · The post",
+            "El abuelo lo amarró a un botalón, lo azotó con un chaparro, le echó ají en las heridas y le soltó al perro.\n\
+             Ya conoce el pajonal: entre la paja alta te encuentra desde más lejos.",
+            "The grandfather tied him to a post, whipped him with a chaparro switch, rubbed hot pepper into the wounds \
+             and set the dog on him. He knows the tall grass now: he finds you in it from farther off.",
+        ),
+        4 => c(
+            "IV · La maldición · The curse",
+            "Y lo maldijo: cargarás los huesos de tu padre en un saco, para siempre, y silbarás para que todos sepan que vienes.\n\
+             Se le acaba la paciencia: cada hueso lo enfurece más.",
+            "And he cursed him: you will carry your father's bones in a sack, forever, and whistle so all will know you are coming. \
+             His patience is running out: every bone angers him more.",
+        ),
+        5 => c(
+            "V · Noche de tormenta · The storm night",
+            "En Santa Rosa lo oímos una noche de tormenta, y los huesos se regaron por todo el hato.\n\
+             Cuando ronque el motor, vendrá: el motor lo llama.",
+            "At Santa Rosa we heard him on a storm night, and the bones were scattered all over the ranch. \
+             When the engine roars he will come: the engine calls him.",
+        ),
+        6 => c(
+            "VI · Todos en casa · All home",
+            "Todos los huesos están en la ceiba. Ahora, antes del alba, nómbralo bien.",
+            "All the bones are at the ceiba. Now, before dawn, name him rightly.",
+        ),
+        _ => None,
+    }
+}
+
+/// How many chapters have been told once `delivered` of `total` bundles lie
+/// at the ceiba: one for each bundle laid, and the last when all are home.
+pub fn chapters_told(delivered: u8, total: u8) -> u8 {
+    if total > 0 && delivered >= total {
+        CHAPTERS
+    } else {
+        delivered.min(CHAPTERS - 1)
+    }
 }
 
 /// The lettering on a painted board, one string per line. Capitals and
@@ -388,32 +447,31 @@ mod tests {
 
     #[test]
     fn the_journal_never_tells_a_nights_code() {
-        // The journal outlives the night: its copy of a page matches no
-        // night's padlock, while the page on its site still tells each digit.
-        let codes: Vec<[u8; 3]> = (0..300).map(crate::sim::lock_code).collect();
-        let mut told = [false; 3];
+        // The radio reads the code out; no page or chapter has a blank for a
+        // night's digit, so what the journal keeps is the same every night.
         for id in 0..PAGES {
             let page = note(id);
-            for text in [page.es, page.en] {
-                let kept = keep(text);
-                assert!(!kept.contains("{D"), "page {id} keeps a blank");
-                let carries = fill(text, [1, 2, 3]) != fill(text, [4, 5, 6]);
-                for code in &codes {
-                    let placed = fill(text, *code);
-                    assert!(!placed.contains("{D"), "page {id} leaves a blank");
-                    if carries {
-                        assert_ne!(kept, placed, "page {id} tells {code:?} in the journal");
-                    } else {
-                        assert_eq!(kept, placed, "page {id} reads differently in the journal");
-                    }
-                }
-                for (i, t) in told.iter_mut().enumerate() {
-                    let mut other = [1, 1, 1];
-                    other[i] = 2;
-                    *t |= fill(text, [1, 1, 1]) != fill(text, other);
-                }
+            for text in [page.title, page.es, page.en, page.by] {
+                assert!(!text.contains('{'), "page {id} still has a blank for a digit");
             }
         }
-        assert_eq!(told, [true; 3], "every digit is on some page's site");
+        for n in 1..=CHAPTERS {
+            let c = chapter(n).expect("every chapter is written");
+            for text in [c.title, c.es, c.en] {
+                assert!(!text.is_empty() && !text.contains('{'), "chapter {n}");
+            }
+        }
+        assert!(chapter(0).is_none() && chapter(CHAPTERS + 1).is_none());
+    }
+
+    #[test]
+    fn each_bundle_laid_tells_the_next_chapter_and_all_home_the_last() {
+        let total = 5;
+        assert_eq!(chapters_told(0, total), 0);
+        for laid in 1..total {
+            assert_eq!(chapters_told(laid, total), chapters_told(laid - 1, total) + 1);
+        }
+        assert_eq!(chapters_told(total, total), CHAPTERS, "all home: the tale ends");
+        assert_eq!(chapters_told(0, 0), 0);
     }
 }

@@ -575,6 +575,11 @@ impl Session {
                 self.noises.push((ground(layout.district.panel), tuning.noise_unlock));
             }
             TargetKind::Note(_) => {}
+            TargetKind::Radio => {
+                // Anyone can turn it, it changes for everyone, and it squeals.
+                self.encounter.turn_dial(&mut ev);
+                self.noises.push((ground(layout.district.radio), tuning.noise_dial));
+            }
             _ => return Err("Hold interact to use that.".into()),
         }
         self.events.extend(ev.into_iter().map(|e| (None, e)));
@@ -1757,6 +1762,7 @@ impl Session {
                 naming: progress.naming_cooldown,
                 cattle: progress.cattle_alarm,
                 night: (self.encounter.elapsed / tuning.night_length).clamp(0.0, 1.0),
+                radio: progress.radio,
             },
             elapsed: self.encounter.elapsed,
             stats: [

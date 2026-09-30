@@ -83,7 +83,7 @@ pub(crate) fn objectives(
         format!("{} Engine warming: {:.0}%", tick(false), w.warm * 100.0)
     } else if bones_home && power_on && !w.key {
         format!(
-            "{} Open the key box at the windmill (three numbers, written in the pages)",
+            "{} Open the key box at the windmill (three numbers, read out by the house radio)",
             tick(false)
         )
     } else {
@@ -108,7 +108,7 @@ pub(crate) fn objectives(
         "The bones are home. Now the windmill: hold E at the pump to bring the lights back. It is loud. \
          Or, if you know which of him walks tonight, name him at the ceiba (N)."
     } else if !w.key {
-        "The truck key is padlocked in a box on the crates by the windmill. The Madrina, the foreman and the tower guard each wrote down one number."
+        "The truck key is padlocked in a box on the crates by the windmill. A tag on it names a frequency: the shelf radio in the house reads the numbers out, in pips."
     } else if !running {
         "Hold E at the truck's ignition. The engine will roar, and he will come."
     } else if !ready {
@@ -388,6 +388,7 @@ fn prompt_for(t: &Target, note_open: bool, carrying: usize, bones_home: bool) ->
         TargetKind::Dog => "[Hold E] Untie Tureco — he fears nothing, and HE fears dogs",
         TargetKind::Panel => "[E] Switch the lamp lines — the old dynamo carries only two",
         TargetKind::Body(_) => "[Hold E] Help them up",
+        TargetKind::Radio => "[E] Turn the radio's dial — it squeals",
     };
     if close && !matches!(t.kind, TargetKind::Ignition if t.blocked.is_some()) {
         let name = text.split_once(']').map_or(text, |(_, rest)| rest.trim_start());
@@ -407,6 +408,7 @@ pub(crate) fn prompt(
     target: Res<CurrentTarget>,
     note: Res<NoteOpen>,
     state: Res<State<Flow>>,
+    tuning: Res<TuningRes>,
     mut q: ParamSet<(
         Query<&mut Text, With<PromptText>>,
         Query<&mut Text, With<ProgressLabel>>,
@@ -431,6 +433,22 @@ pub(crate) fn prompt(
             ),
             None => String::new(),
         }
+    };
+    // The dial shows where it stands; a tag on the padlock names tonight's
+    // numbers station.
+    let text = match target.0.map(|t| t.kind) {
+        Some(TargetKind::Radio) if !text.is_empty() => {
+            let dial = net.snapshot().map_or(0, |s| s.world.radio);
+            match crate::radio::frequency(dial) {
+                Some(kc) => format!("{text}   ·   {kc} kc"),
+                None => format!("{text}   ·   off"),
+            }
+        }
+        Some(TargetKind::Lockbox) if !text.is_empty() => {
+            let kc = crate::radio::STOPS[crate::radio::numbers_stop(tuning.0.seed)];
+            format!("{text}   ·   a tag on it reads «{kc} kc»")
+        }
+        _ => text,
     };
     for mut t in &mut q.p0() {
         set_text(&mut t, &text);
@@ -982,6 +1000,86 @@ pub(crate) fn hints_and_captions(
     }
 }
 
+/// Within reach of the shelf radio on the numbers station, the pips as dots,
+/// whatever the captions setting: the way to read the code without sound.
+pub(crate) fn radio_dots(
+    state: Res<State<Flow>>,
+    net: Res<Network>,
+    layout: Res<LayoutRes>,
+    tuning: Res<TuningRes>,
+    player: Single<&crate::player::Player>,
+    mut q: Query<&mut Text, With<super::RadioDots>>,
+) {
+    let d = &layout.0.district;
+    let seed = tuning.0.seed;
+    let near = player.pose.pos.distance(Vec2::new(d.radio.x, d.radio.z)) <= tuning.0.radio_reach;
+    let text = match net.snapshot() {
+        Some(s)
+            if near
+                && *state.get() == Flow::Playing
+                && crate::radio::station(seed, s.world.radio) == Some(crate::radio::Station::Numbers) =>
+        {
+            crate::radio::dots(seed, crate::sim::lock_code(seed), s.elapsed as f64)
+        }
+        _ => String::new(),
+    };
+    for mut t in &mut q {
+        set_text(&mut t, &text);
+    }
+}
+
+/// How long the Madrina's strip shows each chapter.
+const CHAPTER_SECS: f32 = 14.0;
+
+/// Each bundle laid at the ceiba, the Madrina tells the next chapter in her
+/// own strip, Spanish over English, apart from the hints. The count is the
+/// shared one, so everyone reads the same chapter at the same moment.
+pub(crate) fn madrina_strip(
+    time: Res<Time<Real>>,
+    state: Res<State<Flow>>,
+    net: Res<Network>,
+    mut shown: Local<(u64, u8, f32)>,
+    mut q: ParamSet<(
+        Query<&mut Visibility, With<super::MadrinaStrip>>,
+        Query<&mut Text, With<super::MadrinaEs>>,
+        Query<&mut Text, With<super::MadrinaEn>>,
+    )>,
+) {
+    let (run, told) = net.snapshot().map_or((0, 0), |s| {
+        (s.run, crate::lore::chapters_told(s.world.delivered, s.world.total))
+    });
+    let (last_run, last, left) = &mut *shown;
+    if *last_run != run || told < *last {
+        // A new night (or a restart) starts the tale over, silently.
+        *last_run = run;
+        *last = told;
+        *left = 0.0;
+    }
+    let playing = *state.get() == Flow::Playing;
+    if playing {
+        *left -= time.delta_secs();
+    }
+    // The next untold chapter, one at a time (the last two come together).
+    let current = if *left <= 0.0 && *last < told {
+        *last += 1;
+        *left = CHAPTER_SECS;
+        *last
+    } else {
+        *last
+    };
+    let chapter = crate::lore::chapter(current).filter(|_| playing && *left > 0.0);
+    for mut v in &mut q.p0() {
+        set_vis(&mut v, chapter.is_some());
+    }
+    let (es, en) = chapter.map_or(("", ""), |c| (c.es, c.en));
+    for mut t in &mut q.p1() {
+        set_text(&mut t, es);
+    }
+    for mut t in &mut q.p2() {
+        set_text(&mut t, en);
+    }
+}
+
 pub(crate) fn name_panel(
     state: Res<State<Flow>>,
     naming: Res<crate::encounter::NamePanel>,
@@ -1037,7 +1135,6 @@ pub(crate) fn lock_panel(
 }
 
 pub(crate) fn note_panel(
-    tuning: Res<TuningRes>,
     state: Res<State<Flow>>,
     note: Res<NoteOpen>,
     read: Res<crate::encounter::PagesRead>,
@@ -1059,8 +1156,7 @@ pub(crate) fn note_panel(
         return;
     };
     let page = crate::lore::note(id);
-    let code = crate::sim::lock_code(tuning.0.seed);
-    let (es, en) = (crate::lore::fill(page.es, code), crate::lore::fill(page.en, code));
+    let (es, en) = (page.es, page.en);
     let [r, g, b] = page.medium.paper();
     for mut bg in &mut paper {
         let want = Color::srgba(r, g, b, 0.97);
@@ -1086,7 +1182,7 @@ pub(crate) fn note_panel(
         read.0.len(),
         crate::lore::PAGES
     );
-    let lines: [(&str, Color); 5] = [(&es, ink), (&en, soft), (page.by, ink), (&title, soft), (&count, soft)];
+    let lines: [(&str, Color); 5] = [(es, ink), (en, soft), (page.by, ink), (&title, soft), (&count, soft)];
     let apply = |i: usize, t: &mut Text, c: &mut TextColor| {
         set_text(t, lines[i].0);
         if c.0 != lines[i].1 {

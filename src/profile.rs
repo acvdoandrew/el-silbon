@@ -83,6 +83,9 @@ pub struct Profile {
     /// The brightness calibration has been offered (once, on the first
     /// title screen; an older profile has not seen it).
     pub calibrated: bool,
+    /// The Madrina's chapters heard (1..=`lore::CHAPTERS`), over every night.
+    #[serde(default)]
+    pub chapters: BTreeSet<u8>,
 }
 
 impl Profile {

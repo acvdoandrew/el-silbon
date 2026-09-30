@@ -166,10 +166,12 @@ pub enum Event {
     OmenFalseMark,
     /// The rooster crows: he sinks for the night.
     Dawn,
+    /// Someone turned the shelf radio's dial: it squeals for everyone.
+    RadioTuned,
 }
 
 impl Event {
-    pub const ALL: [Event; 52] = [
+    pub const ALL: [Event; 53] = [
         Event::RelicTaken,
         Event::ThreatManifested,
         Event::WarningBegan,
@@ -222,6 +224,7 @@ impl Event {
         Event::OmenFootsteps,
         Event::OmenFalseMark,
         Event::Dawn,
+        Event::RadioTuned,
     ];
 
     pub fn from_code(code: u8) -> Option<Event> {
@@ -385,6 +388,9 @@ pub struct Progress {
     pub cattle_alarm: f32,
     pub cattle_cooldown: f32,
     pub cattle_spook: f32,
+    /// The shelf radio's dial, shared by everyone: 0 off, `i + 1` for
+    /// `radio::STOPS[i]`.
+    pub radio: u8,
 }
 
 impl Progress {
@@ -405,6 +411,7 @@ impl Progress {
             cattle_alarm: 0.0,
             cattle_cooldown: 0.0,
             cattle_spook: 0.0,
+            radio: 0,
         }
     }
 
@@ -501,8 +508,8 @@ impl Variant {
 }
 
 /// The combination of the padlock on the truck key's box: three digits, a
-/// fresh one every seed, written into three of the hacienda's pages (see
-/// `lore::fill`).
+/// fresh one every seed, read out by the radio's numbers station (see
+/// `radio`).
 pub fn lock_code(seed: u64) -> [u8; 3] {
     let mut rng = Rng::fork(seed, 0x10CC);
     [1 + rng.below(9) as u8, rng.below(10) as u8, rng.below(10) as u8]
@@ -737,6 +744,12 @@ impl Encounter {
         self.progress.circuits = CIRCUIT_SETTINGS[(at + 1) % CIRCUIT_SETTINGS.len()];
         events.push(Event::LinesSwitched);
         true
+    }
+
+    /// Turn the shelf radio's dial to its next stop (off after the last).
+    pub fn turn_dial(&mut self, events: &mut Vec<Event>) {
+        self.progress.radio = crate::radio::turned(self.progress.radio);
+        events.push(Event::RadioTuned);
     }
 
     /// Try a combination on the key box's padlock.

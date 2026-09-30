@@ -109,6 +109,16 @@ pub(crate) struct SkillNeedle;
 pub(crate) struct SkillKey;
 #[derive(Component)]
 pub(crate) struct CaptionText;
+/// The numbers station's dots, near the radio whatever the captions setting.
+#[derive(Component)]
+pub(crate) struct RadioDots;
+/// The Madrina's chapter strip, and its two lines.
+#[derive(Component)]
+pub(crate) struct MadrinaStrip;
+#[derive(Component)]
+pub(crate) struct MadrinaEs;
+#[derive(Component)]
+pub(crate) struct MadrinaEn;
 #[derive(Component)]
 pub(crate) struct HintText;
 #[derive(Component)]
@@ -204,6 +214,7 @@ impl Plugin for HudPlugin {
                         hud::downed_panel,
                         hud::watch_line,
                         hud::hints_and_captions,
+                        (hud::radio_dots, hud::madrina_strip),
                         hud::note_panel,
                         hud::lock_panel,
                         hud::name_panel,
@@ -642,6 +653,59 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, map_image: Res<map
                 )],
             ));
 
+            // The radio's dots (above the caption).
+            root.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    bottom: percent(12),
+                    width: percent(100),
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+                children![(
+                    RadioDots,
+                    Text::new(""),
+                    font(&f.sans, 22.0),
+                    TextColor(Color::srgb(0.95, 0.86, 0.62)),
+                    TextShadow::default(),
+                )],
+            ));
+
+            // The Madrina's chapter (top centre, under the objectives' line).
+            root.spawn((
+                MadrinaStrip,
+                Visibility::Hidden,
+                Node {
+                    position_type: PositionType::Absolute,
+                    top: percent(14),
+                    left: percent(20),
+                    width: percent(60),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: px(6),
+                    padding: UiRect::axes(px(18), px(10)),
+                    border_radius: BorderRadius::all(px(6)),
+                    ..default()
+                },
+                BackgroundColor(PANEL_BG),
+                children![
+                    (
+                        MadrinaEs,
+                        Text::new(""),
+                        font(&f.serif, 18.0),
+                        TextColor(Color::srgb(0.96, 0.9, 0.78)),
+                        TextLayout::justify(Justify::Center),
+                    ),
+                    (
+                        MadrinaEn,
+                        Text::new(""),
+                        font(&f.italic, 15.0),
+                        TextColor(Color::srgb(0.8, 0.78, 0.72)),
+                        TextLayout::justify(Justify::Center),
+                    ),
+                ],
+            ));
+
             // Vitals (bottom left): susto, breath, peppers and load.
             root.spawn((
                 Node {
@@ -753,7 +817,7 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, map_image: Res<map
                         c.spawn((
                             Text::new(
                                 "Find the five bundles and lay them at the ceiba · restore power at the windmill · open \
-                                 the padlocked key box (its numbers are in the pages) · start the truck and survive its \
+                                 the padlocked key box (the house radio reads its numbers out) · start the truck and survive its \
                                  roar. Or learn which of him walks tonight and name him at the ceiba. Keep the rhythm \
                                  of the work (Space). Your torch runs down and its beam draws him. Ají stops him for a \
                                  while; Tureco, if you untie him, knows where he is. Get the fallen out of his sack.",

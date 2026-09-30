@@ -2003,6 +2003,86 @@ def make_sting_rage(rng):
     room = reverb(out, size=1.5, damp=0.6, feedback=0.8)
     out = [d * 0.75 + r * 0.35 for d, r in zip(out + silence(0.6), room + silence(0.6))]
     return normalize(fade(out, 0.01, 0.8), 0.75)
+def radio_tone(seconds, freq, rng):
+    """A numbers-station tone through a small speaker: a sine with a little
+    second harmonic, a touch of hiss, band-limited like AM."""
+    n = int(seconds * SR)
+    hiss = noise(rng, n)
+    out = [0.0] * n
+    for i in range(n):
+        t = i / SR
+        out[i] = math.sin(TAU * freq * t) + 0.25 * math.sin(TAU * 2.0 * freq * t) + 0.05 * hiss[i]
+    out = one_pole_lowpass(one_pole_highpass(out, 300.0), 3400.0)
+    return fade(out, 0.006, 0.02)
+
+
+def make_pip_short(rng):
+    """One short pip of the numbers station (the radio plays one per unit)."""
+    return normalize(radio_tone(0.12, 1000.0, rng), 0.5)
+
+
+def make_pip_long(rng):
+    """The long tone that reads a zero."""
+    return normalize(radio_tone(1.2, 1000.0, rng), 0.5)
+
+
+def make_pip_ident(rng):
+    """The station's ident that opens each reading: three falling notes."""
+    out = silence(1.6)
+    for k, f in enumerate((1318.5, 1174.7, 880.0)):
+        mix(out, radio_tone(0.42, f, rng), int(k * 0.5 * SR), 0.9)
+    return normalize(out, 0.45)
+
+
+def make_radio_static(rng):
+    """An empty stop on the dial: AM hiss that breathes, and crackle. A
+    seamless 6 s loop; also the burst when lightning swallows a digit."""
+    loop, xfade = 6.0, 0.5
+    n = int((loop + xfade) * SR)
+    hiss = biquad_bandpass(noise(rng, n), 1800.0, 0.5)
+    out = [0.0] * n
+    for i in range(n):
+        t = i / SR
+        out[i] = hiss[i] * (0.6 + 0.3 * math.sin(TAU * t / 3.0) + 0.1 * math.sin(TAU * 0.7 * t))
+    t = 0.0
+    while t < loop + xfade - 0.01:
+        t += rng.expovariate(14.0)
+        i0 = int(t * SR)
+        amp = rng.uniform(0.3, 1.0)
+        for k in range(int(0.003 * SR)):
+            if i0 + k < n:
+                out[i0 + k] += rng.uniform(-1.0, 1.0) * amp * math.exp(-k / (0.0006 * SR))
+    out = one_pole_lowpass(one_pole_highpass(out, 250.0), 3600.0)
+    return normalize(loop_crossfade(out, loop, xfade), 0.5)
+
+
+def make_dial_squeal(rng):
+    """The dial turned: a heterodyne whine sweeping through the stations,
+    with a clunk of the knob."""
+    n = int(0.9 * SR)
+    out = [0.0] * n
+    ph = 0.0
+    hiss = noise(rng, n)
+    for i in range(n):
+        t = i / SR
+        f = 2600.0 - 1900.0 * (t / 0.9) + 300.0 * math.sin(TAU * 5.0 * t)
+        ph += TAU * f / SR
+        env = min(1.0, t / 0.02) * max(0.0, 1.0 - t / 0.9)
+        out[i] = (math.sin(ph) * 0.7 + hiss[i] * 0.3) * env
+    damped(out, 0.0, 180.0, 0.03, 0.6)
+    out = one_pole_lowpass(one_pole_highpass(out, 200.0), 4000.0)
+    return normalize(fade(out, 0.002, 0.08), 0.55)
+
+
+def make_radio_numbers():
+    """La Voz del Llano (seeds 9100-9199): the numbers station and the dial."""
+    return {
+        "radio_pip.wav": make_pip_short(random.Random(9100)),
+        "radio_pip_long.wav": make_pip_long(random.Random(9101)),
+        "radio_ident.wav": make_pip_ident(random.Random(9102)),
+        "radio_static.wav": make_radio_static(random.Random(9103)),
+        "radio_squeal.wav": make_dial_squeal(random.Random(9104)),
+    }
 
 
 def make_horror():
@@ -2075,6 +2155,7 @@ def main():
     # A second, independent stream: adding sounds never changes the older files.
     files.update(make_mechanics(random.Random(SEED + 1)))
     files.update(make_horror())
+    files.update(make_radio_numbers())
 
     write_all(args.out, files)
 
