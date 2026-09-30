@@ -123,16 +123,23 @@ impl Rig {
     /// Hold interact for `secs`, answering every skill check just inside
     /// the start of its zone, as a practised hand does.
     fn work(&mut self, id: u64, secs: f32) {
+        self.work_all(&[id], secs);
+    }
+
+    /// `work` for several players at once, all holding on together.
+    fn work_all(&mut self, ids: &[u64], secs: f32) {
         for _ in 0..(secs / STEP) as usize {
-            self.send(id, [0.0; 2], true, false, false);
-            let t = &self.t;
-            let press = self.s.players[&id]
-                .rhythm
-                .check
-                .filter(|c| c.needle(t) >= c.zone + t.check_great * 0.5)
-                .map(|c| (c.id, c.needle(t)));
-            if let Some((check, needle)) = press {
-                self.act(id, Action::Skill { id: check, needle }).unwrap();
+            for &id in ids {
+                self.send(id, [0.0; 2], true, false, false);
+                let t = &self.t;
+                let press = self.s.players[&id]
+                    .rhythm
+                    .check
+                    .filter(|c| c.needle(t) >= c.zone + t.check_great * 0.5)
+                    .map(|c| (c.id, c.needle(t)));
+                if let Some((check, needle)) = press {
+                    self.act(id, Action::Skill { id: check, needle }).unwrap();
+                }
             }
             self.tick();
         }
@@ -501,24 +508,27 @@ fn long_tasks_ask_for_skill_checks_a_miss_screeches_and_a_great_press_speeds_the
             r.s.players[&HOST].hold_kind, r.s.encounter.progress.power
         );
     };
-    // Let it sweep past: a miss the whole llano hears, and work lost.
+    // Let it sweep past: the pump ends up behind where the warning found it,
+    // and the hands are thrown off for a moment.
     let mut r = rig(HOST);
-    until_sweep(&mut r);
+    let mut warned = None;
+    for _ in 0..(8.0 / STEP) as usize {
+        r.send(HOST, [0.0; 2], true, false, false);
+        r.tick();
+        if r.s.players[&HOST].rhythm.check.is_some() {
+            warned = Some(r.s.encounter.progress.power);
+            break;
+        }
+    }
+    let warned = warned.expect("a skill check within 8 s of cranking");
     assert!(r.events(HOST).contains(&Event::SkillCheck), "the worker is warned");
+    until_sweep(&mut r);
     let snap = r.s.snapshot(HOST, &r.l, &r.t);
     let c = snap.me.check.expect("the check is in the worker's snapshot");
     assert!(c.needle > 0.0 && c.zone >= r.t.check_zone_at.0);
-    // He stands calm somewhere he can hear the pump.
-    let th = &mut r.s.encounter.threat;
-    th.state = ThreatState::Stalking;
-    th.presence = Presence::Present;
-    th.pos = ground(r.l.district.pump) + Vec2::new(25.0, 0.0);
-    th.focus = None;
     let fear = r.s.players[&HOST].body.fear;
-    let mut before = r.s.encounter.progress.power;
     let mut missed = false;
     for _ in 0..(2.0 / STEP) as usize {
-        before = before.max(r.s.encounter.progress.power);
         r.send(HOST, [0.0; 2], true, false, false);
         r.tick();
         if r.s.players[&HOST].rhythm.check.is_none() {
@@ -527,10 +537,25 @@ fn long_tasks_ask_for_skill_checks_a_miss_screeches_and_a_great_press_speeds_the
         }
     }
     assert!(missed, "the unanswered check swept past");
-    assert!(r.s.encounter.progress.power < before, "a miss costs work");
-    assert!(r.s.encounter.threat.focus.is_some(), "he heard the screech");
+    let after = r.s.encounter.progress.power;
+    assert!(
+        after < warned,
+        "a miss costs more than the check let him win: {after} after, {warned} at the warning"
+    );
     assert!(r.s.players[&HOST].body.fear > fear, "the worker startles");
     assert!(r.events(HOST).contains(&Event::SkillMissed));
+    // The crank kicks back: holding on does nothing for a moment...
+    for _ in 0..(r.t.check_stall * 0.9 / STEP) as usize {
+        r.send(HOST, [0.0; 2], true, false, false);
+        r.tick();
+        assert_eq!(
+            r.s.encounter.progress.power, after,
+            "no work while the hands are thrown off"
+        );
+    }
+    // ...then the work goes on.
+    r.hold(HOST, r.t.check_stall * 0.2 + 0.5);
+    assert!(r.s.encounter.progress.power > after, "the work resumes");
     // A press at the start of the zone is great and speeds the work.
     let mut r = rig(HOST);
     until_sweep(&mut r);
@@ -567,6 +592,150 @@ fn long_tasks_ask_for_skill_checks_a_miss_screeches_and_a_great_press_speeds_the
     r.idle(3.0);
     assert!(r.s.players[&HOST].rhythm.check.is_none());
     assert_eq!(r.s.encounter.progress.power, power);
+}
+
+/// Stand at a long task: the pump, or the ignition with everything it needs.
+fn at_task(truck: bool) -> Rig {
+    let mut r = Rig::new(1);
+    r.calm = true;
+    let site = if truck {
+        for x in r.s.encounter.progress.relics.iter_mut() {
+            *x = Relic::Delivered;
+        }
+        r.s.encounter.progress.power = 1.0;
+        r.s.encounter.progress.key = true;
+        r.l.district.ignition
+    } else {
+        r.l.district.pump
+    };
+    let side = if truck {
+        Vec2::new(0.0, -1.7)
+    } else {
+        Vec2::new(0.0, 1.45)
+    };
+    r.stand(HOST, ground(site) + side, site);
+    r
+}
+
+fn task_progress(r: &Rig, truck: bool) -> f32 {
+    let p = &r.s.encounter.progress;
+    if truck { p.truck } else { p.power }
+}
+
+#[test]
+fn a_task_cannot_be_finished_under_a_pending_check() {
+    for truck in [false, true] {
+        let mut r = at_task(truck);
+        for _ in 0..(8.0 / STEP) as usize {
+            r.send(HOST, [0.0; 2], true, false, false);
+            r.tick();
+            if r.s.players[&HOST].rhythm.check.is_some() {
+                break;
+            }
+        }
+        assert!(r.s.players[&HOST].rhythm.check.is_some(), "a check came");
+        // Nearly done: the last turn still waits on the rhythm.
+        if truck {
+            r.s.encounter.progress.truck = 0.97;
+        } else {
+            r.s.encounter.progress.power = 0.97;
+        }
+        let mut missed = false;
+        for _ in 0..(3.0 / STEP) as usize {
+            r.send(HOST, [0.0; 2], true, false, false);
+            r.tick();
+            if r.s.players[&HOST].rhythm.check.is_none() {
+                missed = true;
+                break;
+            }
+            assert!(
+                task_progress(&r, truck) < 1.0,
+                "finished under a pending check (truck: {truck})"
+            );
+        }
+        assert!(missed, "the check swept past (truck: {truck})");
+        assert!(r.events(HOST).contains(&Event::SkillMissed));
+        assert!(
+            task_progress(&r, truck) < 0.97,
+            "the miss threw the work back (truck: {truck})"
+        );
+        let p = &r.s.encounter.progress;
+        assert!(if truck { !p.truck_running() } else { !p.power_on() });
+    }
+}
+
+#[test]
+fn a_miss_carries_beyond_the_noise_of_the_work_it_spoils() {
+    use el_silbon::sim::Variant;
+    for truck in [false, true] {
+        let mut r = at_task(truck);
+        // A still, dry night: nothing masks either noise.
+        r.t.rain_mask = 0.0;
+        r.t.thunder_mask = 0.0;
+        r.idle(0.1);
+        let (site, work) = if truck {
+            (ground(r.l.district.ignition), r.t.noise_truck)
+        } else {
+            (ground(r.l.district.pump), r.t.noise_pump)
+        };
+        let mut heard = false;
+        for _ in 0..(12.0 / STEP) as usize {
+            // He stands calm a quarter beyond where the work itself carries.
+            let reach = work * r.t.hearing_gain(r.s.encounter.pressure) * Variant::of(r.t.seed).hearing();
+            let th = &mut r.s.encounter.threat;
+            th.state = ThreatState::Stalking;
+            th.presence = Presence::Present;
+            th.pos = site + Vec2::new(reach * 1.25, 0.0);
+            th.focus = None;
+            r.send(HOST, [0.0; 2], true, false, false);
+            r.tick();
+            if r.events(HOST).contains(&Event::SkillMissed) {
+                assert!(
+                    r.s.encounter.threat.focus.is_some(),
+                    "he heard the miss over the work (truck: {truck})"
+                );
+                heard = true;
+                break;
+            }
+            assert!(
+                r.s.encounter.threat.focus.is_none(),
+                "the work alone does not carry that far (truck: {truck})"
+            );
+        }
+        assert!(heard, "the unanswered check was missed (truck: {truck})");
+    }
+}
+
+#[test]
+fn ignoring_the_rhythm_finishes_well_behind_keeping_it() {
+    for truck in [false, true] {
+        // Seconds of holding on until the task is done, and the misses.
+        let finish = |answer: bool| {
+            let mut r = at_task(truck);
+            let mut misses = 0;
+            for i in 1..=(60.0 / STEP) as usize {
+                if answer {
+                    r.work(HOST, STEP);
+                } else {
+                    r.hold(HOST, STEP);
+                }
+                misses += r.events(HOST).iter().filter(|e| **e == Event::SkillMissed).count();
+                if task_progress(&r, truck) >= 1.0 {
+                    return (i as f32 * STEP, misses);
+                }
+            }
+            panic!("never finished (truck: {truck}, answering: {answer})");
+        };
+        let (clean, slips) = finish(true);
+        let (sloppy, misses) = finish(false);
+        assert_eq!(slips, 0, "a practised hand never misses");
+        assert!(misses >= 1, "nobody ignores every check for free (truck: {truck})");
+        let t = Tuning::default();
+        assert!(
+            sloppy >= clean + t.check_setback + t.check_stall,
+            "{sloppy} s ignoring every check against {clean} s keeping the rhythm, {misses} misses (truck: {truck})"
+        );
+    }
 }
 
 #[test]
@@ -881,15 +1050,13 @@ fn cranking_the_pump_adds_up_across_players_and_lights_the_lamps() {
     assert!(powered >= 8, "the power poles are lamps that need the pump");
     let far = Vec2::new(-30.0, 31.0);
     assert!(!r.l.is_lit(far, 0) || r.l.is_lit(far, el_silbon::geometry::district::ALL_CIRCUITS));
-    // One player alone takes the full pump_hold; two take half.
-    r.hold(1, r.t.pump_hold * 0.5);
-    let solo = r.s.encounter.progress.power;
-    assert!((solo - 0.5).abs() < 0.05, "{solo}");
-    for _ in 0..(r.t.pump_hold * 0.3 * 60.0) as usize {
-        r.send(1, [0.0; 2], true, false, false);
-        r.send(2, [0.0; 2], true, false, false);
-        r.tick();
-    }
+    // One player alone takes the full pump_hold; two take half. Both keep
+    // the rhythm; each great press adds its own bonus on top of the work.
+    r.work(1, r.t.pump_hold * 0.5);
+    let greats = r.events(1).iter().filter(|e| **e == Event::SkillGreat).count();
+    let solo = r.s.encounter.progress.power - greats as f32 * r.t.check_bonus;
+    assert!((solo - 0.5).abs() < 0.05, "{solo} after {greats} great presses");
+    r.work_all(&[1, 2], r.t.pump_hold * 0.3);
     assert!(
         r.s.encounter.progress.power_on(),
         "two crankers finish in well under pump_hold"

@@ -158,8 +158,13 @@ pub struct Tuning {
     /// far ahead of the host's needle a claim may be (fraction of the sweep).
     pub check_latency: f32,
     pub check_slack: f32,
-    /// Work lost to a miss and gained by a great press (fractions of the task).
-    pub check_loss: f32,
+    /// Seconds of work a miss throws back: more than a whole check lasts, so
+    /// a miss always ends behind where its warning found the work.
+    pub check_setback: f32,
+    /// Seconds of holding on after a miss that do nothing: the crank kicks
+    /// back, the engine floods, the bones slip.
+    pub check_stall: f32,
+    /// Work gained by a great press (a fraction of the task).
     pub check_bonus: f32,
     /// Peppers a player can carry.
     pub aji_max: u8,
@@ -267,8 +272,10 @@ pub struct Tuning {
     pub noise_drop: f32,
     pub noise_aji: f32,
     /// A missed skill check: the windmill screeches, the engine backfires,
-    /// the bones clatter.
+    /// the bones clatter. At least `noise_miss`, and always louder than the
+    /// work it spoils (its own noise × `noise_miss_over`).
     pub noise_miss: f32,
+    pub noise_miss_over: f32,
     /// A wrong combination rattles the padlock; the right one clunks open.
     pub noise_rattle: f32,
     pub noise_unlock: f32,
@@ -445,7 +452,8 @@ impl Default for Tuning {
             check_zone_at: (0.45, 0.82),
             check_latency: 0.35,
             check_slack: 0.06,
-            check_loss: 0.08,
+            check_setback: 2.5,
+            check_stall: 1.8,
             check_bonus: 0.04,
             aji_max: 3,
             aji_zone_radius: 3.4,
@@ -510,6 +518,7 @@ impl Default for Tuning {
             noise_drop: 11.0,
             noise_aji: 7.0,
             noise_miss: 40.0,
+            noise_miss_over: 1.6,
             noise_rattle: 12.0,
             noise_unlock: 6.0,
             rain_mask: 0.32,
@@ -681,6 +690,10 @@ mod tests {
                 assert!(scaled.warn_time > 1.5);
             }
             assert!(t.check_zone > t.check_great && t.check_zone_at.1 + t.check_zone <= 1.0);
+            // A miss always ends behind where its warning found the work,
+            // stalls the hands, and is louder than the work it spoils.
+            assert!(t.check_setback > t.check_warn + t.check_sweep + t.check_latency);
+            assert!(t.check_stall > 0.0 && t.noise_miss_over > 1.0);
         }
         let (gentle, hard) = (
             Tuning::default().with_night(Night::Gentle),

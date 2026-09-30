@@ -188,6 +188,10 @@ pub struct Vitals {
     pub hold: f32,
     /// A skill check the listener is being asked for.
     pub check: Option<CheckView>,
+    /// Seconds of holding on before the listener's hands are back after a
+    /// missed check (0 when they are steady).
+    #[serde(default)]
+    pub stall: f32,
 }
 
 /// Shared progress of the run.

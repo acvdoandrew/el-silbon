@@ -15,7 +15,7 @@ use crate::{
     perception::{CueDirector, DogSense, dog_senses},
     rng::Rng,
     sim::{Encounter, Event, Outcome, Presence, Prey, Relic, ThreatState, Variant},
-    skill::{Pulse, Rhythm, Verdict},
+    skill::{LAST_TURN, Pulse, Rhythm, Verdict},
     storm,
     tuning::Tuning,
 };
@@ -534,13 +534,15 @@ impl Session {
 
     /// What a check's verdict does to the task in hand (`kind`, a
     /// `Vitals::hold_kind`): a great press speeds it, a miss screeches (a
-    /// noise he hears and a fright for the worker) and costs work.
+    /// noise he hears over the work itself, and a fright for the worker) and
+    /// throws the work back further than the check let it run. The stall
+    /// that follows lives in the worker's `Rhythm`.
     fn check_result(&mut self, id: PlayerId, kind: u8, verdict: Verdict, layout: &Layout, tuning: &Tuning) {
         let d = &layout.district;
-        let site = match kind {
-            1 => ground(layout.ceiba.offering),
-            3 => ground(d.pump),
-            4 => ground(d.ignition),
+        let (site, work) = match kind {
+            1 => (ground(layout.ceiba.offering), tuning.noise_altar),
+            3 => (ground(d.pump), tuning.noise_pump),
+            4 => (ground(d.ignition), tuning.noise_truck),
             _ => return,
         };
         let mut ev = Vec::new();
@@ -550,7 +552,7 @@ impl Session {
                 match kind {
                     1 => {
                         if let Some(p) = self.players.get_mut(&id) {
-                            p.hold = (p.hold + tuning.check_bonus * 3.0).min(0.99);
+                            p.hold = (p.hold + tuning.check_bonus * 3.0).min(LAST_TURN);
                         }
                     }
                     3 => self
@@ -571,13 +573,16 @@ impl Session {
                             p.hold = 0.0;
                         }
                     }
-                    3 if !progress.power_on() => progress.power = (progress.power - tuning.check_loss).max(0.0),
+                    3 if !progress.power_on() => {
+                        progress.power = (progress.power - tuning.check_setback / tuning.pump_hold).max(0.0);
+                    }
                     4 if !progress.truck_running() => {
-                        progress.truck = (progress.truck - tuning.check_loss).max(0.0);
+                        progress.truck = (progress.truck - tuning.check_setback / tuning.truck_hold).max(0.0);
                     }
                     _ => {}
                 }
-                self.noises.push((site, tuning.noise_miss));
+                self.noises
+                    .push((site, tuning.noise_miss.max(work * tuning.noise_miss_over)));
                 self.events.push((None, Event::SkillMissed));
                 self.startle(id, tuning, tuning.fear_miss);
             }
@@ -767,7 +772,7 @@ impl Session {
                         if p.hold_kind != kind {
                             p.hold = 0.0;
                         }
-                        p.hold += dt / tuning.deliver_hold;
+                        p.hold += p.rhythm.allow(p.hold, dt / tuning.deliver_hold);
                         if p.hold >= 1.0 {
                             p.hold = 0.0;
                             // The next bundle is a rite of its own.
@@ -802,7 +807,8 @@ impl Session {
                     }
                     TargetKind::Pump => {
                         kind = 3;
-                        self.encounter.work_pump(tuning, dt, &mut ev);
+                        let step = p.rhythm.allow(self.encounter.progress.power, dt / tuning.pump_hold);
+                        self.encounter.work_pump(tuning, step * tuning.pump_hold, &mut ev);
                         if p.pulse[0] <= 0.0 {
                             p.pulse[0] = 1.5;
                             self.noises.push((ground(layout.district.pump), tuning.noise_pump));
@@ -811,7 +817,8 @@ impl Session {
                     }
                     TargetKind::Ignition => {
                         kind = 4;
-                        self.encounter.work_truck(tuning, dt, &mut ev);
+                        let step = p.rhythm.allow(self.encounter.progress.truck, dt / tuning.truck_hold);
+                        self.encounter.work_truck(tuning, step * tuning.truck_hold, &mut ev);
                         if p.pulse[1] <= 0.0 {
                             p.pulse[1] = 1.0;
                             self.noises.push((ground(layout.district.ignition), tuning.noise_truck));
@@ -892,7 +899,7 @@ impl Session {
             match pulse {
                 Pulse::Started => self.events.push((Some(id), Event::SkillCheck)),
                 Pulse::Missed => self.check_result(id, kind, Verdict::Miss, layout, tuning),
-                Pulse::Quiet => {}
+                Pulse::Quiet | Pulse::Stalled => {}
             }
             if ev.contains(&Event::TruckStarted) {
                 let watchers = self.active_positions();
@@ -1528,6 +1535,7 @@ impl Session {
                     needle: c.needle(tuning),
                     zone: c.zone,
                 }),
+                stall: local.rhythm.stall_left(),
             },
             zones: self
                 .encounter

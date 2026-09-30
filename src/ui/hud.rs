@@ -246,6 +246,16 @@ fn hold_label(kind: u8) -> &'static str {
     }
 }
 
+/// The hands thrown off by a missed check, at the task in hand.
+fn stall_label(kind: u8) -> Option<&'static str> {
+    match kind {
+        1 => Some("The bones slip from your hands…"),
+        3 => Some("The crank kicks back…"),
+        4 => Some("The engine floods…"),
+        _ => None,
+    }
+}
+
 fn prompt_for(t: &Target, note_open: bool, carrying: usize, bones_home: bool) -> String {
     let close = !t.ready();
     let text = match t.kind {
@@ -297,7 +307,7 @@ pub(crate) fn prompt(
 ) {
     let playing = *state.get() == Flow::Playing;
     let me = net.snapshot().map(|s| s.me);
-    let (kind, hold) = me.map_or((0, 0.0), |m| (m.hold_kind, m.hold));
+    let (kind, hold, stall) = me.map_or((0, 0.0, 0.0), |m| (m.hold_kind, m.hold, m.stall));
     let holding = playing && kind != 0 && net.status() == 0;
     let text = if !playing || net.status() != 0 || net.stunned() || holding {
         String::new()
@@ -316,8 +326,15 @@ pub(crate) fn prompt(
     for mut t in &mut q.p0() {
         set_text(&mut t, &text);
     }
+    let label = if !holding {
+        ""
+    } else if stall > 0.0 {
+        stall_label(kind).unwrap_or(hold_label(kind))
+    } else {
+        hold_label(kind)
+    };
     for mut t in &mut q.p1() {
-        set_text(&mut t, if holding { hold_label(kind) } else { "" });
+        set_text(&mut t, label);
     }
     for mut v in &mut q.p2() {
         set_vis(&mut v, holding);
@@ -575,7 +592,7 @@ pub(crate) fn hints_and_captions(
                     hint.taught_skill = true;
                     show(
                         &mut hint,
-                        "Keep the rhythm: press Space as the needle crosses the marked zone. Miss, and it screeches.",
+                        "Keep the rhythm: press Space as the needle crosses the marked zone. Miss, and it screeches and the work slips back.",
                         7.0,
                         3,
                     );

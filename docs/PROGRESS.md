@@ -14,6 +14,36 @@
 - Unverified: a real Linux LF build pairing with a Windows CRLF build.
 - Bounds moved: none. Committed on m1b; not pushed. Sweep logs `target\sweep-{normal,gentle,hard,hard-head}.log` are gitignored.
 
+**Skill-check miss (item 6, roadmap fix 2).**
+- Pure `skill::Rhythm`: a miss (the needle sweeps past, or a press outside the zone) now throws the work back `check_setback` 2.5 s of that task's work and stalls the hands for `check_stall` 1.8 s of holding on (new `Pulse::Stalled`: no progress, and the wait for the next check does not count down). A refused claim never stalls.
+- The stall survives `rest()`. It is only won back by holding a task (altar, pump or ignition), so letting go and grabbing again cannot skip it. A player who misses at the pump and goes to the altar starts there stalled (shaken hands).
+- `Rhythm::allow(progress, step)` returns 0 while stalled and never goes past `skill::LAST_TURN` (0.99) while a check is in flight. `resolve_holds` gates the altar, pump and ignition work on it, so finishing a task can no longer drop a pending check. The altar's great-press cap uses `LAST_TURN`.
+- Miss noise is `max(noise_miss 40, the task's work noise × noise_miss_over 1.6)`: altar 40 m, pump 54.4 m, truck 120 m (a backfire).
+- `tuning`: `check_loss` removed; `check_setback`, `check_stall` and `noise_miss_over` added.
+  - Deliberate deviation from the investigation (fixPlan 2e): these are not scaled by Night. Gentle ×0.7 would put the setback at 1.75 s, under the 2.05 s a check lasts (warn + sweep + latency), which breaks the new invariant that a miss always ends behind where its warning found the work. Hard ×1.2/×1.25 would add cost where the sweep has the least margin. Tune per night after a playtest.
+- Wire: `Vitals.stall` (seconds left, `#[serde(default)]`). HUD: while stalled the hold label becomes "The bones slip… / The crank kicks back… / The engine floods…". The first-check hint now says the work slips back. No hidden AI state is added.
+- Tests:
+  - Pure: `a_miss_throws_the_hands_off_and_only_work_wins_them_back`, `a_press_outside_the_zone_stalls_but_a_refused_claim_does_not`, `a_pending_check_holds_the_last_turn`, plus a tuning invariant: for every Night, setback > warn + sweep + latency, stall > 0 and the miss is louder than the work.
+  - Session, written first against the old API; each failed for its root cause:
+    - the rewritten miss half of `long_tasks_ask_…`: "a miss costs more than the check let him win: 0.5533328 after, 0.42666632 at the warning". Now the pump must end below the warning's mark, hold flat through the stall, then rise.
+    - `a_task_cannot_be_finished_under_a_pending_check` (pump and truck): "finished under a pending check (truck: false)".
+    - `a_miss_carries_beyond_the_noise_of_the_work_it_spoils` (pump and truck): "he heard the miss over the work (truck: false)"; the 40 m miss did not reach 1.25 × the crank's 34 m. It zeroes `rain_mask` and `thunder_mask` (masking 1), pins him 1.25 × the work noise's reach away every tick, and asserts `focus` stays None under the work's own pulses and becomes Some on the miss tick.
+  - Also `ignoring_the_rhythm_finishes_well_behind_keeping_it`: pump 18.9 s vs 9.6 s, 2 misses; truck 10.7 s vs 5.8 s, 1 miss; the bound is setback + stall = 4.3 s.
+  - The co-op pump test now answers checks for both players (`Rig::work_all`) and subtracts any great-press bonus from the solo sum; the 0.05 tolerance is unchanged (this seed: 0 great presses, solo 0.498). It measures summation.
+- Fingerprint checkpoint for this tree: 0xc8f0af5d5e118e17 (Python model, recomputed at commit; it reproduces the previous item's 0xa7c36c4384a95020). Items 7-11 move it again.
+- Verified:
+  - fmt, check, test (lib 90, district 7, session 44 + 3 ignored), clippy -D warnings.
+  - Route sweep: normal solo 150/150, shared 150/150; gentle 150/150, 149/150 (shared seed 124, = baseline); hard 136/150, 134/150 (= baseline; the test's own 97% assert fires, not the bar).
+  - The failing seed sets are identical to HEAD's on every night. On Hard, 27 of 30 failure reports are identical to `sweep-hard-head.log`; shared 20, 38 and 46 fail the same way at the same step, with positions moved slightly after the pump. No newly failing seeds.
+  - Net smoke (headless, two processes from this tree, 127.0.0.1:5311), run twice: `NET SMOKE PASS host` and `NET SMOKE PASS client` both times; exit codes captured on the second run, host 0 and client 0 (the first run's host exited 0; its client's code was not captured).
+  - Invariant tests untouched: hunt and stalk slower than walking, warnings over 1.5 s, continuous pressure hidden. The `tests/session.rs` diff touches only the `Rig` helper, the skill-check tests and the co-op pump test; the tuning test only gains the new invariant.
+- Unverified: the stall label on screen; the feel of about 4.3 s per miss (setback + stall) in a real night.
+- Open:
+  - The cap is per player: a teammate with no check pending can finish the pump or engine while yours is pending, and yours then drops silently.
+  - `input_age > 0.3` over a jittery link still rests and drops a check (unchanged).
+- Bounds moved: none. Relocated assertion (not a loosening): the old "he heard the screech" check in `long_tasks_ask_…` put him 25 m from the pump, inside the crank's own 34 m pulse, so it passed without the miss noise. `a_miss_carries_beyond_the_noise_of_the_work_it_spoils` replaces it and is strictly harder.
+- The Phase 2 miss rule below is marked superseded. README line 120 ("costs work") is still accurate. Committed on m1b; not pushed.
+
 ## Current handoff — 2026-09-30 (M1a landed: fingerprint-neutral, pairs with test.1)
 
 **Audio mix (fix 3).**
@@ -1999,7 +2029,8 @@ each ends with the gate green (fmt, check, test, clippy) and the opt-in
   no press): −8 % of the pump or engine, or the bundle's laying starts over;
   a 40 m noise at the site (the llano hears iron screech), a fright for the
   worker, `Event::SkillMissed` for everyone. Two cranking together finish
-  sooner but each gets checks.
+  sooner but each gets checks. (The miss rule is superseded by M1b item 6:
+  a setback in seconds, a stall, the last turn waits, a louder miss.)
 - Wire: `Vitals.check: Option<CheckView>` (id, host needle, zone),
   `Intent.skill`, `net::needle` (snapshot needle carried on by its age).
   HUD: a SPACE bar under the hold progress (amber zone, pale great sliver,
