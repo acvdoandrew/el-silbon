@@ -2762,3 +2762,61 @@ fn the_routes_hold_over_many_storms() {
         "fewer than 97% of routes held"
     );
 }
+
+#[test]
+fn the_radio_dial_is_shared_and_its_squeal_draws_him_until_a_restart_turns_it_off() {
+    use el_silbon::control::TargetKind;
+    use el_silbon::sim::Variant;
+    let mut r = Rig::new(2);
+    // A still, dry night: nothing masks the squeal.
+    r.t.rain_mask = 0.0;
+    r.t.thunder_mask = 0.0;
+    let radio = r.l.district.radio;
+    let site = ground(radio);
+    r.stand(HOST, site + Vec2::new(1.4, 0.0), radio);
+    r.stand(2, site + Vec2::new(1.4, 0.6), radio);
+    for id in [HOST, 2] {
+        let data = r.s.scene_data(id);
+        let target = el_silbon::control::evaluate_target(&r.l, &r.t, &r.pose(id), &data.scene());
+        assert_eq!(
+            target.map(|t| t.kind),
+            Some(TargetKind::Radio),
+            "player {id} can reach the dial"
+        );
+    }
+    let reach = r.t.noise_dial * r.t.hearing_gain(r.s.encounter.pressure) * Variant::of(r.t.seed).hearing();
+    let mut dial = 0;
+    for (who, far, heard) in [(HOST, 1.25, false), (2, 0.8, true), (HOST, 0.8, true)] {
+        r.events(HOST);
+        r.events(2);
+        let th = &mut r.s.encounter.threat;
+        th.state = ThreatState::Stalking;
+        th.presence = Presence::Present;
+        th.pos = site + Vec2::new(0.0, reach * far);
+        th.focus = None;
+        r.act(who, Action::Interact).expect("anyone may turn the dial");
+        r.tick();
+        dial = el_silbon::radio::turned(dial);
+        assert_eq!(
+            r.s.encounter.threat.focus.is_some(),
+            heard,
+            "he is {far} of the squeal's reach away"
+        );
+        // It changes for everyone, and everyone hears it turn.
+        for id in [HOST, 2] {
+            assert_eq!(
+                r.s.snapshot(id, &r.l, &r.t).world.radio,
+                dial,
+                "player {id} sees the dial"
+            );
+            assert!(r.events(id).contains(&Event::RadioTuned), "player {id} hears the dial");
+        }
+    }
+    assert_eq!(dial, 3);
+    r.act(HOST, Action::Restart).unwrap();
+    assert_eq!(
+        r.s.snapshot(2, &r.l, &r.t).world.radio,
+        0,
+        "a restart turns the radio off"
+    );
+}

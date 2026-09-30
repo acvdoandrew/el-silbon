@@ -11,6 +11,7 @@
 //! - [`skill`]: skill checks while working a long task.
 //! - [`director`]: when the night sends one player an omen.
 //! - [`survivor`]: who each player is, and how a party shares them out.
+//! - [`radio`]: the shelf radio's dial and the numbers hour.
 //! - [`mix`]: the volume sliders' decibel curve, the buses and the glide.
 //! - [`display`]: brightness and contrast as the camera's grade.
 //! - [`script`], [`photos`]: DEBUG smoke route and photo viewpoints.
@@ -40,6 +41,7 @@ pub mod perception;
 pub mod photos;
 pub mod player;
 pub mod profile;
+pub mod radio;
 pub mod rng;
 pub mod script;
 pub mod sim;

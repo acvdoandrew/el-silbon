@@ -40,7 +40,8 @@ an API — do not mix older Bevy idioms.
 
 - **Pure truth, no ECS**: `tuning`, `geometry`, `sim`, `perception`, `control`,
   `script`, `rng`, `noise`, `body`, `storm`, `skill` (skill checks),
-  `director` (omens), `mix` (volume curve, buses, glide) and `display`
+  `director` (omens), `mix` (volume curve, buses, glide), `radio` (the
+  dial and the numbers hour) and `display`
   (brightness and contrast as the camera's grade) stay headless and
   unit-tested.
   ECS modules (`app`, `player`, `encounter`, `audio`, `ui`,

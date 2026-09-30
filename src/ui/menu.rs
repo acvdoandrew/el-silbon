@@ -49,6 +49,8 @@ pub(crate) enum Page {
     Outcome,
     ConfirmLeave,
     ConfirmQuit,
+    /// One of the Madrina's chapters, kept in the Journal.
+    Chapter(u8),
 }
 
 /// A text field a row edits.
@@ -110,6 +112,7 @@ enum Act {
     Title,
     Quit,
     None,
+    Chapter(u8),
 }
 
 struct Row {
@@ -261,7 +264,8 @@ fn night_blurb(n: Night) -> &'static str {
 
 const HOW_TO: &str = "\
 Lay the five bundles of the father's bones at the ceiba's roots, bring the power back at the windmill, \
-open the padlocked key box (its three numbers are written in the pages you find) and start the truck \
+open the padlocked key box (the house radio reads its three numbers out; the tag on the padlock names the \
+station) and start the truck \
 at the bridge. Survive its warm-up, everyone aboard. Or learn which of him walks tonight and name him \
 at the ceiba (N) once every bone is home.\n\n\
 The whistle lies: loud means he is far, thin and faint means he is near. Walls, trunks and tall grass \
@@ -432,6 +436,13 @@ fn rows(menu: &Menu, settings: &Settings, ctx: &Context, profile: &ProfileRes) -
                     }
                 })
                 .collect();
+            // The Madrina's tale, as far as it has been told.
+            for n in 1..=crate::lore::CHAPTERS {
+                match crate::lore::chapter(n) {
+                    Some(c) if profile.profile.chapters.contains(&n) => rows.push(Row::go(c.title, Act::Chapter(n))),
+                    _ => rows.push(Row::go("· · ·  the Madrina has not told it yet", Act::None).off()),
+                }
+            }
             rows.push(Row::go("Back", Act::Back));
             (
                 "Journal".into(),
@@ -447,18 +458,20 @@ fn rows(menu: &Menu, settings: &Settings, ctx: &Context, profile: &ProfileRes) -
                 rows,
             )
         }
+        Page::Chapter(n) => {
+            let (title, es, en) = crate::lore::chapter(n).map_or(("", "", ""), |c| (c.title, c.es, c.en));
+            (
+                format!("La Madrina — {title}"),
+                format!("{es}\n\n{en}"),
+                vec![Row::go("Back", Act::Back)],
+            )
+        }
         Page::Reading(id) => {
-            // The kept copy has no digits: a page read on an earlier night
-            // must not tell tonight's padlock.
+            // No page carries a night's digits: the radio reads them out.
             let page = crate::lore::note(id);
             (
                 format!("{} — {}", page.medium.label(), page.title),
-                format!(
-                    "{}\n\n{}\n\n{}",
-                    crate::lore::keep(page.es),
-                    page.by,
-                    crate::lore::keep(page.en)
-                ),
+                format!("{}\n\n{}\n\n{}", page.es, page.by, page.en),
                 vec![Row::go("Back", Act::Back)],
             )
         }
@@ -686,7 +699,10 @@ fn build(
     let calibrating = menu.page == Page::Calibrate;
     let title_screen = flow == Flow::Title && !calibrating;
     let in_run_card = !calibrating && (flow == Flow::Paused || (flow == Flow::Outcome && menu.page != Page::Outcome));
-    let reading = matches!(menu.page, Page::Reading(_) | Page::HowTo | Page::Credits);
+    let reading = matches!(
+        menu.page,
+        Page::Reading(_) | Page::Chapter(_) | Page::HowTo | Page::Credits
+    );
     commands.entity(root).with_children(|r| {
         // Where the rows sit: a dark rail on the left of the title screen,
         // a centred card in a run, a row of choices under the outcome.
@@ -1253,6 +1269,7 @@ fn activate(act: Act, dir: i32, menu: &mut Menu, ctx: &Context, fx: &mut Effects
             Err(e) => menu.note = e,
         },
         Act::Read(id) => menu.open(Page::Reading(id)),
+        Act::Chapter(n) => menu.open(Page::Chapter(n)),
         Act::Resume => fx.next.set(Flow::Playing),
         Act::Restart => {
             fx.control.write(NetControl::Action(Action::Restart));
@@ -1325,6 +1342,12 @@ fn remember(
     if read.0.iter().any(|p| !profile.profile.pages.contains(p)) {
         profile.profile.pages.extend(read.0.iter().copied());
         dirty = true;
+    }
+    // The Madrina's chapters, as the shared count of bones laid tells them.
+    if let Some(s) = net.snapshot() {
+        for n in 1..=crate::lore::chapters_told(s.world.delivered, s.world.total) {
+            dirty |= profile.profile.chapters.insert(n);
+        }
     }
     // Each night that ends is counted once, as its outcome comes up.
     let now = *state.get();

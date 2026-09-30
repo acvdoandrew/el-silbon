@@ -157,6 +157,8 @@ pub enum TargetKind {
     Dog,
     /// The dynamo's line panel at the windmill: press to switch lines.
     Panel,
+    /// The shelf radio: press to turn its dial (for everyone).
+    Radio,
 }
 
 impl TargetKind {
@@ -309,8 +311,12 @@ pub fn evaluate_target(layout: &Layout, tuning: &Tuning, pose: &Pose, scene: &Sc
         }
     }
     for n in &d.notes {
-        candidates.push((TargetKind::Note(n.id), n.pos, 0.24, tuning.note_reach, None));
+        // The page that lives in the radio is heard by turning its dial.
+        if n.pos != d.radio {
+            candidates.push((TargetKind::Note(n.id), n.pos, 0.24, tuning.note_reach, None));
+        }
     }
+    candidates.push((TargetKind::Radio, d.radio, 0.24, tuning.note_reach, None));
     candidates.push((
         TargetKind::Altar,
         layout.ceiba.offering,

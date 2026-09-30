@@ -98,6 +98,8 @@ const DOOR_APPROACH: &[[f32; 2]] = &[[0.0, 27.0], [0.0, 18.0], [0.0, 4.0]];
 const DOOR_INSIDE: &[[f32; 2]] = &[[0.0, 4.0], [0.0, 0.0], [0.6, -1.5], [2.9, -3.3]];
 /// Out the back door toward the western track.
 const BACK_DOOR: &[[f32; 2]] = &[[-3.0, -5.0], [-3.0, -7.4], [-3.0, -8.0], [-10.0, -23.0]];
+/// In by the back door from the western track.
+const BACK_DOOR_IN: &[[f32; 2]] = &[[-10.0, -23.0], [-3.0, -8.0], [-3.0, -7.4], [-3.0, -5.0]];
 /// Back out the front door to the porch.
 const DOOR_OUT: &[[f32; 2]] = &[[0.6, -1.5], [0.0, 0.0], [0.0, 4.0]];
 
@@ -1231,6 +1233,9 @@ enum Want {
     Lockbox,
     /// The dynamo's line panel.
     Panel,
+    /// The shelf radio: tuned to the numbers station on the padlock's tag,
+    /// then listened to until every digit has been counted.
+    Radio,
 }
 
 impl Want {
@@ -1243,7 +1248,8 @@ impl Want {
             | (Want::Pump, TargetKind::Pump)
             | (Want::Ignition, TargetKind::Ignition)
             | (Want::Lockbox, TargetKind::Lockbox)
-            | (Want::Panel, TargetKind::Panel) => true,
+            | (Want::Panel, TargetKind::Panel)
+            | (Want::Radio, TargetKind::Radio) => true,
             _ => false,
         }
     }
@@ -1253,6 +1259,7 @@ impl Want {
             Want::Bundle(_) | Want::Aji(_) | Want::Batteries(_) => tuning.relic_reach,
             Want::Altar => tuning.altar_reach,
             Want::Pump | Want::Ignition | Want::Lockbox | Want::Panel => tuning.site_reach,
+            Want::Radio => tuning.note_reach,
         }
     }
 
@@ -1272,6 +1279,7 @@ impl Want {
             Want::Ignition => d.ignition,
             Want::Lockbox => d.lockbox,
             Want::Panel => d.panel,
+            Want::Radio => d.radio,
         }
     }
 }
@@ -1312,6 +1320,8 @@ enum Cond {
     Crouched,
     /// Someone else carries bundle `i` (the host moved on: an acknowledgement).
     Carried(usize),
+    /// Every digit of the padlock has been counted off the radio.
+    Digits,
 }
 
 /// An interaction the route waits out.
@@ -1511,6 +1521,9 @@ pub struct RouteScript {
     /// The skill check we are watching: its id, the needle in the snapshot
     /// we last saw, seconds since that snapshot, and whether we pressed.
     check: Option<(u32, f32, f32, bool)>,
+    /// Counting the numbers station's pips, and the run time heard up to.
+    ear: crate::radio::Listener,
+    heard_to: Option<f64>,
 }
 
 // ------------------------------------------------------------------ routes
@@ -1557,7 +1570,7 @@ fn batteries(i: usize) -> Step {
 /// Run one: every bundle, the pump, the truck, the escape; then restart.
 fn win_run(s: &mut Vec<Step>, layout: &Layout) {
     use Step::*;
-    win_to_altar(s, layout);
+    win_to_altar(s, layout, true);
     win_rest(s, layout);
     s.extend([
         Wait(1.0),
@@ -1570,8 +1583,9 @@ fn win_run(s: &mut Vec<Step>, layout: &Layout) {
 }
 
 /// The opening of run one: the road in, the peppers, the table bundle, and
-/// its delivery to the altar.
-fn win_to_altar(s: &mut Vec<Step>, layout: &Layout) {
+/// its delivery to the altar. Alone (`radio`), the numbers are counted off
+/// the shelf radio first, while he still sleeps; in company a friend does it.
+fn win_to_altar(s: &mut Vec<Step>, layout: &Layout, radio: bool) {
     use Step::*;
     let d = &layout.district;
     let ranch = d.landmark(LandmarkId::Ranch);
@@ -1585,6 +1599,14 @@ fn win_to_altar(s: &mut Vec<Step>, layout: &Layout) {
         Via(DOOR_APPROACH),
         Do(Job::new(Want::Aji(1), Cond::AjiTaken(1)).soft()),
         Via(DOOR_INSIDE),
+    ]);
+    if radio {
+        s.extend([
+            Log("route: the radio's numbers hour, while he still sleeps"),
+            Do(Job::new(Want::Radio, Cond::Digits)),
+        ]);
+    }
+    s.extend([
         Log("route: the bundle on the table"),
         Face(d.relics[0].to_array()),
         Capture("02_table"),
@@ -1640,7 +1662,7 @@ fn win_rest(s: &mut Vec<Step>, layout: &Layout) {
         Do(Job::new(Want::Pump, Cond::Power).shot(0.5, "05_pump")),
         Face([d.pump.x, d.pump.y + 3.0, d.pump.z]),
         Capture("06_power"),
-        Log("route: the key box at the windmill, with the numbers from the pages"),
+        Log("route: the key box at the windmill, with the numbers from the radio (or a friend's)"),
         Do(Job::new(Want::Lockbox, Cond::Key)),
         Log("route: the bridge line on at the panel, for the wait at the truck"),
         Do(Job::new(Want::Panel, Cond::Line(2))),
@@ -1733,6 +1755,8 @@ impl RouteScript {
             reflex: Reflex::default(),
             spawn: layout.spawn,
             check: None,
+            ear: crate::radio::Listener::default(),
+            heard_to: None,
         }
     }
 
@@ -1832,7 +1856,7 @@ impl RouteScript {
             // standing in its zone (a shared victory both must see).
             Log("run 1: the host takes the table bundle to the altar"),
         ];
-        win_to_altar(&mut s, layout);
+        win_to_altar(&mut s, layout, false);
         s.extend([
             Log("run 1: delivered; waiting for the partner's mark"),
             Await {
@@ -1943,7 +1967,18 @@ impl RouteScript {
             },
             Log("run 1: my mark and the host's mark are both in one snapshot; acknowledging"),
             Crouch(Cond::Carried(1)),
-            Log("run 1: the host took the next bundle; back to the lit porch to wait for power"),
+            // The relay: the partner counts the numbers off the shelf radio
+            // and opens the key box with them, so the host finds it open.
+            Log("run 1: the host took the next bundle; the radio's numbers, then the key box"),
+            Go {
+                to: Vec2::from_array(BACK_DOOR[3]),
+                guard: true,
+            },
+            Via(BACK_DOOR_IN),
+            Do(Job::new(Want::Radio, Cond::Digits)),
+            Via(BACK_DOOR),
+            Do(Job::new(Want::Lockbox, Cond::Key)),
+            Log("run 1: the key is out; back to the lit porch to wait for power"),
             Go {
                 to: Vec2::from_array(DOOR_APPROACH[2]),
                 guard: true,
@@ -2062,6 +2097,7 @@ impl RouteScript {
                 (!mine || snap.pings.iter().any(|p| p.by == me)) && (!other || snap.pings.iter().any(|p| p.by != me))
             }
             Cond::Crouched => snap.players.iter().any(|p| p.id != me && p.crouch && p.status == 0),
+            Cond::Digits => self.ear.code().is_some(),
         }
     }
 
@@ -2353,15 +2389,37 @@ impl RouteScript {
                 let usable = obs.target.is_some_and(|t| t.usable() && job.want.matches(t.kind));
                 let mut gave_up: Option<String> = None;
                 if usable && job.want == Want::Lockbox {
-                    // The combination the Madrina, the foreman and the guard
-                    // wrote down, tried now and then until the box opens.
+                    // The combination counted off the radio, tried now and
+                    // then until the box opens.
                     self.stare = 0.0;
                     out.intent.look_delta = aim_at(layout, tuning, &obs.pose, aim, dt);
                     self.press -= dt;
                     if self.press <= 0.0 {
-                        out.intent.code = Some(crate::sim::lock_code(tuning.seed));
+                        out.intent.code = self.ear.code();
                         self.press = 0.6;
                     }
+                } else if usable && job.want == Want::Radio {
+                    // Turn the dial to the frequency on the padlock's tag,
+                    // one click at a time, then count the pips.
+                    self.stare = 0.0;
+                    out.intent.look_delta = aim_at(layout, tuning, &obs.pose, aim, dt);
+                    let now = snap.elapsed as f64;
+                    let stop = crate::radio::numbers_stop(tuning.seed) as u8 + 1;
+                    if snap.world.radio == stop {
+                        if let Some(from) = self.heard_to.filter(|&from| from < now && now - from < 1.0) {
+                            let code = crate::sim::lock_code(tuning.seed);
+                            let beats = crate::radio::beats_between(tuning.seed, code, from, now);
+                            self.ear.hear(from, now, &beats);
+                        }
+                    } else {
+                        self.press -= dt;
+                        if self.press <= 0.0 {
+                            out.intent.interact_pressed = true;
+                            // Long enough for the dial to show the click.
+                            self.press = 0.5;
+                        }
+                    }
+                    self.heard_to = Some(now);
                 } else if usable {
                     self.stare = 0.0;
                     out.intent.look_delta = aim_at(layout, tuning, &obs.pose, aim, dt);
@@ -2435,6 +2493,17 @@ impl RouteScript {
                 {
                     out.finished = fail(self, format!("the run ended {:?}, not {wanted:?}", snap.outcome()));
                     return out;
+                }
+                // Waiting for both marks at once: mark the altar again if
+                // mine faded while the other was busy hiding.
+                if let Cond::Marks { mine: true, .. } = cond
+                    && !snap.pings.iter().any(|p| p.by == obs.me)
+                {
+                    self.sent -= dt;
+                    if self.sent <= 0.0 {
+                        out.ping = Some(layout.ceiba.offering.to_array());
+                        self.sent = 2.5;
+                    }
                 }
                 // Back into the truck's boarding zone after hiding outside it.
                 let zone = layout.district.truck;

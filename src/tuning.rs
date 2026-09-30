@@ -417,6 +417,12 @@ pub struct Tuning {
     // ------------------------------------------------------------ simulation
     /// Largest step the truth layer integrates at once (hitches are clamped).
     pub max_step: f32,
+
+    // ------------------------------------------------------------ the radio
+    /// How far the dial's squeal carries (metres), and how near the radio
+    /// the dots caption shows its pips.
+    pub noise_dial: f32,
+    pub radio_reach: f32,
 }
 
 impl Default for Tuning {
@@ -614,6 +620,9 @@ impl Default for Tuning {
             groan_gain: 0.55,
 
             max_step: 0.1,
+
+            noise_dial: 8.0,
+            radio_reach: 6.0,
         }
     }
 }

@@ -92,6 +92,15 @@ fn update_target(
     if intent.0.interact_pressed
         && let Some(t) = t
         && t.ready()
+        && t.kind == TargetKind::Radio
+    {
+        // The radio's page is heard, not read: turning the dial keeps it.
+        let d = &layout.0.district;
+        read.0.extend(d.notes.iter().filter(|n| n.pos == d.radio).map(|n| n.id));
+    }
+    if intent.0.interact_pressed
+        && let Some(t) = t
+        && t.ready()
         && t.kind == TargetKind::Lockbox
     {
         lock.open = !lock.open;

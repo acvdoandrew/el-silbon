@@ -97,6 +97,13 @@ struct Sounds {
     /// A fallen friend's groans, and their cry for help.
     groans: [Handle<AudioSource>; 3],
     call_help: Handle<AudioSource>,
+    /// La Voz del Llano: the numbers station's pips, long tone and ident,
+    /// an empty stop's static, and the dial's squeal.
+    radio_pip: Handle<AudioSource>,
+    radio_pip_long: Handle<AudioSource>,
+    radio_ident: Handle<AudioSource>,
+    radio_static: Handle<AudioSource>,
+    radio_squeal: Handle<AudioSource>,
 }
 
 /// Where a placed sound truly comes from.
@@ -161,6 +168,8 @@ enum VoiceKind {
     Engine,
     Crank,
     Radio,
+    /// The shelf radio on an empty stop.
+    RadioStatic,
     Dread,
     /// The title screen's cuatro.
     Theme,
@@ -197,6 +206,7 @@ impl VoiceKind {
                 | Self::Engine
                 | Self::Crank
                 | Self::Radio
+                | Self::RadioStatic
                 | Self::Dread
                 | Self::Theme
                 | Self::Frogs
@@ -213,7 +223,13 @@ impl VoiceKind {
             Self::Whistle | Self::Cue | Self::Catch => Bus::Master,
             Self::Theme | Self::Dread | Self::Sting => Bus::Music,
             Self::Ambience | Self::Rain | Self::Frogs | Self::Windmill | Self::Weather => Bus::Ambience,
-            Self::Heartbeat | Self::Engine | Self::Crank | Self::Radio | Self::Hum | Self::Effect => Bus::Effects,
+            Self::Heartbeat
+            | Self::Engine
+            | Self::Crank
+            | Self::Radio
+            | Self::RadioStatic
+            | Self::Hum
+            | Self::Effect => Bus::Effects,
             Self::Preview(bus) => bus,
         }
     }
@@ -257,6 +273,7 @@ impl Plugin for SoundPlugin {
                         play_stings,
                         play_pings,
                         play_calls,
+                        play_radio,
                         footsteps,
                         party_steps,
                         party_cries,
@@ -323,6 +340,11 @@ fn load_sounds(
         omen_swell: a("omen_swell"),
         dread: a("dread_drone"),
         lock_rattle: a("lock_rattle"),
+        radio_pip: a("radio_pip"),
+        radio_pip_long: a("radio_pip_long"),
+        radio_ident: a("radio_ident"),
+        radio_static: a("radio_static"),
+        radio_squeal: a("radio_squeal"),
         lock_open: a("lock_open"),
         tell_weeping: a("tell_weeping"),
         tell_whip: a("tell_whip"),
@@ -391,11 +413,7 @@ fn load_sounds(
     let l = &layout.0;
     let d = &l.district;
     let on_ground = |p: Vec2, up: f32| Vec3::new(p.x, l.surface_height(p) + up, p.y);
-    let radio = d
-        .notes
-        .iter()
-        .find(|n| crate::lore::note(n.id).medium == crate::lore::Medium::Radio)
-        .map_or(d.pump, |n| n.pos);
+    let radio = d.radio;
     use crate::geometry::district::LandmarkId;
     let water = |id| on_ground(d.landmark(id).center, 0.3);
     // The creak comes from the top of the water tower's frame.
@@ -410,6 +428,13 @@ fn load_sounds(
             on_ground(d.truck.center, 1.0),
         ),
         ("radio loop", &sounds.radio, t.sfx_gain * 0.8, VoiceKind::Radio, radio),
+        (
+            "radio static loop",
+            &sounds.radio_static,
+            t.sfx_gain * 0.5,
+            VoiceKind::RadioStatic,
+            radio,
+        ),
         (
             "pump crank loop",
             &sounds.crank,
@@ -689,6 +714,7 @@ fn play_effects(
             Event::TruckStarted => Some(on_ground(d.truck.center, 1.0)),
             Event::RelicDelivered | Event::AllBonesHome | Event::Banished => Some(l.ceiba.offering),
             Event::LockRattle | Event::KeyFound => Some(d.lockbox),
+            Event::RadioTuned => Some(d.radio),
             Event::CattleSpooked => Some(on_ground(
                 d.landmark(crate::geometry::district::LandmarkId::Corral).center,
                 1.0,
@@ -733,6 +759,7 @@ fn play_effects(
             Event::BeaconLit => (&sounds.beacon, g, 1.0),
             Event::Prayed => (&sounds.pray, g * 0.8, 1.0),
             Event::Escaped => (&sounds.dawn, g * 0.9, 1.0),
+            Event::RadioTuned => (&sounds.radio_squeal, g * 0.9, 1.0),
             _ => continue,
         };
         let kind = match e {
@@ -746,6 +773,58 @@ fn play_effects(
             (gain, speed),
             at.map(Anchor::at),
             kind,
+            &settings,
+        );
+    }
+}
+
+/// The numbers station, when the shelf radio is tuned to it: each beat
+/// of the cycle once, timed from the shared run clock so every client hears
+/// the same pip at the same moment, and placed at the radio.
+fn play_radio(
+    mut commands: Commands,
+    net: Res<Network>,
+    sounds: Res<Sounds>,
+    settings: Res<Settings>,
+    state: Res<State<Flow>>,
+    ears: Ears,
+    mut last: Local<Option<(u64, f32)>>,
+) {
+    let Some(s) = net.snapshot() else {
+        *last = None;
+        return;
+    };
+    let now = (s.run, s.elapsed);
+    let from = last
+        .replace(now)
+        .filter(|&(run, t)| run == s.run && t < s.elapsed && s.elapsed - t < 1.0);
+    let seed = ears.tuning.0.seed;
+    let (Some((_, from)), true, Flow::Playing) = (
+        from,
+        crate::radio::station(seed, s.world.radio) == Some(crate::radio::Station::Numbers),
+        state.get(),
+    ) else {
+        return;
+    };
+    let g = ears.tuning.0.sfx_gain;
+    let code = crate::sim::lock_code(seed);
+    let at = Some(Anchor::at(ears.layout.0.district.radio));
+    for beat in crate::radio::beats_between(seed, code, from as f64, s.elapsed as f64) {
+        use crate::radio::Tone;
+        let (clip, gain, speed) = match beat.tone {
+            Tone::Ident => (&sounds.radio_ident, g * 0.7, 1.0),
+            Tone::Pip => (&sounds.radio_pip, g * 0.8, 1.0),
+            Tone::Long => (&sounds.radio_pip_long, g * 0.8, 1.0),
+            // The static fills the swallowed digit's window.
+            Tone::Static => (&sounds.radio_static, g * 0.7, 6.0 / crate::radio::SLOT),
+        };
+        placed_shot(
+            &mut commands,
+            &ears,
+            clip,
+            (gain, speed),
+            at,
+            VoiceKind::Effect,
             &settings,
         );
     }
@@ -1094,7 +1173,6 @@ fn mix(
     mut placed: Query<(&Voice, &Anchor, &mut SpatialAudioSink)>,
     state: Res<State<Flow>>,
     net: Res<Network>,
-    note: Res<crate::encounter::NoteOpen>,
     fright: Res<crate::world::omen::Fright>,
     ears: Ears,
 ) {
@@ -1143,10 +1221,14 @@ fn mix(
         ((0.25 * s.world.night + 0.45 * rite + chased) * awake).clamp(0.0, 1.0)
     });
     let hush_omen = fright.hush();
-    let radio_on = note
-        .0
-        .is_some_and(|id| crate::lore::note(id).medium == crate::lore::Medium::Radio)
-        && *state.get() == Flow::Playing;
+    // The shelf radio plays what its shared dial is on.
+    let on_air = crate::radio::station(tuning.0.seed, world.radio).filter(|_| *state.get() == Flow::Playing);
+    let radio_on = matches!(
+        on_air,
+        Some(crate::radio::Station::Tale | crate::radio::Station::Joropo)
+    );
+    let joropo = on_air == Some(crate::radio::Station::Joropo);
+    let static_on = on_air == Some(crate::radio::Station::Static);
     // The night draws back while he whistles.
     let whistling = sinks
         .iter()
@@ -1176,7 +1258,12 @@ fn mix(
                 sink.set_speed(0.92 + 0.16 * world.warm);
             }
             VoiceKind::Crank => v *= if crank_on { 1.0 } else { 0.0 },
-            VoiceKind::Radio => v *= if radio_on { 1.0 } else { 0.0 },
+            VoiceKind::Radio => {
+                v *= if radio_on { 1.0 } else { 0.0 };
+                // The joropo stop: the same set, another station's pace.
+                sink.set_speed(if joropo { 1.12 } else { 1.0 });
+            }
+            VoiceKind::RadioStatic => v *= if static_on { 1.0 } else { 0.0 },
             VoiceKind::Whistle if net.status() == 2 && !net.spectating() => v = 0.0,
             VoiceKind::Whistle
             | VoiceKind::Effect

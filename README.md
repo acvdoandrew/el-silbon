@@ -89,9 +89,12 @@ tally are saved to `$XDG_DATA_HOME/el-silbon/profile.json` (else
    lines; the **panel beside the pump** switches which (the bridge starts
    dark).
 4. The truck key is padlocked in a **key box** at the windmill. Its three
-   numbers change every night and are written in three pages: the
-   Madrina's at the ceiba, the foreman's ledger in the stilt hut, the
-   guard's in the lookout cabin.
+   numbers change every night. A tag on the padlock names a frequency; the
+   **shelf radio** in the house (press E to turn its dial, shared by
+   everyone, and it squeals) reads the numbers out on that stop, forever:
+   each digit as that many short pips, a zero as one long tone. Lightning
+   can swallow a digit; the next round carries it. Near the radio the pips
+   also show as dots.
 5. **Start the truck** at the extraction road. The engine's roar draws him
    while it warms up; once it is warm, every standing player must be in its
    boarding zone to escape.

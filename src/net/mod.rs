@@ -101,7 +101,11 @@ impl Wire {
             && target.filter(|t| t.usable()).is_some_and(|t| {
                 matches!(
                     t.kind,
-                    TargetKind::Relic(_) | TargetKind::Aji(_) | TargetKind::Batteries(_) | TargetKind::Panel
+                    TargetKind::Relic(_)
+                        | TargetKind::Aji(_)
+                        | TargetKind::Batteries(_)
+                        | TargetKind::Panel
+                        | TargetKind::Radio
                 )
             });
         let mark = intent.ping.then(|| {

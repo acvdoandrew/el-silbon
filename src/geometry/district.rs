@@ -279,6 +279,8 @@ pub struct District {
     pub ignition: Vec3,
     /// The padlocked box with the truck key, on the crates by the windmill.
     pub lockbox: Vec3,
+    /// The shelf radio in the house (its page, id 10, lives here too).
+    pub radio: Vec3,
     /// Where Tureco is tied, behind the house by the back door.
     pub dog_post: Vec2,
     /// The dynamo's line panel, on its post beside the pump.
@@ -862,6 +864,7 @@ impl District {
             .iter()
             .find(|q| q.kind == PropKind::Barrel && q.center.distance(corral_note) <= q.half.x)
             .map_or(0., |q| q.height);
+        let radio = Vec3::new(-4.74, 1.82, -5.4);
         let notes = vec![
             NoteSite {
                 pos: Vec3::new(2.75, 0.8, -4.3),
@@ -908,10 +911,7 @@ impl District {
                 pos: Vec3::new(-4.74, 1.82, -4.5),
                 id: 9,
             },
-            NoteSite {
-                pos: Vec3::new(-4.74, 1.82, -5.4),
-                id: 10,
-            },
+            NoteSite { pos: radio, id: 10 },
             NoteSite {
                 pos: Vec3::new(-17.0, 1.12, -7.5),
                 id: 11,
@@ -1057,6 +1057,7 @@ impl District {
             beacon: Vec3::new(43.0, watch_height + 1.5, -91.0),
             ignition: Vec3::new(55.7, 1.45, 30.9),
             lockbox: Vec3::new(-37.0, TOWER_GROUND + 0.98, -25.0),
+            radio,
             dog_post: Vec2::new(-7.5, -8.5),
             panel: Vec3::new(-44.2, TOWER_GROUND + 1.35, -21.2),
             truck,
