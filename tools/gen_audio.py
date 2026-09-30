@@ -11,11 +11,16 @@ perception layer.
 Usage:  python3 tools/gen_audio.py                  (writes into ../assets/audio)
         python3 tools/gen_audio.py --out DIR
         python3 tools/gen_audio.py --only-whistles  (just the whistle takes, ~3 s)
+        python3 tools/gen_audio.py --only-whistles --synth --out DIR
+                                   (the synthesized fallback whistle, as if the
+                                    recording were absent; never into assets/)
 
 To hear the whistles as the game mixes them: python3 tools/whistle_lab.py
+To check the three distances stay apart:    python3 tools/whistle_lab.py measure --check
 """
 
 import argparse
+import collections
 import math
 import os
 import random
@@ -255,7 +260,8 @@ SLIDE = 0.11  # seconds sliding from one note into the next
 
 
 def whistle_take(rng, take):
-    """One performance, dry; returns (tone, breath envelope, pitch track).
+    """One performance, dry; returns (tone, breath envelope, pitch track,
+    sample where the final note begins).
 
     Legato: each note is reached by a slow slide and scooped into from a
     little below; every note sits a few cents off true; a slow, wide waver
@@ -347,7 +353,7 @@ def whistle_take(rng, take):
         phase += TAU * f / SR
         tone[i] = (math.sin(phase) + 0.02 * math.sin(2.0 * phase + 0.4)) * amp
         env[i] = amp
-    return tone, env, freqs
+    return tone, env, freqs, int(segments[-1][0] * SR)
 
 
 def pitched_air(rng, freqs, env, bandwidth=120.0):
@@ -371,26 +377,42 @@ def pitched_air(rng, freqs, env, bandwidth=120.0):
 # hum and hiss taken out. It holds the phrase twice: a creep of short,
 # tongued notes up from about 1.2 to 2.35 kHz and a long held note. Takes 2
 # and 3 are the same two performances played a little lower and slower, and
-# a little higher and faster. Without the file the synthesized performance
-# below stands in.
+# a little higher and faster. Without the file (or with --synth) the
+# synthesized performance below stands in.
 SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "audio", "source",
                       "el_silbon_silbido.wav")
-SOURCE_TAKES = [(0.09, 3.99, 1.0), (4.0, 7.9, 1.0), (0.09, 3.99, 0.93), (4.0, 7.9, 1.05)]
+# (start, end, playback rate, where the top note first lands): seconds in the
+# recording. From that note on is the held end of the phrase, which the far
+# whistle never loses to the wind.
+SOURCE_TAKES = [(0.09, 3.99, 1.0, 2.22), (4.0, 7.9, 1.0, 6.13), (0.09, 3.99, 0.93, 2.22), (4.0, 7.9, 1.05, 6.13)]
 _source = None
+USE_RECORDING = True  # False: build the synthesized fallback (--synth)
+
+
+def recording():
+    """Whether the whistles are built from the recording."""
+    return USE_RECORDING and os.path.exists(SOURCE)
+
+
+def use_synth():
+    """Build the whistles from the synthesized fallback from now on."""
+    global USE_RECORDING
+    USE_RECORDING = False
 
 
 def source_take(take):
     """One recorded performance, at its playback rate (below 1: lower and
-    slower); returns the samples, or None without the recording."""
+    slower); returns (samples, sample where the held end begins), or None
+    without the recording."""
     global _source
+    if not recording():
+        return None
     if _source is None:
-        if not os.path.exists(SOURCE):
-            return None
         with wave.open(SOURCE, "rb") as w:
             assert w.getframerate() == SR and w.getnchannels() == 1 and w.getsampwidth() == 2
             raw = w.readframes(w.getnframes())
         _source = [v / 32768.0 for v in struct.unpack("<%dh" % (len(raw) // 2), raw)]
-    start, end, rate = SOURCE_TAKES[take]
+    start, end, rate, held = SOURCE_TAKES[take]
     clip = _source[int(start * SR):int(end * SR)]
     n = int(len(clip) / rate)
     out = [0.0] * n
@@ -401,21 +423,46 @@ def source_take(take):
         a = clip[min(k, len(clip) - 1)]
         b = clip[min(k + 1, len(clip) - 1)]
         out[i] = a + (b - a) * f
-    return fade(out, 0.004, 0.08)
+    return fade(out, 0.004, 0.08), int((held - start) * SR / rate)
+
+
+def ring_air(rng, x, bandwidth=60.0):
+    """The air of a recorded whistle: the tone times slowly wandering noise,
+    so a narrow band of breath rides on every note without tracking its
+    pitch (the recording was cleaned of its own air)."""
+    m = one_pole_lowpass(one_pole_lowpass(noise(rng, len(x)), bandwidth), bandwidth)
+    peak = max(1e-9, max(abs(v) for v in m))
+    return [v * w / peak for v, w in zip(x, m)]
 
 
 def whistle_voice(rng, take, air=0.45, breath=0.12):
-    """The dry performance: the recording when it is there, otherwise the
-    synthesized tone with its band of air and a little hiss."""
-    recorded = source_take(take)
-    if recorded is not None:
+    """The dry performance with `air` (a band of breath around the tone) and
+    `breath` (hiss riding the phrase): the recording when it is there,
+    otherwise the synthesized tone. Returns (voice, envelope, sample where
+    the final held note begins)."""
+    source = source_take(take)
+    if source is not None:
+        recorded, held_at = source
         env = one_pole_lowpass([abs(v) for v in recorded], 20.0)
         peak = max(1e-9, max(env))
-        return recorded, [e / peak for e in env]
-    tone, env, freqs = whistle_take(rng, take)
+        env = [e / peak for e in env]
+        band = ring_air(rng, recorded)
+        # The recording sits higher than the synth, so its hiss does too.
+        hiss = one_pole_lowpass(one_pole_highpass(noise(rng, len(recorded)), 2000.0), 9000.0)
+        voice = [r + bd * air + h * e * breath for r, bd, h, e in zip(recorded, band, hiss, env)]
+        return voice, env, held_at
+    tone, env, freqs, held_at = whistle_take(rng, take)
     band = pitched_air(rng, freqs, env)
     hiss = one_pole_lowpass(one_pole_highpass(noise(rng, len(tone)), 1500.0), 7000.0)
-    return [tn + bd * air + h * e * breath for tn, bd, h, e in zip(tone, band, hiss, env)], env
+    return [tn + bd * air + h * e * breath for tn, bd, h, e in zip(tone, band, hiss, env)], env, held_at
+
+
+def voiced_end(env, floor=0.03):
+    """The sample after the last one where the phrase still sounds."""
+    for i in range(len(env) - 1, -1, -1):
+        if env[i] > floor:
+            return i + 1
+    return len(env)
 
 
 def active_rms(x, window=1.0):
@@ -434,65 +481,179 @@ def active_rms(x, window=1.0):
 
 # Every whistle file has the same phrase loudness; the game's three gains
 # (tuning.gain_loud/mid/faint) are the only level difference between them.
+# `whistle_lab.py measure --check` holds every file to it.
 WHISTLE_RMS = 0.3
+WHISTLE_CEILING = 0.97
 
 
-def level(x, rms=WHISTLE_RMS, ceiling=0.97):
-    r = max(1e-9, active_rms(x))
-    g = rms / r
-    peak = max(abs(v) for v in x) * g
-    if peak > ceiling:
-        g *= ceiling / peak
-    return [v * g for v in x]
+def limit(x, ceiling=WHISTLE_CEILING, look=0.01, release=0.12):
+    """A look-ahead peak limiter: the gain eases down over `look` seconds
+    before any sample that would pass `ceiling` and recovers over about
+    `release`, so a few stray peaks cost a moment of level instead of the
+    whole file's. Deterministic; never lets a sample past the ceiling."""
+    n = len(x)
+    ahead = max(1, int(look * SR))
+    need = [ceiling / abs(v) if abs(v) > ceiling else 1.0 for v in x]
+    # The least gain needed anywhere in the next `ahead` samples...
+    lowest, window = [1.0] * n, collections.deque()
+    for i in range(n - 1, -1, -1):
+        while window and need[window[-1]] >= need[i]:
+            window.pop()
+        window.append(i)
+        while window[0] > i + ahead:
+            window.popleft()
+        lowest[i] = need[window[0]]
+    # ...held with a slow recovery...
+    rise, held = 1.0 - math.exp(-1.0 / (release * SR)), 1.0
+    for i in range(n):
+        held = min(lowest[i], held + (1.0 - held) * rise)
+        lowest[i] = held
+    # ...and averaged over the look-ahead, which ramps it down before each
+    # peak and still never exceeds the gain that peak needs.
+    out, acc = [0.0] * n, 0.0
+    for i in range(n):
+        acc += lowest[i]
+        if i > ahead:
+            acc -= lowest[i - ahead - 1]
+        out[i] = max(-ceiling, min(ceiling, x[i] * acc / min(i + 1, ahead + 1)))
+    return out
+
+
+def level(x, rms=WHISTLE_RMS):
+    """Bring the phrase (its loudest second) to `rms`, then limit the few
+    peaks that would clip. Scaling the whole file down to fit its highest
+    peak instead left each take's level to its crest factor: a take whose
+    loudest second held a wind gap came out 4 dB quieter than its sisters."""
+    g = rms / max(1e-9, active_rms(x))
+    return limit([v * g for v in x])
+
+
+# Each distance is a signature, not a level: the files are loudness-matched
+# (WHISTLE_RMS) and the game's gains do the rest, so the signatures must read
+# at any volume, over rain, on any headset. `whistle_lab.py measure --check`
+# holds them apart.
+#   close  (loud):  breath and air on every note, dry, an audible inhale
+#                   before and exhale after; hardly any room.
+#   across (mid):   the air gone, and one clear slap a quarter-second behind
+#                   every note (SLAP), little room.
+#   far    (faint): late, thin, shimmering; the wind takes whole pieces of the
+#                   phrase away (seeded per take, never the held end) and what
+#                   comes through is mostly the open night's room.
+NEAR_AIR, NEAR_BREATH, NEAR_ROOM = 0.35, 0.28, 0.08
+SLAP, SLAP_GAIN = 0.26, 0.6
+# Share the wind takes of the stretch it may touch (from 0.3 s after the
+# first note to 0.1 s before the held end): about half of all the phrase
+# before its held end.
+FAR_GONE = (0.6, 0.7)
+
+
+def breath_noise(rng, seconds, centre, attack, peak):
+    """A soft breath: band-passed noise that swells over `attack` of its
+    length and dies away."""
+    n = int(seconds * SR)
+    b = biquad_bandpass(noise(rng, n), centre, 0.8)
+    for i in range(n):
+        u = i / n
+        b[i] *= (math.sin(0.5 * math.pi * u / attack) if u < attack else ((1.0 - u) / (1.0 - attack)) ** 1.5) * peak
+    return b
 
 
 def whistle_near(rng, take):
     """LOUD: right beside you. An intake of breath first, then the phrase
-    close and breathy — every waver and every slip of the air — in a small,
-    dark room. Played when he is truly FAR."""
-    voice, env = whistle_voice(rng, take, air=0.55, breath=0.22)
-    # The intake before he whistles: only heard this close.
-    pre = int(0.55 * SR)
-    inhale = biquad_bandpass(noise(rng, pre), 1100.0, 0.8)
-    for i in range(pre):
-        u = i / pre
-        inhale[i] *= math.sin(math.pi * u) ** 2 * 0.45
-    out = inhale + voice + silence(0.5)
+    close and breathy — every waver and every slip of the air — and the
+    breath let go after it; almost no room. Played when he is truly FAR."""
+    voice, env, _ = whistle_voice(rng, take, air=NEAR_AIR, breath=NEAR_BREATH)
+    # The intake before he whistles, running straight into the first note,
+    # and the breath let go after it: only heard this close.
+    inhale = breath_noise(rng, 0.55, 1100.0, 0.5, 0.45)
+    exhale = breath_noise(rng, 0.45, 850.0, 0.12, 0.45)
+    start = len(inhale) - int(0.08 * SR)
+    out = inhale[:start] + silence(len(voice) / SR + 0.55)
+    mix(out, inhale[start:], start)
+    mix(out, voice, start)
+    mix(out, exhale, start + max(0, voiced_end(env) - int(0.05 * SR)))
     room = reverb(one_pole_lowpass(out, 3500.0), size=0.5, damp=0.7, feedback=0.6)
-    out = [d + r * 0.14 for d, r in zip(out, room)]
+    out = [d + r * NEAR_ROOM for d, r in zip(out, room)]
     return level(fade(out, 0.005, 0.3))
 
 
 def whistle_across(rng, take):
-    """MIDDLING: somewhere across the grass. Less breath, the brightness
-    gone, one slap off the nearest wall, half room."""
-    voice, _ = whistle_voice(rng, take, air=0.4, breath=0.05)
-    body = voice + silence(1.6)
-    top = 3400.0 if os.path.exists(SOURCE) else 2400.0  # the recording sits higher than the synth
+    """MIDDLING: somewhere across the grass. Hardly any breath, the
+    brightness gone, and one clear slap a quarter-second behind every note
+    off the far fence line; a little room."""
+    voice, _, _ = whistle_voice(rng, take, air=0.12, breath=0.04)
+    body = voice + silence(1.4)
+    top = 3400.0 if recording() else 2400.0  # the recording sits higher than the synth
     body = one_pole_lowpass(one_pole_lowpass(body, top), top)
-    body = echo(body, 0.17, 0.32, top * 0.85)
-    room = reverb(body, size=1.1, damp=0.5, feedback=0.82)
-    out = [d * 0.5 + r * 0.5 for d, r in zip(body, room)]
+    body = echo(body, SLAP, SLAP_GAIN, top * 0.8)
+    room = reverb(body, size=0.9, damp=0.55, feedback=0.78)
+    out = [d * 0.7 + r * 0.3 for d, r in zip(body, room)]
     return level(fade(out, 0.01, 0.5))
 
 
+def wind_gaps(rng, start, stop):
+    """Where the wind takes the phrase away: up to three seeded stretches
+    between `start` and `stop` (seconds), each long enough to hear as
+    nothing; returns [(from, to)]."""
+    span = stop - start
+    gone = span * rng.uniform(*FAR_GONE)
+    if gone < 0.3:
+        return []
+    n = max(1, min(3, int(gone / 0.42)))
+    weights = [rng.uniform(0.75, 1.25) for _ in range(n)]
+    lengths = [gone * w / sum(weights) for w in weights]
+    heard = [rng.uniform(0.6, 1.4) for _ in range(n + 1)]
+    pieces = [(span - gone) * h / sum(heard) for h in heard]
+    gaps, t = [], start
+    for k in range(n):
+        t += pieces[k]
+        gaps.append((t, t + lengths[k]))
+        t += lengths[k]
+    return gaps
+
+
+def wind_gate(n, gaps, ramp=0.06, floor=0.015):
+    """A gain curve that falls to `floor` over each gap, with soft edges."""
+    g = [1.0] * n
+    r = int(ramp * SR)
+    for a, b in gaps:
+        i0, i1 = int(a * SR), int(b * SR)
+        for i in range(max(0, i0), min(n, i1)):
+            u = min(1.0, (i - i0) / r, (i1 - i) / r)
+            u = 0.5 - 0.5 * math.cos(math.pi * u)
+            g[i] = 1.0 - (1.0 - floor) * u
+    return g
+
+
 def whistle_far(rng, take):
-    """FAINT: far, far away. A bare thread of tone that the wind carries and
-    drops, late to arrive, answered twice by the treeline and drowned in
-    the open night. Played when he is truly NEAR."""
-    voice, _ = whistle_voice(rng, take, air=0.3, breath=0.0)
-    body = silence(0.09) + voice + silence(2.6)
-    high = os.path.exists(SOURCE)  # the recording sits higher than the synth
+    """FAINT: far, far away. A thin thread of tone, late to arrive and
+    shimmering in the air between; the wind takes whole pieces of the
+    phrase away (never its held end), the treeline answers twice, and what
+    comes through is mostly the open night. Played when he is truly NEAR."""
+    voice, env, held_at = whistle_voice(rng, take, air=0.0, breath=0.0)
+    late = 0.15
+    body = silence(late) + voice + silence(2.6)
+    high = recording()  # the recording sits higher than the synth
     body = one_pole_highpass(one_pole_highpass(body, 900.0 if high else 600.0), 900.0 if high else 600.0)
     for _ in range(4):
         body = one_pole_lowpass(body, 2100.0 if high else 1150.0)
-    # Gusts: the level wanders as the wind carries it and lets it go.
-    gust = one_pole_lowpass(one_pole_lowpass(noise(rng, len(body)), 0.8), 0.8)
-    peak = max(1e-9, max(abs(g) for g in gust))
-    body = [v * (0.55 + 0.45 * max(-1.0, min(1.0, g / peak))) for v, g in zip(body, gust)]
+    # The level wanders a little as the air carries it, and shimmers.
+    drift = one_pole_lowpass(one_pole_lowpass(noise(rng, len(body)), 0.8), 0.8)
+    peak = max(1e-9, max(abs(g) for g in drift))
+    rate, depth, ph = rng.uniform(4.0, 7.0), 0.25, rng.uniform(0.0, TAU)
+    body = [v * (0.8 + 0.2 * max(-1.0, min(1.0, g / peak))) * (1.0 + depth * math.sin(TAU * rate * i / SR + ph))
+            for i, (v, g) in enumerate(zip(body, drift))]
     body = echo(echo(body, 0.46, 0.5, 1900.0 if high else 1200.0), 0.95, 0.3, 1600.0 if high else 1000.0)
     room = reverb(body, size=1.6, damp=0.62, feedback=0.9)
     out = [d * 0.12 + r * 0.88 for d, r in zip(body, room)]
+    # The wind takes pieces of it away, room and all: from a little after
+    # the first note to a little before the held end.
+    first = next((i for i, e in enumerate(env) if e > 0.05), 0)
+    gaps = wind_gaps(rng, late + first / SR + 0.3, late + held_at / SR - 0.1)
+    out = [v * g for v, g in zip(out, wind_gate(len(out), gaps))]
+    # Levelled after the gaps, on what is left: levelled before them, each
+    # take would lose a different share of its loudest notes to the wind
+    # and the four would land up to 3 dB apart.
     return level(fade(out, 0.03, 1.0))
 
 
@@ -1776,7 +1937,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", default=os.path.join(here, "..", "assets", "audio"))
     parser.add_argument("--only-whistles", action="store_true", help="regenerate only the whistle takes")
+    parser.add_argument("--synth", action="store_true",
+                        help="build the whistles from the synthesized fallback, as if the recording were "
+                             "absent (needs --out: never overwrites the shipped whistles)")
     args = parser.parse_args()
+    if args.synth:
+        shipped = os.path.normcase(os.path.realpath(os.path.join(here, "..", "assets", "audio")))
+        if os.path.normcase(os.path.realpath(args.out)) == shipped:
+            parser.error("--synth needs --out DIR outside assets/audio (delete assets/audio/source/ to ship the synth)")
+        use_synth()
     os.makedirs(args.out, exist_ok=True)
     if args.only_whistles:
         write_all(args.out, make_whistles())

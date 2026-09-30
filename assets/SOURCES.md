@@ -20,14 +20,38 @@ thunder (from the bolt) and an omen's clatter behind you. The whistle and
 everything whose source is him stay unplaced (`src/audio.rs`).
 
 Regenerate: `python3 tools/gen_audio.py` (writes into `assets/audio/`);
-`--only-whistles` rebuilds just the whistle takes. `python3
-tools/whistle_lab.py` plays them as the game mixes them.
+`--only-whistles` rebuilds just the whistle takes, and `--only-whistles
+--synth --out DIR` builds the synthesized fallback whistles elsewhere, as if
+the recording were absent. `python3 tools/whistle_lab.py` plays them as the
+game mixes them; `python3 tools/whistle_lab.py measure --check` (add
+`--synth` for the fallback) fails unless the three distances stay apart on
+air, brightness, slap, ring and gaps, at the game's slowest and fastest
+playback speed too, and unless all twelve files are equally loud.
+
+The three whistle distances are loudness-matched, so the game's gains are
+the only level difference between them; each distance is a signature
+instead. Every whistle file's loudest second is brought to the same RMS
+(0.3, about −10.5 dBFS) and a look-ahead limiter (10 ms, 0.12 s recovery)
+holds the few peaks under 0.97; the limiter works hardest, up to 6 dB, on
+one short piece of far takes 0 and 1 that surfaces between two gusts. The
+recording was cleaned of its own air, so the breath and air are added back
+in processing: a band of noise riding the tone (the tone times slowly
+wandering noise) and hiss following its envelope. The synthesized fallback
+has its own band of air (noise through a resonance that follows its pitch)
+and goes through the same three distances.
+
+The game plays the three at `src/tuning.rs` gains `gain_loud` 1.0,
+`gain_mid` 0.3 and `gain_faint` 0.1 (0 / −10.5 / −20 dB), ducks the night
+bed to 0.4 under any whistle and plays each phrase at a random speed of
+0.92–1.06, all under the master slider alone (the curve in `src/mix.rs`:
+the default 80% is 12 dB below full scale). To A/B them by ear as the game
+mixes them: `python3 tools/whistle_lab.py ladder --all-takes`.
 
 | File | Content | Use |
 |---|---|---|
-| `whistle_loud_{0..3}.wav` | **third-party recording, see below**: the whistle of "El Silbon Silbido" (two performances, and each played a little lower/slower and higher/faster for four takes). Close: an intake of breath, then the whistle dry, in a small dark room | the whistle when he *seems* close (truly far) |
-| `whistle_mid_{0..3}.wav` | the same four takes, muffled, one slap echo, half room | seems somewhere across the grass |
-| `whistle_faint_{0..3}.wav` | the same four takes as a thin thread of tone: late, gusting with the wind, two treeline echoes, almost all room | seems far away (truly near) |
+| `whistle_loud_{0..3}.wav` | **third-party recording, see below**: the whistle of "El Silbon Silbido" (two performances, and each played a little lower/slower and higher/faster for four takes). Close: an intake of breath running into the phrase, breath and air on every note, dry (a trace of small room), and the breath let go after it | the whistle when he *seems* close (truly far) |
+| `whistle_mid_{0..3}.wav` | the same four takes with the air gone and the top rolled off, one clear slap echo a quarter-second (0.26 s) behind every note, a little room | seems somewhere across the grass |
+| `whistle_faint_{0..3}.wav` | the same four takes as a thin, late thread of tone that shimmers (a 4–7 Hz flutter); the wind takes two or three seeded pieces of the phrase away (about half of it before the held end, never the held end itself), two treeline echoes, almost all room | seems far away (truly near) |
 | `ambience_llano.wav` | 24 s seamless loop: wind, grass hiss, crickets, distant frogs, a nightbird | night ambience (hushes during warning/hunt) |
 | `rain_loop.wav` | 8 s seamless loop: filtered noise sheet, low rumble, sparse bright drop ticks | rain bed, swelling with the storm |
 | `thunder_a.wav`, `thunder_b.wav` | noise crack, rolling low swells and a sub-bass tail, light reverb | thunder after lightning (shared storm clock) |
