@@ -136,6 +136,12 @@ pub(crate) struct DownedHelp;
 /// Gone for the night: whom they watch, and how to watch another.
 #[derive(Component)]
 pub(crate) struct WatchLine;
+/// The dot at the centre of the view (hidden while watching a friend).
+#[derive(Component)]
+pub(crate) struct Crosshair;
+/// The controls reminder (bottom right); watching a friend, the switch keys.
+#[derive(Component)]
+pub(crate) struct ControlsLine;
 /// Where a downed friend lies (one per party slot): a diamond over the body
 /// and a label with who and how far.
 #[derive(Component)]
@@ -508,6 +514,7 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, map_image: Res<map
                     ..default()
                 },
                 BackgroundColor(PANEL_BG),
+                ControlsLine,
                 children![label(
                     f,
                     "WASD move · Shift run · Ctrl crouch · E use / hold · F light · G drop · Q ají · V mark (down: cry for help) · M map · Esc",
@@ -570,6 +577,7 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, map_image: Res<map
                     ..default()
                 },
                 BackgroundColor(Color::srgba(1.0, 0.97, 0.9, 0.7)),
+                Crosshair,
             ));
 
             // Prompt and hold progress (just below centre).

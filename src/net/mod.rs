@@ -178,6 +178,15 @@ pub fn watched(snapshot: &Snapshot, me: Option<PlayerId>) -> Option<&PlayerView>
     snapshot.player(mine.watching).filter(|p| p.status == 0)
 }
 
+/// The body this player feels: their own or, watching a friend, that
+/// friend's (their fear drives the heartbeat, the cold edge and the vitals).
+pub fn felt(snapshot: &Snapshot, me: Option<PlayerId>) -> protocol::Vitals {
+    match snapshot.watched {
+        Some(friend) if watched(snapshot, me).is_some() => friend,
+        _ => snapshot.me,
+    }
+}
+
 /// The friend on their feet `step` places along the party from the one
 /// watched now (wrapping); None when nobody else stands.
 pub fn cycle_watch(snapshot: &Snapshot, me: PlayerId, step: i32) -> Option<PlayerId> {
@@ -283,6 +292,10 @@ impl Network {
     /// Watching a friend: the eye, the whistles and the HUD are theirs.
     pub fn spectating(&self) -> bool {
         self.watched().is_some()
+    }
+    /// The body this player feels (see `felt`).
+    pub fn felt(&self) -> Option<protocol::Vitals> {
+        Some(felt(self.snapshot()?, self.id()))
     }
     /// What the fallen are told: whom they watch, and how to watch another.
     pub fn watch_label(&self) -> Option<String> {
@@ -501,12 +514,12 @@ fn net_keys(
     }
 }
 
-/// Gone for the night: A / D (the arrows, or the mouse buttons) watch the
-/// previous or the next friend on their feet. Only ever an explicit command;
-/// the dead's input packet still carries nothing.
+/// Gone for the night: A / D (or the arrows) watch the previous or the next
+/// friend on their feet. Only the keyboard: a click to take the cursor back
+/// never switches. Only ever an explicit command; the dead's input packet
+/// still carries nothing.
 fn spectate_keys(
     keys: Res<ButtonInput<KeyCode>>,
-    mouse: Res<ButtonInput<MouseButton>>,
     launch: Res<Launch>,
     state: Res<State<Flow>>,
     net: Res<Network>,
@@ -518,9 +531,9 @@ fn spectate_keys(
     if *state.get() != Flow::Playing || !net.running() || net.status() != 2 {
         return;
     }
-    let step = if keys.any_just_pressed([KeyCode::KeyA, KeyCode::ArrowLeft]) || mouse.just_pressed(MouseButton::Left) {
+    let step = if keys.any_just_pressed([KeyCode::KeyA, KeyCode::ArrowLeft]) {
         -1
-    } else if keys.any_just_pressed([KeyCode::KeyD, KeyCode::ArrowRight]) || mouse.just_pressed(MouseButton::Right) {
+    } else if keys.any_just_pressed([KeyCode::KeyD, KeyCode::ArrowRight]) {
         1
     } else {
         return;

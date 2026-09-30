@@ -193,7 +193,14 @@ pub(crate) fn roster(
                 Some(d) => format!("P{} {who}{you}  DOWN {:.0}s · {d:.0} m", line.0 + 1, p.bleed.max(0.0)),
                 None => format!("P{} {who}{you}  DOWN {:.0}s", line.0 + 1, p.bleed.max(0.0)),
             },
-            2 => format!("P{} {who}{you}  lost", line.0 + 1),
+            // Gone for the night, and whose night they now watch.
+            2 => match net
+                .snapshot()
+                .and_then(|s| s.players.iter().position(|q| p.watching != 0 && q.id == p.watching))
+            {
+                Some(slot) => format!("P{} {who}{you}  lost · watching P{}", line.0 + 1, slot + 1),
+                None => format!("P{} {who}{you}  lost", line.0 + 1),
+            },
             _ if p.carrying > 0 => format!("P{} {who}{you}  carrying {}", line.0 + 1, p.carrying),
             _ => format!("P{} {who}{you}", line.0 + 1),
         };
@@ -297,9 +304,10 @@ pub(crate) fn vitals(
     mut text: Query<&mut Text, With<VitalsText>>,
 ) {
     let playing = *state.get() == Flow::Playing && net.snapshot().is_some();
-    let (f, stamina, aji, battery) = net.snapshot().map_or((0.0, 1.0, 0, 1.0), |s| {
-        (s.me.fear, s.me.stamina, s.me.aji, s.me.battery)
-    });
+    // Watching a friend: their fear, breath, peppers and torch.
+    let (f, stamina, aji, battery) = net
+        .felt()
+        .map_or((0.0, 1.0, 0, 1.0), |v| (v.fear, v.stamina, v.aji, v.battery));
     for mut v in &mut bars.p0() {
         set_vis(&mut v, playing && f > 0.02);
     }
@@ -549,7 +557,8 @@ pub(crate) fn vignette(
     mut shown: Local<(f32, f32)>,
 ) {
     let th = &truth.encounter.threat;
-    let fear = net.snapshot().map_or(0.0, |s| s.me.fear);
+    // Watching a friend, the cold closes in with their fear.
+    let fear = net.felt().map_or(0.0, |v| v.fear);
     let pulse = if th.state == ThreatState::Warning {
         0.18 + 0.08 * (time.elapsed_secs() * 3.0).sin()
     } else {
@@ -673,12 +682,21 @@ pub(crate) fn downed_panel(
 /// Seconds "YOU DIED" holds the screen before the fallen watch a friend.
 const DIED_HOLD: f32 = 3.0;
 
-/// Gone for the night: whom they watch, and the keys to watch another.
+/// The controls reminder while watching a friend: only the switch keys.
+const CONTROLS_WATCHING: &str = "A / D or ← / →  watch another friend · M map · Esc";
+
+/// Gone for the night: whom they watch, and the keys to watch another. The
+/// crosshair goes (there is nothing to aim at from a friend's shoulder) and
+/// the controls reminder names the switch keys.
 pub(crate) fn watch_line(
     net: Res<Network>,
     state: Res<State<Flow>>,
     mut line: Query<(&mut Visibility, &Children), With<WatchLine>>,
+    mut crosshair: Query<&mut Visibility, (With<Crosshair>, Without<WatchLine>)>,
+    controls: Query<&Children, With<ControlsLine>>,
     mut texts: Query<&mut Text>,
+    // The reminder as spawned, kept while it names the switch keys.
+    mut usual: Local<Option<String>>,
 ) {
     let label = net.watch_label().filter(|_| *state.get() == Flow::Playing);
     for (mut vis, kids) in &mut line {
@@ -689,6 +707,24 @@ pub(crate) fn watch_line(
                 if let Ok(mut t) = texts.get_mut(kid) {
                     set_text(&mut t, label);
                 }
+            }
+        }
+    }
+    let watching = net.spectating();
+    for mut vis in &mut crosshair {
+        set_vis(&mut vis, !watching);
+    }
+    for kids in &controls {
+        let kids: &[Entity] = kids;
+        for &kid in kids {
+            let Ok(mut t) = texts.get_mut(kid) else {
+                continue;
+            };
+            if watching {
+                usual.get_or_insert_with(|| t.0.clone());
+                set_text(&mut t, CONTROLS_WATCHING);
+            } else if let Some(back) = usual.take() {
+                set_text(&mut t, &back);
             }
         }
     }
@@ -867,6 +903,10 @@ pub(crate) fn hints_and_captions(
                     );
                 }
             }
+            // Watching a friend, their night: he has seen them, not you.
+            Event::WarningBegan if net.status() == 2 => show(&mut hint, "He has seen your friend.", 6.0, 2),
+            Event::HuntBegan if net.status() == 2 => show(&mut hint, "He is coming for your friend!", 4.0, 2),
+            Event::Susto if net.status() == 2 => show(&mut hint, "Susto — fright freezes your friend.", 6.0, 2),
             Event::WarningBegan => show(
                 &mut hint,
                 "He has seen you. Get solid walls between you before he comes.",

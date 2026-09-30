@@ -524,9 +524,24 @@ pub fn frights(
     let dt = time.delta_secs();
     let layout = &layout.0;
     let eye3 = camera.translation;
-    let eye = Vec2::new(eye3.x, eye3.z);
     let f3 = camera.rotation * Vec3::NEG_Z;
-    let fwd = Vec2::new(f3.x, f3.z).normalize_or(Vec2::NEG_Y);
+    // Omens are placed from the listener's own eye: watching a friend, that
+    // friend's eye (the view rides just over their shoulder), never his.
+    let (eye, fwd) = match net.watched() {
+        Some(friend) => {
+            let pose = crate::control::Pose {
+                pos: Vec2::from_array(friend.position),
+                yaw: friend.yaw,
+                pitch: friend.pitch,
+                lower: 0.0,
+            };
+            (pose.pos, pose.forward2())
+        }
+        None => (
+            Vec2::new(eye3.x, eye3.z),
+            Vec2::new(f3.x, f3.z).normalize_or(Vec2::NEG_Y),
+        ),
+    };
     let ground = |p: Vec2| Vec3::new(p.x, layout.surface_height(p), p.y);
 
     if resets.read().count() > 0 {
@@ -596,13 +611,15 @@ pub fn frights(
                 }
             }
             Event::OmenFalseMark => {
-                // In the colour of a teammate on their feet (never your own).
+                // In the colour of a teammate on their feet (never your own,
+                // nor, watching a friend, theirs: the omen is theirs).
                 let me = net.id();
+                let friend = net.watched().map(|p| p.id);
                 let mates: Vec<usize> = net.snapshot().map_or(Vec::new(), |s| {
                     s.players
                         .iter()
                         .enumerate()
-                        .filter(|(_, p)| Some(p.id) != me && p.status == 0 && !p.hauled)
+                        .filter(|(_, p)| Some(p.id) != me && Some(p.id) != friend && p.status == 0 && !p.hauled)
                         .map(|(i, _)| i)
                         .collect()
                 });
