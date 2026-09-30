@@ -10,8 +10,15 @@
    and `docs/PLAYING.txt`.
 4. `gh release create <tag> --prerelease --title ... --notes ... <zips>`.
 
-The repository is private, so its releases are too: testers need access
-to the repository, or the zip shared directly.
+On a Windows machine with the MSVC toolchain, one command builds and
+packages the Windows zip (Git Bash has no `zip` for `package.sh`):
+`powershell -File tools\package.ps1 0.1.0-test.N` (add `-NoBuild` to
+package `target\release` as it is). The zip, about 110 MB, lands in
+`target\dist\` and can be attached to the release or sent directly
+(Discord takes it). Everyone in a session needs the same build.
+
+The repository is public by the user's choice (2026-09-30), so its
+releases are too.
 
 The whistle recording in `assets/audio/source/` is third-party and not
 cleared for public release (see `assets/SOURCES.md`); fine for private
