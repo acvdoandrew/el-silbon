@@ -175,6 +175,8 @@ fn inspect(
             Some("won")
         } else if s.outcome == 2 {
             Some("failed")
+        } else if s.outcome == 3 {
+            Some("dawn")
         } else if net.status() == 1 {
             Some("downed")
         } else if s.danger == 1 {

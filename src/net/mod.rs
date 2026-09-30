@@ -168,11 +168,13 @@ pub fn follow_body(pose: &mut Pose, local: &PlayerView, fresh: bool, dt: f32, tu
 }
 
 /// Gone for the night, the friend this player watches: only for the dead,
-/// and only while that friend is on their feet (the session moves the watch
-/// on when they fall). The eye, the ears and the HUD follow this row.
+/// only while that friend is on their feet (the session moves the watch on
+/// when they fall) and only while the night lasts: an ending (the truck, the
+/// last fall, the rooster) gives the fallen their own eye back under the
+/// outcome card. The eye, the ears and the HUD follow this row.
 pub fn watched(snapshot: &Snapshot, me: Option<PlayerId>) -> Option<&PlayerView> {
     let mine = snapshot.player(me?)?;
-    if mine.status != 2 || mine.watching == 0 {
+    if mine.status != 2 || mine.watching == 0 || snapshot.outcome().is_over() {
         return None;
     }
     snapshot.player(mine.watching).filter(|p| p.status == 0)
@@ -999,6 +1001,8 @@ fn banner(
             "SHARED VICTORY: the truck is away with everyone still standing."
         } else if s.outcome == 2 {
             "SHARED FAILURE: nobody is left on their feet. The host can restart."
+        } else if s.outcome == 3 {
+            "SHARED DAWN: the rooster crowed with bones still out. He will be back. The host can restart."
         } else if net.me().is_some_and(|p| p.hauled) {
             "IN HIS SACK: ají in his path, or Tureco's bark, makes him drop you."
         } else if net.status() == 1 {

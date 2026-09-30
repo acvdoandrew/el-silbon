@@ -368,14 +368,14 @@ pub fn chapter(n: u8) -> Option<Chapter> {
             "I · Las asaduras · The entrails",
             "Era un muchacho malcriado. Le pidió a su padre las asaduras de un venado, y no quiso otra cosa.\n\
              Cada hueso que vuelve a la ceiba lo despierta más: silbará más seguido.",
-            "He was a spoiled boy. He demanded a deer's entrails from his father, and would have nothing else. \
+            "He was a spoiled boy. He demanded a deer's entrails from his father, and would have nothing else.\n\
              Every bone that comes home to the ceiba wakes him more: he will whistle more often.",
         ),
         2 => c(
             "II · El padre · The father",
             "El padre volvió sin venado. El muchacho lo mató, le sacó las asaduras y se las llevó a su madre para que las cocinara.\n\
              Ahora una linterna encendida lo llama desde más lejos.",
-            "The father came home without a deer. The boy killed him, took out his entrails and brought them to his mother to cook. \
+            "The father came home without a deer. The boy killed him, took out his entrails and brought them to his mother to cook.\n\
              Now a lit torch calls him from farther away.",
         ),
         3 => c(
@@ -383,20 +383,21 @@ pub fn chapter(n: u8) -> Option<Chapter> {
             "El abuelo lo amarró a un botalón, lo azotó con un chaparro, le echó ají en las heridas y le soltó al perro.\n\
              Ya conoce el pajonal: entre la paja alta te encuentra desde más lejos.",
             "The grandfather tied him to a post, whipped him with a chaparro switch, rubbed hot pepper into the wounds \
-             and set the dog on him. He knows the tall grass now: he finds you in it from farther off.",
+             and set the dog on him.\n\
+             He knows the tall grass now: he finds you in it from farther off.",
         ),
         4 => c(
             "IV · La maldición · The curse",
             "Y lo maldijo: cargarás los huesos de tu padre en un saco, para siempre, y silbarás para que todos sepan que vienes.\n\
              Se le acaba la paciencia: cada hueso lo enfurece más.",
-            "And he cursed him: you will carry your father's bones in a sack, forever, and whistle so all will know you are coming. \
+            "And he cursed him: you will carry your father's bones in a sack, forever, and whistle so all will know you are coming.\n\
              His patience is running out: every bone angers him more.",
         ),
         5 => c(
             "V · Noche de tormenta · The storm night",
             "En Santa Rosa lo oímos una noche de tormenta, y los huesos se regaron por todo el hato.\n\
              Cuando ronque el motor, vendrá: el motor lo llama.",
-            "At Santa Rosa we heard him on a storm night, and the bones were scattered all over the ranch. \
+            "At Santa Rosa we heard him on a storm night, and the bones were scattered all over the ranch.\n\
              When the engine roars he will come: the engine calls him.",
         ),
         6 => c(

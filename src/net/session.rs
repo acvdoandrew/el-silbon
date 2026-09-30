@@ -1880,8 +1880,9 @@ impl Session {
                 })
                 .collect(),
             // The friend's own body, not a view of him: their fear, breath
-            // and hands follow the watcher whatever `anima_sight` says.
-            watched: if matches!(local.status, Status::Dead) {
+            // and hands follow the watcher whatever `anima_sight` says, for
+            // as long as the night lasts (an ending, Dawn included, ends it).
+            watched: if matches!(local.status, Status::Dead) && !self.encounter.outcome.is_over() {
                 local
                     .watch
                     .filter(|&friend| self.watchable(friend))

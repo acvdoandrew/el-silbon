@@ -2294,7 +2294,11 @@ impl RouteScript {
         let down = me.is_none_or(|p| p.status != 0);
         let over = snap.outcome().is_over();
         if step.guarded() && !step.awaits_outcome() && (down || over) {
-            let why = if down { "the player went down" } else { "the run ended" };
+            let why = if down {
+                "the player went down".to_string()
+            } else {
+                format!("the run ended {:?}", snap.outcome())
+            };
             out.finished = fail(self, format!("{why} before the route meant it to"));
             return out;
         }

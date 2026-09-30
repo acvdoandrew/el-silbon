@@ -873,7 +873,11 @@ pub(crate) fn hints_and_captions(
                 5.0,
                 1,
             ),
-            Event::RelicDelivered => show(&mut hint, "One more bundle at rest. The roots are listening.", 5.0, 2),
+            // A laying has one strip: the Madrina's chapter (`madrina_strip`),
+            // whose last line is the hint for the stage of anger it brings
+            // (La Rabia). Its stinger and the lamps' stutter are the
+            // telegraph (`world::omen::RageTelegraph`); the pips are on the
+            // bones line. So no hint of its own here.
             Event::AllBonesHome => show(
                 &mut hint,
                 "The bones are home. Bring the power back, then start the truck.",
@@ -1052,7 +1056,12 @@ pub(crate) fn radio_dots(
 ) {
     let d = &layout.0.district;
     let seed = tuning.0.seed;
-    let near = player.pose.pos.distance(Vec2::new(d.radio.x, d.radio.z)) <= tuning.0.radio_reach;
+    // Watching a friend, the dots are read where they stand: the pips are
+    // heard from their shoulder, not from the fallen body.
+    let ear = net
+        .watched()
+        .map_or(player.pose.pos, |friend| Vec2::from_array(friend.position));
+    let near = ear.distance(Vec2::new(d.radio.x, d.radio.z)) <= tuning.0.radio_reach;
     let text = match net.snapshot() {
         Some(s)
             if near

@@ -2,6 +2,62 @@
 
 ## Current handoff — M1b (branch m1b)
 
+**Integration: the four lanes, the branding, and their wiring (merge commits plus one wiring commit).**
+- Merged into m1b with `git merge --no-ff`, in this order: m1b-rage b8ef64d (4b8de7d), m1b-respiro 47c0a33 (70cfd81), m1b-radio ebc3b3d (ac4c1ca), m1b-spec 4167cb1 (e793303), main c5dd566 (6b768c5). After each merge `cargo check --locked` and `cargo test --locked --lib` were green (lib 102, 108, 115, 115, 124), and after the radio merge every test binary built.
+- Resolutions that carry numbers:
+  - `Event::ALL` is 53 (`Dawn`, then `RadioTuned`).
+  - `GAMEPLAY` is 17 (`pacing.rs`, then `radio.rs`, both after `Cargo.lock`).
+  - `assets/SOURCES.md` counts 82 WAVs: 76, plus `sting_rage`, plus the five radio clips. Both new rows are kept.
+  - `audio.rs` plays `Escaped | Dawn` as the dawn and `RadioTuned` as the squeal.
+  - The AGENTS.md pure list gains both `pacing` and `radio`.
+  - This file keeps every block: the route follow-up, then the spectator follow-up (item 9's), La Rabia, El Respiro and La Voz del Llano, plus main's branding section.
+  - `tuning.rs`, `sim.rs` (`base.at_rage(stage).at_pressure(p)` in `update_threat`, plus the leash), `script.rs`, `tests/session.rs` (radio test beside the respiro tests) and `gen_audio.py` (both tables) merged as described. main merged without conflict (`Cargo.toml`, `Cargo.lock`, `build.rs`, `src/icon.rs`, `src/ui/splash.rs`, `tools/package.ps1` as main has them).
+- Audio: `python tools/gen_audio.py` rewrote all 82 clips and the tree stayed clean. Every tracked WAV's blob equals the one each branch shipped (03a0b1a 77, rage 78, respiro 77, radio 82, spec 77, main 73; none differ).
+- User decisions, as merged: `Outcome::Dawn` on (1.5 x `night_length` 1200 = 1800 s); `anima_sight` true; `bleed_after_sack` 30 s (read as a floor); the name "El Silbón — The Return"; no fullscreen key.
+- Wiring (the wiring commit):
+  - **Dawn.**
+    - `net::watched` returns None once the outcome is over. Any ending, Dawn included, gives the fallen their own eye, heart and HUD back: the camera, crosshair, controls line and the omens' eye all follow it.
+    - The session's snapshot stops sending the friend's `watched` vitals once the night is over; `Watch` was already refused then.
+    - The shared status line gains a SHARED DAWN line, the render smoke names the stage `dawn`, and the route driver's guard names the outcome ("the run ended Dawn before the route meant it to").
+    - Already handled by the lanes: the outcome card, the Journal tally (`Ending::Dawn`), the awards (deeds go out on any ending), the dawn sound and the hint.
+    - The route tests still accept only Won then Failed. A Dawn in a route is a failure, by design; at 1800 s it lies past every route await.
+  - **One strip per laying.**
+    - The separate `RelicDelivered` hint ("One more bundle at rest…") is gone. The Madrina's chapter is the laying's only strip, and its last line is the hint for the stage of anger that laying brings. The English texts now break before that line, as the Spanish did.
+    - The wording matches the rage lane's levers:
+      - 1: he whistles more often (the stalk interval).
+      - 2: a lit torch from farther (the lure, +4 m per stage; the stolen torch from 2).
+      - 3: tall grass from farther (`grass_sight` 7.4 m).
+      - 4: every bone angers him more.
+      - 5: the engine calls him.
+    - The stinger and the lamps' stutter stay the telegraph (layings within 8 s are one). The anger pips stay on the bones line.
+    - At the fifth laying the `AllBonesHome` objective hint (bring the power back, then the truck) still shows beside the strip. It is the objective, not a telegraph, so it stays.
+  - **Pacing and La Rabia** already compose: rage scales his abilities (`update_threat`, `light_lure`), and `pace()` sets the warning floor and the leash after that, so the director decides when he may warn or hunt. A new test pins it (below). `Mood.rage` exists, and the director's tests build it by hand.
+  - **Spectators.** `RelicDelivered` (the rage telegraph), `RadioTuned` and `Dawn` are all sent to everyone (`None`), so they already reach the fallen, and `shared_with_watcher` needs nothing new. `hud::radio_dots` now measures `radio_reach` from the watched friend, so the watcher reads the pips where the friend hears them (the squeal and the pips were already placed at the radio and heard from the shoulder camera).
+  - **Splash.** No lane added a flag or a driver. `Launch::driven()` and the splash test already cover every driver, so they are unchanged.
+- Tests:
+  - `dawn_ends_the_watch_of_the_fallen_with_the_night`. It was red on the merged tree without the wiring: "no friend's body once the night is over".
+  - `his_anger_reaches_a_torch_farther_but_the_grace_still_holds_him_off`, written against the merged tree:
+    - At stage 0, a torch at the midpoint of the base and stage-4 lure ranges does not draw him; at stage 4 it does.
+    - For the rest of the grace he never warns and never comes inside the 30 m leash.
+- Gate on the wired tree: fmt, check, test (lib 124, district 9, session 64 + 3 ignored), and clippy -D warnings are clean.
+- Route sweeps (`target\sweep-merge-{normal,gentle,hard}.log`):
+  - Normal: solo 148/150, shared 150/150, with the same two failure lines as the merged tree before wiring (bar 146 met). The torch-off fix to the route driver was not needed.
+  - Gentle: solo 150/150, shared 150/150 (bar 146 met).
+  - Hard (informational): solo 149/150, shared 145/150 (river baseline 150/141). The failing seeds are the same as before wiring:
+    - Solo 147: the run ended Won during the ignition step, the respiro lane's route-timing artefact (its solo 108).
+    - Shared 13 and 61: player 2 went down on the walk to the truck (Go (44, 30)) with all five laid and stamina 0.03. This is the rage lane's stage-5 lure signature (its Normal shared 26 and 133).
+    - Shared 19, 94 and 127: player 1 went down on a bundle or batteries leg in run 1.
+  - The merged tree before wiring measured normal 148/150, gentle 150/150, hard 149/145.
+  - Normal solo 76 and 141 are new against the river baseline (150/150). Both fail the same way, and 76 was traced (`target\trace-merge-normal-solo-76.log`):
+    - Run 2 (the scripted failure run), step `Await Recovered`.
+    - The first warning comes at night 191 s: the Peak after the 120 s grace and the Build.
+    - He downs the evading walker about 10 s later by the corral approach (63.4, 6.5), with stamina 0.12 and nothing laid.
+    - This is the respiro lane's documented solo 84 signature (which now passes). It is not the stage-5 lure.
+- Fingerprint: it moves with the merge (hashed files from every lane, `Cargo.lock` from main) and once more with the wiring's one-line condition in `session.rs`. It is not recomputed here; test.3 must be built from this tree.
+- Unverified (rendered, user-led): the SHARED DAWN line; the fallen's view cutting back at an ending; the single strip at a laying; the dots for a watcher at the radio; the splash with the merged build.
+- Not run: the two-process net smoke (the relay and `WorldView.radio` are new to it) and the rendered game.
+- Bounds moved: none. Invariant tests are untouched. Committed on m1b; not pushed.
+
 **Fingerprint ignores line endings.**
 - `src/net/protocol.rs`: `fingerprint()` now calls the private `fingerprint_of<'a>(texts: impl IntoIterator<Item = &'a str>) -> u64`, FNV-1a over `text.bytes().filter(|&b| b != b'\r')`.
 - This deliberately changes the fingerprint: test.3 will NOT pair with test.1 (old CRLF/test.1 value 0x93dcc314afdc3f17). From now on a Windows CRLF build and a Linux LF build of the same commit DO pair.

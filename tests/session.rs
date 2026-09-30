@@ -3047,6 +3047,112 @@ fn dawn_ends_a_night_with_bones_out_at_one_and_a_half_night_lengths() {
     );
 }
 
+/// The rooster ends the night for the fallen too: whoever watched a friend
+/// hears the dawn and reads the same ending, and from then on watches no one
+/// (no friend's eye, no friend's body) and may not start again.
+#[test]
+fn dawn_ends_the_watch_of_the_fallen_with_the_night() {
+    let mut r = Rig::new(2);
+    // A short night keeps the test quick; the rule is the same.
+    r.t.night_length = 100.0;
+    r.take(2, 0);
+    r.calm = true;
+    r.s.players.get_mut(&HOST).unwrap().status = Status::Dead;
+    r.act(HOST, Action::Watch { id: 2 }).expect("a friend on their feet");
+    let snap = r.s.snapshot(HOST, &r.l, &r.t);
+    assert!(snap.watched.is_some(), "the friend's body while the night lasts");
+    assert!(watched(&snap, Some(HOST)).is_some_and(|p| p.id == 2));
+    r.events(HOST);
+    r.events(2);
+    r.idle(el_silbon::pacing::dawn(r.t.night_length) - r.s.encounter.elapsed + 0.5);
+    assert_eq!(r.s.encounter.outcome, Outcome::Dawn, "bones out at dawn");
+    for id in [HOST, 2] {
+        assert_eq!(
+            r.s.snapshot(id, &r.l, &r.t).outcome(),
+            Outcome::Dawn,
+            "player {id} is told"
+        );
+        assert!(r.events(id).contains(&Event::Dawn), "player {id} hears the rooster");
+    }
+    let snap = r.s.snapshot(HOST, &r.l, &r.t);
+    assert!(snap.watched.is_none(), "no friend's body once the night is over");
+    assert!(
+        watched(&snap, Some(HOST)).is_none(),
+        "the fallen have their own eye back"
+    );
+    assert_eq!(felt(&snap, Some(HOST)).fear, snap.me.fear, "and their own heart");
+    assert!(
+        r.act(HOST, Action::Watch { id: 2 }).is_err(),
+        "nobody starts watching after the night"
+    );
+}
+
+/// La Rabia and El Respiro together: his anger draws him to a lit torch
+/// from farther, but the grace still decides how near he comes and that he
+/// may not warn anyone.
+#[test]
+fn his_anger_reaches_a_torch_farther_but_the_grace_still_holds_him_off() {
+    use el_silbon::pacing::{LEASH_GRACE, Phase};
+    let mut r = Rig::new(1);
+    r.take(HOST, 0);
+    assert_eq!(r.s.pacing.phase(), Phase::Grace, "the first pickup begins the grace");
+    let stage = 4;
+    let (calm, angry) = (r.t.light_lure_range, r.t.at_rage(stage).light_lure_range);
+    assert!(angry > calm);
+    let me = Vec2::new(-30.0, 20.0);
+    let him = me + Vec2::new((calm + angry) / 2.0, 0.0);
+    assert!(r.l.line_of_sight(me, him), "open ground between them");
+    r.put(HOST, me);
+    r.lit = true;
+    let pin = |r: &mut Rig| {
+        let th = &mut r.s.encounter.threat;
+        th.state = ThreatState::Stalking;
+        th.presence = Presence::Present;
+        th.pos = him;
+        th.movement = el_silbon::sim::Movement::AtAnchor(r.l.patrol.nearest(him));
+        th.focus = None;
+    };
+    // Calm, the torch is out of his reach.
+    pin(&mut r);
+    r.idle(STEP);
+    assert!(r.s.encounter.threat.focus.is_none(), "stage 0: too far to draw him");
+    // Four bundles laid: the same torch draws him.
+    for relic in r.s.encounter.progress.relics.iter_mut().skip(1).take(stage as usize) {
+        *relic = Relic::Delivered;
+    }
+    assert_eq!(r.s.encounter.progress.rage(), stage);
+    pin(&mut r);
+    r.idle(STEP);
+    assert!(
+        r.s.encounter.threat.focus.is_some(),
+        "stage {stage}: the torch draws him"
+    );
+    // Drawn, and still held off for the rest of the grace.
+    let drawn = r.s.encounter.elapsed;
+    while r.s.pacing.phase() == Phase::Grace {
+        r.send(HOST, [0.0; 2], false, false, false);
+        r.tick();
+        let warned = r.events(HOST).contains(&Event::WarningBegan);
+        let th = &r.s.encounter.threat;
+        assert!(
+            !warned && th.state == ThreatState::Stalking,
+            "warned in the grace at {:.1} s",
+            r.s.encounter.elapsed
+        );
+        assert!(
+            th.pos.distance(me) >= LEASH_GRACE - 1.0,
+            "he came {:.1} m close in the grace",
+            th.pos.distance(me)
+        );
+        assert!(r.s.encounter.elapsed < 600.0, "the grace never ended");
+    }
+    let held = r.s.encounter.elapsed - drawn;
+    assert!(
+        held >= el_silbon::pacing::grace(r.t.night) - 2.0,
+        "held off for only {held:.1} s of the grace"
+    );
+}
+
 /// Two bundles at a time (three on a Gentle night): at least three trips.
 #[test]
 fn nobody_carries_more_bones_than_the_night_allows() {
