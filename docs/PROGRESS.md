@@ -1,5 +1,19 @@
 # Progress
 
+## Current handoff — M1b (branch m1b)
+
+**Fingerprint ignores line endings.**
+- `src/net/protocol.rs`: `fingerprint()` now calls the private `fingerprint_of<'a>(texts: impl IntoIterator<Item = &'a str>) -> u64`, FNV-1a over `text.bytes().filter(|&b| b != b'\r')`.
+- This deliberately changes the fingerprint: test.3 will NOT pair with test.1 (old CRLF/test.1 value 0x93dcc314afdc3f17). From now on a Windows CRLF build and a Linux LF build of the same commit DO pair.
+- Only `\r` bytes are dropped, so an LF checkout hashes exactly as before (unchanged HEAD on Linux: 0x656b174ca193ce45); only the Windows CRLF value moves.
+- This tree with only this item: 0xa7c36c4384a95020 on both platforms. From the Python model of the hash, which reproduces the real Rust test.1 value from HEAD re-CRLF'd. A checkpoint, not the test.3 value: items 6-11 edit hashed files again.
+- New hashed files later (pacing.rs, errand.rs, remedy.rs, radio.rs) just join the `include_str!` list.
+- Test `a_windows_and_a_linux_checkout_of_one_commit_share_a_fingerprint_but_edits_do_not`: CRLF and LF texts agree; a changed or removed line still refuses.
+- Verified: fmt, check, test (lib 87, district 7, session 41 + 3 ignored), clippy -D warnings clean. Route sweep: normal solo 150/150, shared 150/150; gentle 150/150, 149/150 (shared seed 124, = baseline); hard 136/150, 134/150 (= baseline; the test's own 97% assert fires, not the bar), failing seed set identical to HEAD's. No newly failing seeds.
+- Net smoke (headless, two processes, 127.0.0.1:5311): run 1 host `NET SMOKE FAIL: the player went down before the route meant it to` (run 1, night 155 s; handshake, delivery and marks had succeeded), client then failed on the closed session. Run 2: both `NET SMOKE PASS`, exit 0. Gameplay is unchanged (seed sets identical), so run 1 reads as a pre-existing real-time smoke flake.
+- Unverified: a real Linux LF build pairing with a Windows CRLF build.
+- Bounds moved: none. Committed on m1b; not pushed. Sweep logs `target\sweep-{normal,gentle,hard,hard-head}.log` are gitignored.
+
 ## Current handoff — 2026-09-30 (M1a landed: fingerprint-neutral, pairs with test.1)
 
 **Audio mix (fix 3).**

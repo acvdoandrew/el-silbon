@@ -351,8 +351,7 @@ pub enum ServerMessage {
 /// Exact gameplay build + seed handshake, rather than assuming layouts/config
 /// match because both applications happened to start successfully.
 pub fn fingerprint() -> u64 {
-    let mut hash = 0xcbf29ce484222325_u64;
-    for text in [
+    fingerprint_of([
         include_str!("protocol.rs"),
         include_str!("session.rs"),
         include_str!("../geometry.rs"),
@@ -366,8 +365,16 @@ pub fn fingerprint() -> u64 {
         include_str!("../skill.rs"),
         include_str!("../director.rs"),
         include_str!("../../Cargo.lock"),
-    ] {
-        for byte in text.bytes() {
+    ])
+}
+
+/// FNV-1a over the gameplay sources, without `\r`: git checks one commit out
+/// with CRLF on Windows (core.autocrlf) and LF on Linux, and both builds must
+/// agree.
+fn fingerprint_of<'a>(texts: impl IntoIterator<Item = &'a str>) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for text in texts {
+        for byte in text.bytes().filter(|&b| b != b'\r') {
             hash = (hash ^ byte as u64).wrapping_mul(0x100000001b3);
         }
     }
@@ -465,5 +472,19 @@ mod tests {
         ] {
             assert_eq!(outcome(outcome_code(o)), o);
         }
+    }
+
+    #[test]
+    fn a_windows_and_a_linux_checkout_of_one_commit_share_a_fingerprint_but_edits_do_not() {
+        // core.autocrlf=true checks the same commit out with CRLF on Windows
+        // and LF on Linux; both builds must pass each other's handshake.
+        assert_eq!(
+            fingerprint_of(["a = 1;\r\nb = 2;\r\n", "[[package]]\r\n"]),
+            fingerprint_of(["a = 1;\nb = 2;\n", "[[package]]\n"]),
+        );
+        // A real change to the rules still refuses the pairing.
+        let lf = fingerprint_of(["a = 1;\nb = 2;\n"]);
+        assert_ne!(lf, fingerprint_of(["a = 1;\nb = 3;\n"]));
+        assert_ne!(lf, fingerprint_of(["a = 1;b = 2;\n"]));
     }
 }
