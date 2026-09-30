@@ -2,6 +2,8 @@
 
 ## Current handoff — M1b (branch m1b)
 
+**test.5 (merged, 2026-09-30).** `t5-silbon` (031cf19: he hunts harder, El Velo) and `t5-lang` (c6141ff, 475222b: menu arrows by mouse, Language / Idioma, the Journal fits) merged onto test.4. Gate on the merged tree: fmt, clippy `-D warnings`, test (lib 135, district 9, session 66 + 3 ignored) clean. Sweeps (solo / shared): Normal 150 / 146, Gentle 150 / 150, Hard 150 / 150. Headless two-process net smoke: NET SMOKE PASS on host and client; fingerprint `0x8e42d8fa763d35cc` (does not pair with test.4). Packaged `el_silbon-0.1.0-test.5-windows.zip` (109.1 MB) with `tools/package.ps1`. Unverified by hand: the veils and the harder pacing in a human night, the ‹ › arrows by mouse, the Spanish texts on screen. User decision (test.4 playtest): a friend's map dot keeps following them live while hauled.
+
 **test.4 (merged): verified and tagged `v0.1.0-test.4` (local, not pushed).**
 - Tree: m1b 524a765, clean, Windows/MSVC. The tests and the net smoke ran on the debug build, the zip on the release build, all from this one tree. This note's commit changes only docs, which the fingerprint does not hash.
 - Gate: fmt, check, test (lib 124, district 9, session 64 + 3 ignored), clippy -D warnings, all clean.
