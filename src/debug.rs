@@ -494,8 +494,8 @@ fn smoke_exit(
         .map(|s| s.pacing.beats())
     {
         info!(
-            "SMOKE PACING (this run): grace {:.0}s build {:.0}s peak {:.0}s fade {:.0}s relax {:.0}s; peaks {} hunts {} early relax exits {}",
-            b.grace, b.build, b.peak, b.fade, b.relax, b.peaks, b.hunts, b.early_exits
+            "SMOKE PACING (this run): grace {:.0}s build {:.0}s peak {:.0}s fade {:.0}s relax {:.0}s; peaks {} hunts {} early relax exits {}; veiled {:.0}s in {} veils",
+            b.grace, b.build, b.peak, b.fade, b.relax, b.peaks, b.hunts, b.early_exits, b.veiled, b.veils
         );
     }
     if !smoke.frame_ms.is_empty() {

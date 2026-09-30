@@ -70,6 +70,9 @@ const SPIN: f32 = 8.0;
 const GLIMPSE: f32 = 1.2;
 /// A sighting this recent (seconds) is a hint where to look first.
 const HINT: f32 = 45.0;
+/// Seconds after a susto lets go of us in which being seen is the scream's
+/// doing, not the hiding place's: time to crouch back into it.
+const SHAKEN: f32 = 0.8;
 /// How far ahead of a corner (metres) the walk turns on: the body it sees
 /// lags the authority by a frame or two at walking speed.
 const LEAD: f32 = 0.35;
@@ -852,6 +855,9 @@ struct Reflex {
     closest: f32,
     stalled: f32,
     aji_wait: f32,
+    /// Seconds left in which a susto (ours: frozen, standing, screaming),
+    /// not the place, is what showed us to him.
+    shaken: f32,
     cands: Vec<Vec2>,
 }
 
@@ -1043,17 +1049,29 @@ impl Reflex {
         } else {
             0.0
         };
+        // A susto stands us up screaming wherever we hide: being seen through
+        // it (and for a moment after, while we crouch again) says nothing of
+        // the place, so we stay in it.
+        self.shaken = if snap.me.stun > 0.0 {
+            SHAKEN
+        } else {
+            (self.shaken - dt).max(0.0)
+        };
+        let shaken = self.shaken > 0.0;
+        if shaken {
+            self.sighted = 0.0;
+        }
         let exposed = match snap.danger {
             2 => cover != Cover::Grass || self.sighted >= 0.4,
             3 => false,
             _ => snap.threat.is_some() && cover != Cover::Grass,
         };
-        if exposed && cover.hides() {
+        if exposed && cover.hides() && !shaken {
             self.fail(pos);
         }
         let arrived = self.hide.is_some_and(|(at, _)| at.distance(pos) <= 0.4);
         let settled = matches!(cover, Cover::Shadow | Cover::Grass) || (cover == Cover::Edge && arrived);
-        let mut hidden = snap.danger == 3 || (settled && !exposed);
+        let mut hidden = snap.danger == 3 || (settled && (!exposed || shaken));
         if hidden && snap.danger == 1 {
             // He unsees us within `warn_break_time`; a warning that lasts
             // much longer means we are not hidden from him.

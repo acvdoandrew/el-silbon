@@ -12,6 +12,14 @@
 //! (warnings and hunts, within a budget per rolling ten minutes), **Fade**
 //! (he sinks, to rise far off) and **Relax** (leashed far away; only a push
 //! after its floor ends it early).
+//!
+//! **El Velo**: through a Build or a Relax, while he only stalks, he walks
+//! veiled for stretches: nobody sees him at all, but he still moves, sees,
+//! hears and whistles, and Tureco still growls at him. The veil lifts the
+//! moment he does anything else (a warning, a hunt, counting, the sack) and
+//! never falls in the Grace, a Peak or a Fade. Whether he is veiled is
+//! hidden AI state like the phase: the session only leaves him out of every
+//! snapshot while it lasts.
 
 use crate::rng::Rng;
 use crate::tuning::Night;
@@ -19,18 +27,18 @@ use crate::tuning::Night;
 /// Seconds of grace after the first pickup, per night.
 pub fn grace(night: Night) -> f32 {
     match night {
-        Night::Gentle => 240.0,
-        Night::Normal => 120.0,
-        Night::Hard => 45.0,
+        Night::Gentle => 120.0,
+        Night::Normal => 60.0,
+        Night::Hard => 25.0,
     }
 }
 
 /// Committed hunts allowed per rolling `HUNT_WINDOW`.
 pub fn hunt_budget(night: Night) -> usize {
     match night {
-        Night::Gentle => 1,
-        Night::Normal => 2,
-        Night::Hard => 3,
+        Night::Gentle => 2,
+        Night::Normal => 3,
+        Night::Hard => 4,
     }
 }
 
@@ -62,7 +70,7 @@ fn relax_scale(night: Night) -> f32 {
 pub const HUNT_WINDOW: f32 = 600.0;
 /// While leashed he keeps at least this far from every standing player.
 pub const LEASH_GRACE: f32 = 30.0;
-pub const LEASH_RELAX: f32 = 45.0;
+pub const LEASH_RELAX: f32 = 35.0;
 /// Whenever else his warning is held (a Build, a Fade, a Peak with the hunt
 /// budget spent) he keeps out past his notice range, so he never loiters at
 /// his standoff in plain view and warns from point-blank the moment he may.
@@ -70,9 +78,14 @@ pub const LEASH_HELD: f32 = 30.0;
 /// Build lasts this long before the Peak; a push ends it only after the low end.
 pub const BUILD: (f32, f32) = (60.0, 120.0);
 /// Relax lasts this long before bones laid, night and floor.
-pub const RELAX: (f32, f32) = (75.0, 120.0);
+pub const RELAX: (f32, f32) = (40.0, 70.0);
 /// Nothing ends a Relax before this, and no Relax is shorter.
-pub const RELAX_FLOOR: f32 = 40.0;
+pub const RELAX_FLOOR: f32 = 25.0;
+/// El Velo: how long one veiled stretch lasts, and how long he walks seen
+/// before the next (and after a Build or a Relax begins). The first veil of
+/// a Build always falls before the Build's shortest length.
+pub const VEIL: (f32, f32) = (25.0, 70.0);
+pub const VEIL_GAP: (f32, f32) = (12.0, 35.0);
 /// The longest Peak.
 pub const PEAK_MAX: f32 = 120.0;
 /// A Peak also ends after menace has stayed at `MENACE_HIGH` this long.
@@ -176,6 +189,9 @@ pub struct Beats {
     pub hunts: u32,
     /// Relaxes a push ended before their time.
     pub early_exits: u32,
+    /// Seconds he walked veiled (El Velo), and how many veils fell.
+    pub veiled: f32,
+    pub veils: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -198,11 +214,22 @@ pub struct Respiro {
     hunts: Vec<f32>,
     clock: f32,
     beats: Beats,
+    /// El Velo: he is veiled now, and the seconds left of this veil or of
+    /// the seen stretch before the next. Its own stream, so the veils never
+    /// move the beats.
+    veiled: bool,
+    veil_left: f32,
+    veil_rng: Rng,
 }
 
 impl Respiro {
     pub fn new(night: Night, seed: u64) -> Self {
+        let mut veil_rng = Rng::fork(seed, 0x5E5B_0E10);
+        let veil_left = veil_rng.range(VEIL_GAP.0, VEIL_GAP.1);
         Self {
+            veiled: false,
+            veil_left,
+            veil_rng,
             night,
             rng: Rng::fork(seed, 0x5E5B_1170),
             phase: Phase::Dormant,
@@ -232,6 +259,17 @@ impl Respiro {
     pub fn hunts_in_window(&self) -> usize {
         self.hunts.len()
     }
+    /// El Velo: nobody may see him now. Only ever true in a Build or a
+    /// Relax, and only while he was last told he is calm.
+    pub fn veiled(&self) -> bool {
+        self.veiled
+    }
+
+    /// The veil lifts (if it was down) and he walks seen for a fresh gap.
+    fn unveil(&mut self) {
+        self.veiled = false;
+        self.veil_left = self.veil_rng.range(VEIL_GAP.0, VEIL_GAP.1);
+    }
 
     /// He has risen for the first time: the grace begins.
     pub fn begin(&mut self) {
@@ -247,7 +285,7 @@ impl Respiro {
         self.beats.hunts += 1;
     }
 
-    /// The hunt resolved (lost track, or three averts into a withdraw).
+    /// The hunt resolved (lost track, or enough averts into a withdraw).
     pub fn hunt_resolved(&mut self) {
         if self.phase == Phase::Peak {
             self.resolved = true;
@@ -270,6 +308,9 @@ impl Respiro {
     }
 
     fn enter(&mut self, phase: Phase, laid: usize) {
+        // Every new beat begins seen: a push that brings the Peak on lifts
+        // the veil at once, tick or no tick.
+        self.unveil();
         self.phase = phase;
         self.in_phase = 0.0;
         self.resolved = false;
@@ -360,6 +401,25 @@ impl Respiro {
             _ if floor.is_some() => Some(LEASH_HELD),
             _ => None,
         };
+        // El Velo: in a Build or a Relax, while he only stalks, seen and
+        // veiled stretches take turns; anything else lifts the veil.
+        if matches!(self.phase, Phase::Build | Phase::Relax) && input.calm {
+            self.veil_left -= dt;
+            if self.veil_left <= 0.0 {
+                if self.veiled {
+                    self.unveil();
+                } else {
+                    self.veiled = true;
+                    self.beats.veils += 1;
+                    self.veil_left = self.veil_rng.range(VEIL.0, VEIL.1);
+                }
+            }
+        } else if self.veiled {
+            self.unveil();
+        }
+        if self.veiled {
+            self.beats.veiled += dt;
+        }
         Orders { floor, leash, withdraw }
     }
 }
@@ -437,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn a_relax_of_at_least_forty_seconds_always_follows_a_peak() {
+    fn a_relax_of_at_least_its_floor_always_follows_a_peak() {
         for night in NIGHTS {
             for seed in 0..12 {
                 let mut d = Respiro::new(night, seed);
@@ -576,18 +636,122 @@ mod tests {
                 let mut d = Respiro::new(night, seed);
                 let mut m = Mock::new(99);
                 d.begin();
-                let mut phases = Vec::new();
+                // Every change of beat or of veil, and when it came.
+                let mut phases: Vec<(Phase, bool, u32)> = Vec::new();
                 let mut t = 0.0;
+                let mut tick = 0u32;
                 while t < 2400.0 {
                     let (p, _) = m.step(&mut d, 0.1, t);
-                    if phases.last() != Some(&p) {
-                        phases.push(p);
+                    let now = (p, d.veiled());
+                    if phases.last().map(|&(p, v, _)| (p, v)) != Some(now) {
+                        phases.push((now.0, now.1, tick));
                     }
                     t += DT;
+                    tick += 1;
                 }
                 (phases, d.beats())
             };
             assert_eq!(run(5), run(5), "{night:?}");
+            let (veils, beats) = run(5);
+            assert!(
+                beats.veils > 0 && veils.iter().any(|&(_, v, _)| v),
+                "{night:?}: he was never veiled"
+            );
+            assert_ne!(run(6).0, veils, "{night:?}: another seed, another night");
+        }
+    }
+
+    /// El Velo, under a stand-in threat that warns whenever it may: veiled
+    /// only in a Build or a Relax, only while he was calm, never through a
+    /// warning or a hunt, and no veil outlasts its longest.
+    #[test]
+    fn the_veil_falls_only_in_a_build_or_a_relax_and_never_while_he_warns_or_hunts() {
+        for night in NIGHTS {
+            // The longest veil of the night's twelve runs.
+            let mut longest = 0.0_f32;
+            for seed in 0..12 {
+                let mut d = Respiro::new(night, seed);
+                let mut m = Mock::new(seed);
+                d.begin();
+                let (mut t, mut stretch) = (0.0, 0.0);
+                while t < 3600.0 {
+                    let calm = m.warn < 0.0 && m.hunt < 0.0;
+                    let (phase, _) = m.step(&mut d, 0.2, t);
+                    if d.veiled() {
+                        assert!(
+                            matches!(phase, Phase::Build | Phase::Relax),
+                            "{night:?} {seed}: veiled in the {phase:?} at {t:.1} s"
+                        );
+                        assert!(calm, "{night:?} {seed}: veiled while busy at {t:.1} s");
+                        stretch += DT;
+                        assert!(
+                            stretch <= VEIL.1 + 1.5 * DT,
+                            "{night:?} {seed}: a veil of {stretch:.1} s"
+                        );
+                        longest = longest.max(stretch);
+                    } else {
+                        stretch = 0.0;
+                    }
+                    if m.warn >= 0.0 || m.hunt >= 0.0 {
+                        assert!(
+                            !d.veiled(),
+                            "{night:?} {seed}: veiled through a warning or a hunt at {t:.1} s"
+                        );
+                    }
+                    t += DT;
+                }
+                let b = d.beats();
+                assert!(b.veils > 0 && b.veiled > 0.0, "{night:?} {seed}: never veiled");
+                assert!(
+                    b.veiled < b.build + b.relax,
+                    "{night:?} {seed}: veiled outside a Build or a Relax"
+                );
+            }
+            assert!(longest >= VEIL.0 - DT, "{night:?}: no veil ran its course");
+        }
+    }
+
+    /// The veil lifts the moment he is busy, and a push that brings the
+    /// Peak on lifts it at once, before any tick.
+    #[test]
+    fn anything_but_stalking_and_the_peak_lift_the_veil_at_once() {
+        let calm = Inputs {
+            players: &[],
+            nearest: f32::INFINITY,
+            calm: true,
+            present: true,
+            laid: 0,
+        };
+        let busy = Inputs { calm: false, ..calm };
+        for night in NIGHTS {
+            // The first veil of a Build falls before its shortest length.
+            let mut d = Respiro::new(night, 4);
+            d.begin();
+            while !d.veiled() {
+                d.tick(&calm, DT);
+                assert!(d.beats().build <= VEIL_GAP.1 + DT, "{night:?}: no veil in the Build");
+            }
+            assert_eq!(d.phase(), Phase::Build);
+            d.tick(&busy, DT);
+            assert!(!d.veiled(), "{night:?}: busy, and still veiled");
+            // A push once the Build is old enough brings the Peak on, veil or
+            // no veil; whenever the veil was down at that moment it lifts.
+            let mut lifted = 0;
+            for seed in 0..20 {
+                let mut d = Respiro::new(night, seed);
+                d.begin();
+                while d.phase() != Phase::Peak {
+                    d.tick(&calm, DT);
+                    if d.phase() == Phase::Build && d.in_phase >= BUILD.0 && d.veiled() {
+                        d.push_forward(0);
+                        assert_eq!(d.phase(), Phase::Peak);
+                        assert!(!d.veiled(), "{night:?} {seed}: veiled into the Peak");
+                        lifted += 1;
+                    }
+                }
+                assert!(!d.veiled());
+            }
+            assert!(lifted > 0, "{night:?}: no seed was veiled when the Build ran out");
         }
     }
 

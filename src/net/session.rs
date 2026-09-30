@@ -1676,6 +1676,8 @@ impl Session {
 
     fn cues(&mut self, tuning: &Tuning, dt: f32) {
         let ids: Vec<PlayerId> = self.players.keys().copied().collect();
+        // Veiled, his whistle keeps everyone closer company.
+        let veiled = self.veiled();
         // (the fallen, the friend they watch): the fallen hear no whistle of
         // their own, only the one their friend hears.
         let watchers: Vec<(PlayerId, PlayerId)> = self
@@ -1691,6 +1693,7 @@ impl Session {
             if matches!(p.status, Status::Dead) {
                 continue;
             }
+            p.cue.veil(veiled, tuning);
             let heard = p.cue.tick(dt, &self.encounter, p.pose.pos, tuning);
             let imagined = if p.status.is_active() && self.encounter.threat.state != ThreatState::Dormant {
                 p.cue.phantom(p.body.fear, tuning, dt)
@@ -1745,11 +1748,13 @@ impl Session {
         // A slightly wider than camera cone accommodates the visible body's
         // extent, but no transforms are sent for enemies behind walls or behind
         // this viewer. From a tower deck the whole llano opens up. Host trust
-        // and previously seen positions are not hidden.
+        // and previously seen positions are not hidden. Veiled (El Velo) he
+        // is seen by nobody, from anywhere: no position goes out at all.
         let visible = viewer.is_some_and(|(_, v)| {
             let towards = th.pos - v.pose.pos;
             let range = if v.ground_height > 3.0 { 130.0 } else { 75.0 };
-            th.visibility(tuning) > 0.0
+            !self.veiled()
+                && th.visibility(tuning) > 0.0
                 && towards.length() < range
                 && layout.line_of_sight(v.pose.pos, th.pos)
                 && v.pose.forward2().dot(towards.normalize_or(Vec2::Y)) > 0.55
@@ -1906,6 +1911,13 @@ impl Session {
                 Relic::Delivered => 'd',
             })
             .collect()
+    }
+
+    /// El Velo: nobody sees him now, though he walks, sees, hears and
+    /// whistles. Only while the director veils him and he only stalks, so a
+    /// warning unveils him on the very tick it begins; never after dawn.
+    pub fn veiled(&self) -> bool {
+        self.pacing.veiled() && self.encounter.threat.state == ThreatState::Stalking && !self.encounter.dawn
     }
 
     /// Is he physically standing in the world right now?

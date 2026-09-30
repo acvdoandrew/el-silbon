@@ -571,6 +571,57 @@
 - Gate re-run by the lane integrator on this tree: fmt, check, test (lib 102, district 9, session 56 + 3 ignored), clippy -D warnings clean; normal sweep again solo 150/150, shared 148/150 (22, 48), above the 146 bar. Bounds audit: the diff of `tests`, `script.rs`, `sim.rs` and `tuning.rs` only adds; the one rewritten test is the lore one above. The fingerprint checkpoint was reproduced by `python target\radio\fp.py`.
 - Bounds moved: none (route timeouts and the 3-14 min bound untouched). Invariant tests untouched (hunt and stalk slower than walking, warnings over 1.5 s, continuous pressure hidden). Committed on m1b-radio; not pushed. The untracked `.cargo/` (a local build setting) is never added.
 
+**He presses harder, and El Velo (branch t5-silbon from `v0.1.0-test.4` 5c24329; playtest test.4: "not aggressive enough", "make him disappear and reappear").**
+- Written without a compiler; the integrator compiled and verified it on this tree (below). No rendered run, no audio run, no human night yet.
+- **Verified by the integrator.** It compiled as written; `cargo fmt` reflowed `debug.rs`, `perception.rs` and `tests/session.rs`, and nothing else needed fixing. Gate on the final tree: fmt, check, test (lib 128, district 9, session 66 + 3 ignored), clippy `-D warnings` all clean.
+  - Route sweeps (150 storms each, solo / shared) on the final tree: Normal 150 / 146 (shared 38, 72, 119, 145), Gentle 150 / 150, Hard 150 / 150. For comparison, test.4 had Normal 148 / 150, Gentle 150 / 150 and Hard 149 / 145. The bar (>= 146 for Normal and Gentle) holds; Normal shared sits exactly on it.
+  - Before the driver fix, the author's code alone gave Normal 150 / 146 (the same four seeds), Gentle **138** / 150 and Hard 150 / 150. The 12 Gentle solo failures were one timeline in run 2. The driver waits alone in the dark for his warning, so its fear is at 0.95 when the warning comes. It hid well (he had been out of sight for 3.9 s), but it hit 1.0 and a susto stood it up screaming just before the new 4.0 s `lose_track_time`. It then wrote off the hiding place that had worked and walked 28 m of open ground in his sight until exposure downed it.
+  - **Driver change (`src/script.rs`, `Reflex`, a new `SHAKEN` = 0.8 s).** While our own susto holds us (`snap.me.stun`), and for 0.8 s after, being seen is blamed on the scream, not on the place. The place is not written off, and the driver crouches back into it. It reads only its own stun from the snapshot, never his state or position. He is no easier to pass; the driver just no longer runs from a hiding place that works.
+  - The four remaining Normal shared failures (player 2, run 1, `Go (44, 30)`): he warns from 15 m on ground lit by the lamps. The player has no stamina and no pepper, and walks about 34 m in his sight to the nearest grass. That is the harder Silbón (he notices from farther away and hunts longer), not a driver bug; left as is.
+  - Headless two-process net smoke (`--host 127.0.0.1:5371` / `--join`, `--net-smoke --headless`, debug build of this tree): both print NET SMOKE PASS (host: shared pickup and delivery, marks, the shared win, two restarts, the shared failure, the dropped load recovered; client: likewise, leaving while carrying). About 12 minutes, same machine (not LAN or internet evidence).
+- **Task A, the numbers (old -> new).** Director numbers stay in `src/pacing.rs`, threat numbers in `src/tuning.rs`:
+
+  | What | Where | Old | New |
+  |---|---|---|---|
+  | Grace after the first pickup (Gentle / Normal / Hard) | `pacing::grace` | 240 / 120 / 45 s | 120 / 60 / 25 s |
+  | Relax length before bones, night and floor | `pacing::RELAX` | U(75, 120) s | U(40, 70) s |
+  | Relax floor (nothing ends it sooner; no Relax shorter) | `pacing::RELAX_FLOOR` | 40 s | 25 s |
+  | Hunts per rolling 10 min (Gentle / Normal / Hard) | `pacing::hunt_budget` | 1 / 2 / 3 | 2 / 3 / 4 |
+  | Relax leash | `pacing::LEASH_RELAX` | 45 m | 35 m |
+  | Out of sight in a hunt before he loses track | `Tuning::lose_track_time` | 2.5 s | 4.0 s |
+  | Averts before he withdraws, Normal (Gentle / Hard) | `Tuning::averts_to_withdraw`, `with_night` | 3 (2 / 4) | 4 (3 / 5) |
+  | How far he notices a standing player (base; Gentle x0.85, Hard x1.12, pressure up to x1.25, all as before) | `Tuning::warn_distance` | 22 m | 24 m |
+  | Veiled: long-silence chance multiplier (new) | `Tuning::veil_silence` | - | 0.25 |
+  | Veiled: longest stalking gap (new) | `Tuning::veil_gap_max` | - | 10 s |
+  | Veil length / seen gap between veils (new) | `pacing::VEIL`, `pacing::VEIL_GAP` | - | U(25, 70) s / U(12, 35) s |
+
+  - Unchanged: the Relax night scale (Gentle x1.3, Hard x0.7), the grace leash (30 m), `LEASH_HELD` (30 m), Build (60-120 s), his hearing and every speed.
+  - `with_night` now derives the averts from the base (`+1` Hard, `-1` Gentle, at least 1) instead of hardcoding 4 / 2, so Normal no longer equals Hard.
+- **Task B, El Velo** (pure logic in `pacing.rs`, already hashed and already on the AGENTS.md pure list; no new module, no new `GAMEPLAY` entry):
+  - `Respiro` alternates seen and veiled stretches only in a Build or a Relax and only while the session says he is calm (Stalking): a seen gap `VEIL_GAP`, then a veil `VEIL`, and so on. Drawn from its own stream `Rng::fork(seed, 0x5E5B_0E10)`, so the veils never move the beats' own draws; deterministic per seed. Every `enter()` lifts the veil (a push that brings the Peak on lifts it before any tick), and any tick that is not calm lifts it. Never in the Grace, a Peak or a Fade; never while warning, hunting, counting, hauling or after dawn. The first veil of a Build always falls before the Build's shortest length (35 < 60 s).
+  - `Session::veiled()` = `pacing.veiled() && threat.state == Stalking && !encounter.dawn`. The live state matters: the director reads `calm` before `update_threat`, so a warning that begins this tick shows in that tick's snapshot.
+  - **The wire.** His pose already travels only as `Snapshot.threat: Option<VisibleThreat>`, sent when he is in the viewer's cone and line of sight. While veiled `snapshot()` sends `None` to everyone, from anywhere (the check is inside the visibility closure). No new field, no "hidden" flag, no protocol change; `danger` is 0 then because he only stalks. The veil itself is hidden AI state, like the phase.
+  - **The client.** Every presentation of him (`world::silbon`, the lightning reveal, the HUD) reads `net::mirror` of the snapshot, so a `None` draws nothing and places nothing. Solo goes through the same session snapshot.
+  - **The whistle as the guide.** The session sets `CueDirector::veil(bool)` each tick before `tick`. Veiled, the long-silence chance is x0.25 and no stalking gap outlasts 10 s; as a veil falls, a silence already under way is cut to 10 s. Still inverted, still categorical, never spatialized. The fallen hear the same forwarded cue as before.
+  - **He still senses.** `sim` is untouched: he moves, sees and hears as ever. **Decision:** Tureco still growls truthfully up close, and `DogView.facing` still turns toward him inside `growl_range` (22 m), as it always has. That is the dog's truthful cue, not the veil leaking; Tureco stays the only truthful proximity cue.
+  - **Reappearance.** A warning can only start in a Peak, so the veil always lifts first. New client-only `world::omen::Materialize` (a pure struct, unit-tested): when he comes into view after at least 8 s unseen and, within 3 s of appearing, comes for this eye (`danger` 1-3), it plays the existing `Sting::Reveal` (`sting_reveal.wav`) and shares the lightning reveal's 45 s cooldown. It reads only the snapshot (shown or not, the danger), so it never knows why he was unseen, and it also fires after a long out-of-view stretch. No new Event, sound or wire field. The warning still lasts `warn_time` (over 1.5 s, invariant untouched).
+  - **Lightning. Decision: nothing.** A strike shows nothing of a veiled man: the reveal in `omen.rs` already reads `snapshot.threat`, which is `None`. Why: a silhouette would need his position on the wire while veiled (forbidden), and the point of the veil is that the whistle (and Tureco) are the only guides.
+  - **Spectators.** `snapshot()` builds `threat` and `danger` from the viewer and the veil is session-wide, so a fallen watcher sees exactly what the friend sees, veils included; `Materialize` works for them from the same fields.
+  - **Stats.** `pacing::Beats` gains `veiled` (seconds) and `veils` (count); the `SMOKE PACING` line in `smoke_exit` logs both.
+- Tests (all pass on the final tree):
+  - `pacing`: `a_relax_of_at_least_forty_seconds_always_follows_a_peak` is renamed `a_relax_of_at_least_its_floor_always_follows_a_peak` (it reads `RELAX_FLOOR`; same assertions). `the_same_seed_gives_the_same_beats` also records every veil change and its tick, checks that another seed differs and that he was veiled. New: `the_veil_falls_only_in_a_build_or_a_relax_and_never_while_he_warns_or_hunts` (3 nights x 12 seeds x 3600 s with the stand-in threat: veiled only in Build/Relax, only after a calm input, never with a warning or hunt on, no veil longer than `VEIL.1`, some veil runs its course) and `anything_but_stalking_and_the_peak_lift_the_veil_at_once`.
+  - `perception`: `veiled_he_is_never_silent_for_long_and_still_keeps_no_rhythm` (30 min each way: longest veiled gap <= 10 s, mean shorter than seen, quick answers and spread kept, the same inverted variant; a long silence under way is cut short as the veil falls).
+  - `tuning`: the night test also checks averts Gentle < Normal < Hard (at least 1) and that the veil whistle numbers only shorten gaps.
+  - `sim`: `averted_again_and_again_…` asserted exactly 3 averts; it now asserts `t.averts_to_withdraw` (the number's purpose, not a loosening).
+  - `world::omen`: `he_materializes_only_after_a_long_while_unseen_and_only_coming_for_you`.
+  - Session: `veiled_he_is_in_no_snapshot_and_the_warning_that_follows_still_reads` (6 director seeds, host pinned 10 m off in plain view with a dead watcher: veiled only in Build/Relax and only Stalking; no threat and danger 0 in the snapshot, nothing on the wire says "veil"; host and watcher always agree; the warning shows him to both and lasts over 1.5 s; at least one Build runs out with him veiled) and `tureco_still_growls_at_him_when_he_walks_veiled`.
+  - Invariant tests untouched (hunt and stalk slower than walking, warnings over 1.5 s, continuous pressure hidden, whistle inverted and unplaced).
+- Risks:
+  - The default-seed route tests (`the_smoke_route_…`, `the_tour_…`, `the_network_smoke_routes_…`) pass. The sweeps are re-measured above, and Normal shared has no margin left over the bar.
+  - Fingerprint moves (`pacing.rs`, `tuning.rs`, `perception.rs`, `session.rs`, `sim.rs` edited; `script.rs` is not hashed). No protocol change. Builds from before this change will not pair with it.
+- Files: `src/pacing.rs`, `src/tuning.rs`, `src/perception.rs`, `src/net/session.rs`, `src/sim.rs` (one test), `src/world/omen.rs`, `src/debug.rs`, `src/script.rs` (driver, by the integrator), `tests/session.rs`, this file.
+- Next: a rendered solo smoke and a human night to judge whether 25-70 s veils and a 10 s whistle cap feel right, whether the stinger at a materialization reads as a scare, and how soon the first Peak now lands (about 2-3 min after the first pickup on Normal).
+
 ## Current handoff — 2026-09-30 (M1a landed: fingerprint-neutral, pairs with test.1)
 
 **Branding (main).** The user's branding kit as cover and icon. The name stays
