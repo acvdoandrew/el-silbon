@@ -2,7 +2,7 @@ use bevy::math::{Vec2, Vec3};
 use el_silbon::{
     body::Status,
     control::{Intent, Pose, Target},
-    geometry::{Layout, ground},
+    geometry::{Layout, Wade, ground},
     net::{
         Wire, controls_live, cycle_watch, follow_body, mirror,
         protocol::{Action, CallKind, HOST, Input, SEND_INTERVAL, STEP, ServerMessage, Snapshot},
@@ -1723,6 +1723,80 @@ fn what_falls_in_the_channel_floats() {
         panic!("not released")
     };
     assert!(at.y >= afloat, "the released bundle sank: {at:?}");
+}
+
+/// The session steps at which he warned, hunted and felled a lone player
+/// keeping still at `at` (crouched or not), from `off` away. He starts calm,
+/// still and ready to warn.
+fn fate(at: Vec2, off: Vec2, crouch: bool) -> [Option<usize>; 3] {
+    let mut r = Rig::new(1);
+    r.put(HOST, at);
+    let th = &mut r.s.encounter.threat;
+    th.state = ThreatState::Stalking;
+    th.presence = Presence::Present;
+    th.pos = at + off;
+    th.movement = el_silbon::sim::Movement::Still;
+    th.cooldown = 0.0;
+    let mut when = [None; 3];
+    for step in 0..(30.0 / STEP) as usize {
+        r.send(HOST, [0.0; 2], false, crouch, false);
+        r.tick();
+        for e in r.events(HOST) {
+            let k = match e {
+                Event::WarningBegan => 0,
+                Event::HuntBegan => 1,
+                Event::Downed => 2,
+                _ => continue,
+            };
+            when[k].get_or_insert(step);
+        }
+        if r.s.encounter.outcome.is_over() {
+            break;
+        }
+    }
+    when
+}
+
+/// Waist-deep in the caño is no refuge. In his view a player there is warned,
+/// hunted and caught on the very steps he would be on dry ground, standing or
+/// crouched: the water conceals no one the way tall grass does, and he wades
+/// in after them unslowed. (Their own steps there carry farther: see
+/// `wading_the_deep_channel_is_slow_and_heard_farther_than_the_ford`.)
+#[test]
+fn the_cano_hides_no_one() {
+    let (l, t) = (Layout::new(), Tuning::default());
+    // Near enough to be noticed even crouched, farther than tall grass
+    // would let him see a crouched player.
+    let off = Vec2::new(0.0, 10.0);
+    assert!(off.length() < t.warn_distance * t.sight_crouch && off.length() > t.grass_sight);
+    // In plain view, clear for his whole walk in, unlit, and far from Tureco.
+    let open = |at: Vec2| {
+        l.line_of_sight(at, at + off)
+            && (0..=40).all(|k| l.is_free(at + off * (k as f32 / 40.0), 0.45))
+            && !l.is_lit(at, 0)
+            && !l.district.tall_grass_at(at)
+            && at.distance(l.district.dog_post) > t.growl_range + off.length() + 5.0
+    };
+    let wet = Vec2::new(34.0, -65.5);
+    assert_eq!(l.wade(wet), Wade::Deep);
+    assert!(open(wet), "him on the north bank, in plain view of the channel");
+    let dry = (-60..=60)
+        .flat_map(|x| (-50..=40).map(move |y| Vec2::new(x as f32, y as f32)))
+        .find(|&p| {
+            l.bounds.contains(p + off) && (0..=40).all(|k| l.wade(p + off * (k as f32 / 40.0)) == Wade::Dry) && open(p)
+        })
+        .expect("open dry ground");
+    for crouch in [false, true] {
+        let (w, d) = (fate(wet, off, crouch), fate(dry, off, crouch));
+        assert!(
+            w.iter().all(Option::is_some),
+            "crouched {crouch}: warned, hunted and caught waist-deep: {w:?}"
+        );
+        assert_eq!(
+            w, d,
+            "crouched {crouch}: waist-deep at {wet} and on dry ground at {dry}"
+        );
+    }
 }
 
 #[test]

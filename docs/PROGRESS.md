@@ -88,7 +88,7 @@
     - Player 1 took the base-shed wade above.
     - Player 2 then died on the walk to the truck (Go (44,30)), caught near (9,14.6) fleeing west on 0.03 stamina. That is the pre-existing pattern of baseline Hard shared 38.
   - No longer failing: Gentle shared 124. Hard solo 17, 38, 44, 51, 72, 75, 81, 87, 95, 97, 101, 102, 117, 118. Hard shared 28, 34, 63, 70, 73, 75, 82.
-  - Hard solo 17 was traced: its night diverges early, so the Hard solo gain (136 → 150) is observed, not attributed.
+  - Hard solo 17 was traced: its night diverges early, so the Hard solo gain (136 → 150) is observed, not attributed. (Since attributed: the carved bank walls. See "The route keeps to the bridge" below.)
 - Fingerprint checkpoint for this tree: 0x078a48644d371cd7, from the same Python model, recomputed at commit (it reproduces the previous 0xc8f0af5d5e118e17 from HEAD). Items 8-11 move it again. No protocol message or wire field changed, and `Wade` is not on the wire. `src/body.rs` briefly had LF endings during the work and is back to CRLF; the fingerprint ignores `\r` either way.
 - Unverified (user-led, rendered):
   - whether the waterline and the wading start match by eye
@@ -102,7 +102,7 @@
   - The marsh and the pond keep the dry-shore invisible wall along their rectangles (Phase 2D).
   - The reflex's `rate()` still counts deep water as only +3 wet, so a hide spot waist-deep is a trap.
   - Tureco crosses the caño unslowed, like him.
-  - The catch cinematic's fallen eye (`lunge_frame` at `player.rs` :613 and :694, and `world/silbon.rs` :1031) still reads `surface_height`, so a player caught waist-deep watches the catch from about -0.31, under the water sheet. This is presentation only, outside this item's three sites.
+  - The catch cinematic's fallen eye (`lunge_frame` at `player.rs` :613 and :694, and `world/silbon.rs` :1031) still reads `surface_height`, so a player caught waist-deep watches the catch from about -0.31, under the water sheet. This is presentation only, outside this item's three sites. (Done: see "The route keeps to the bridge" below.)
   - Phase 2 (soaked torch, drifting bundle) has not started.
   - Lore page 5 is untouched.
 - Bounds moved: none. Invariant tests are untouched (hunt and stalk slower than walking, warnings over 1.5 s, continuous pressure hidden). Committed on m1b; not pushed.
@@ -230,6 +230,92 @@
   - Done: `src/noise.rs` (above).
 - Bounds moved: none. The only test change is a new assertion in `protocol.rs`; invariant tests are untouched.
 - The commit holds exactly three files: `docs/PROGRESS.md`, `src/net/protocol.rs` and `src/net/transport.rs`. No asset touched. `target\fp.py`, `target\fp11\*` and `target\fp12\*` are gitignored evidence. Committed on m1b; not pushed.
+
+**The route keeps to the bridge, and the caño hides no one (follow-up to item 7, 91bdfd7).**
+- **Decision (route driver only):** the scripted route wades waist-deep only where no dry way exists anywhere. `script.rs` is debug tooling, not a rule, and is not hashed.
+- The problem: from the lookout's ramp foot (43,-54) the base-shed bundle (52.5,-87.5) lies straight across the caño, and `route()`'s local box holds neither the bridge nor the bank road. Since item 7 the box's A* therefore waded east of the ramp. The trail network is only consulted when the box fails, and it would not have saved the walk either: its off-leg from node (43,-54) may wade too, and legs are compared by plain length, so that wading leg would win. Hence the dry pass keeps the network's legs dry as well. This wade was Normal shared 35 and Hard shared 4, and the net smoke's run-1 flake had its signature.
+- `script.rs`:
+  - New `Water { Wade, Dry }`. `Nav::local` takes one. `Dry` makes waist-deep cells impassable through a single `passable` test, used for the cell itself and for both corners of a diagonal. The start and goal cells get no exemption, so a goal afloat mid-channel has no dry way.
+  - `route()` is now `route_by(Dry) || route_by(Wade)`:
+    - The dry pass is the old search (local box, then the trail network) with dry legs. The network's own edges are all dry: the bridge deck, the ford (shallow) and the bank road.
+    - The wading pass is exactly the old search, with DEEP costing 6.
+    - The two passes differ only in the cells the old search could wade, so a walk that stayed clear of deep water keeps its path. Only an exact tie between equal-cost paths could still resolve differently.
+  - Kept in `Wade`: the reflex's `way()` (its hide paths) and the ramp foot ↔ deck legs in `plan()`.
+  - Why neither of the task's other options:
+    - At DEEP 6, a wider box would still wade: about 9 m waist-deep plus the bank is roughly 80 cost against about 89 m dry.
+    - A bridge or ford waypoint is what the dry trail network already gives.
+  - The dry way from the ramp foot to the shed runs over the bridge and along the bank road south of the deck: 88.9 m out and 90.3 m back, against 34.8 m straight.
+- Test, red first: lib `script::tests::the_walk_keeps_out_of_the_cano_while_a_dry_way_exists`.
+  - Red: "waded from [43, -54] to [52.5, -87.5]: [(46.875, -62.125), (46.875, -77.125), (52.5, -87.5)]", straight across east of the ramp.
+  - It checks both ways, and that a goal afloat at (34,-65.5) is still reached.
+- Normal shared 35 and Hard shared 4 now pass. Their traces (`target\cano\trace-fix-*`) have no position in the deep channel. Item 7's traces waded east of the ramp at 201 s and 194 s.
+- **The caño hides no one.** The session rule is unchanged: the new test passed the first time it ran.
+  - `tests/session.rs` `the_cano_hides_no_one`, with a `fate` helper, sets up this scene:
+    - a lone player keeping still waist-deep at (34,-65.5)
+    - him 10 m off on the north bank (inside the crouched notice of 13.2 m, beyond `grass_sight` 5 m), Stalking, Present, Still, cooldown 0
+  - The steps of WarningBegan, HuntBegan and Downed must equal those of the same stand on open dry ground, standing and crouched.
+  - The dry spot is found by search: dry all the way in, clear for his 0.45 m circle, unlit, not tall grass, far from Tureco. It is (-60,-50).
+  - Standing: warned at step 0, hunted at 204, down at 417, in both places. He wades in after them unslowed.
+  - The test has teeth. Two throwaway mutations, each reverted:
+    - Concealing a deep wader in `threat_step`'s `Prey`: red, "warned, hunted and caught waist-deep: [None, None, None]".
+    - Slowing him ×0.35 in deep water in `step_toward`: red, down at step 455, not 417.
+  - Noise is already covered by `wading_the_deep_channel_is_slow_and_heard_farther_than_the_ford` and the body test, so it is not duplicated.
+  - No rule and no hashed file changed. The fingerprint stays **0xd335073e06e8cde2**, printed by both processes of every net smoke below, so this pairs with fb6c1ca.
+- **Hard solo 136 → 150 after item 7, explained (traced).**
+  - The pre-wade failure signature (`sweep6-hard`, 12 of 14 solo seeds): the walker downed at (22.6,-70.3), him last seen at y = -60.58. The other two, 38 and 75, are the same trap with him pinned against the bridge rail (x = 19.66).
+  - Hard solo 17 was traced on a real 7690b09 build (a scratch export with its own target dir). A shared target dir silently reused the current library, because the scratch sources had older mtimes; see the note at the end of this item.
+    - At 167 s he begins the hunt from the north bank by the bridge (18.2,-54.6). The route is walking from the stilt hut to the ramp foot, along the south bank toward the bridge.
+    - The caño's Bank wall, which does not block sight, stops him at y = -60.58 (his 0.42 m radius) but not his gaze.
+    - The walker slides west along the south wall at y = -70.30 (the player radius), in plain view 10 m across the water.
+    - Exposure takes him: 0.13 → 0.89 in 2.6 s, down at 170 s.
+  - On HEAD the same seed matches pre exactly until 138.7 s. There it diverges first, at the ford's south end (the ford's dry ends are now Dry, so the walker leaves the ford 0.67 m sooner), and the seed passes.
+  - Controlled experiments on HEAD, each reverted:
+    - x1, the old ford speed only: matches pre until 149.5 s, where the walker takes the carved bank at the pier corner. Passes.
+    - x2, the old ford and the bank wall restored: the trace never diverges from pre. Fails the same way.
+    - x3, the bank wall alone restored: seed 17 fails the same way.
+      - The whole Hard sweep drops to solo 132/150, shared 133/150.
+      - 16 of the 18 solo failures carry the exact pre-wade signature. The other two, 37 and 75, are him pinned against the bridge rail (x = 19.66) across the water.
+      - 13 of the 14 pre-wade failing solo seeds are among them.
+  - **Conclusion:** the jump comes from carving the caño's bank walls.
+    - The walls pinned both him and the walker at the waterline, so a hunt across the channel became a catch by exposure through the water. Wading removed that trap.
+    - It was never the base-shed wade: these runs fail on bundle 3's leg, not bundle 4's.
+    - Hard solo stays 150/150 with this fix.
+  - Evidence: `target\cano\trace-{pre,head,x1-oldford,x2-oldford-walls,x3-walls}-hard-solo-17.log`, `target\cano\sweep-x3-walls-hard.log` and `target\cano\diverge.py`.
+- **The catch's fallen eye** (presentation only):
+  - New `world::silbon::catch_frame(s, catch, layout, tuning)`, used by all four callers:
+    - `player.rs`: `torch_light` and `head_bob`
+    - `world/omen.rs`: the lunge light
+    - `world/silbon.rs`: `animate_silbon`
+  - `lunge_frame` takes a second closure, `rest`. As the eye falls it goes from `surface + standing` to `rest_height + the downed eye`. This is the same as before on dry land, where the two heights agree. His feet stay on `surface_height` (the bed).
+  - Test, red first: `world::silbon::tests::a_catch_in_the_channel_is_watched_from_above_the_water`.
+    - Red: "s 0.38: the caught eye is under the water at -0.0335". The message was reworded after the fix.
+    - Over the whole catch, for every catch way, the eye stays more than 0.1 above `WATER_LEVEL` and his feet stay on the bed.
+  - The existing synthetic-ground catch test passes the same closure twice.
+- Verified (the integrator reran the gate, the sweep and the smoke on this tree; the implementer's own logs are `target\cano\*`):
+  - Gate: fmt, fmt --check, check, test (lib 97, district 9, session 56 + 3 ignored), clippy -D warnings, all clean. Logs `target\integ\{check,test,clippy}.log`.
+  - Bounds audit of `git diff HEAD -- tests src/script.rs src/sim.rs src/tuning.rs`: `sim.rs` and `tuning.rs` are untouched, `script.rs` changes no number, and `tests/session.rs` only adds lines (a test, a helper, `Wade` on one import). The invariant tests are not touched.
+  - Route sweep (`target\integ\sweep-*.log`, same counts as the implementer's): normal solo 150/150, shared 150/150; gentle 150/150, 150/150; hard 150/150, 141/150. On hard the test's own 97% assert fires, which is not the bar. The bars were normal 146, gentle 148, hard solo 147 and shared 135.
+  - Against the previous commit's `sweep12v-*` (normal 150/148, gentle 150/150, hard 150/138), no seed newly fails on any night.
+    - No longer failing: Normal shared 11 and 35; Hard shared 4, 61 and 126.
+    - Still failing: Hard shared 5, 20, 30, 38, 43, 46, 93, 123 and 124.
+      - 5, 30, 38, 43, 93 and 124 are identical character for character.
+      - 20 and 46 (player 2 waited 300 s for Carried(1), the baseline pattern) fail at the same step on a shifted timeline.
+      - So does 123 (player 2 caught at (9.2,14.5) on the walk to the truck, the pattern of baseline Hard shared 38): at 326 s, was 289 s. Player 1 now walks round to the shed instead of wading.
+  - Net smoke (headless, two processes, 127.0.0.1:5311, one debug build of this tree), **three runs in a row**, run by the integrator and again by the implementer:
+    - Integrator: every run printed `NET SMOKE PASS host` and `NET SMOKE PASS client`, with host exit 0 and client exit 0. They took 10.7, 10.2 and 11.6 min. The smoke's own limit is 2400 s, so no cap had to move.
+    - Every process printed `NET fingerprint 0xd335073e06e8cde2`, so this pairs with fb6c1ca.
+    - Logs `target\integ\net{1,2,3}-{host,client}.err`, `net-codes.txt` and the runner `net.ps1`. The implementer's three runs (10.6, 11.3, 11.5 min, all passing) are in `target\cano\`.
+    - The machine was not idle: an unrelated `cargo test` compile in another checkout was still running as run 1 started, and the implementer's own runs overlapped a scratch compile. CPU load only; every run passed.
+    - The run-1 flake that item 9 recorded (down at (44.8,-81.9) coming back from the shed) had this wade's signature. It did not recur in these six runs, which does not prove it gone.
+- Unverified (user-led, rendered): the look of a catch waist-deep.
+- Open:
+  - The reflex's own hide paths and hide spots may still wade (DEEP 6; `rate()` counts deep water only +3 wet), so a hide spot waist-deep is still possible (open since item 7).
+  - Normal shared 11 now passes, although it neither waded nor went to the shed. Traced against HEAD:
+    - The traces match until 140.4 s, where player 1, evading at the pier's north-west corner, walks about 0.5 m farther from the channel. After that the night runs on a new timeline.
+    - `target\cano\trace-{head,fix}-normal-shared-11.log`.
+    - Hard shared 61 and 126 also pass now. They were not traced.
+- Tooling note: a scratch build of another commit must use its own `CARGO_TARGET_DIR`. Cargo hashes path packages relative to their root, so a second checkout sharing `target\` reuses and overwrites this tree's artifacts. After such a mix-up, run `cargo clean -p el_silbon` (dependencies are kept).
+- Bounds moved: none (the route bounds, the quick-hands bound and the smoke and route caps are all as they were). Invariant tests are untouched. `tests/session.rs` only gains a test, a helper and one import. No asset changed. Committed on m1b; not pushed.
 
 ## Current handoff — 2026-09-30 (M1a landed: fingerprint-neutral, pairs with test.1)
 

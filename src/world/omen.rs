@@ -660,13 +660,8 @@ pub fn frights(
     // The torch finds his face and nothing else: a hard light between his
     // face and the caught eye, only while the torch is lit.
     let (mut light, mut light_tf) = lunge_light.into_inner();
-    let t = &tuning.0;
     let frame = match (fright.lunge, fright.catch) {
-        (Some(s), Some(c)) if s >= 0.0 => {
-            Some(super::silbon::lunge_frame(s, &c, t.eye_height - t.downed_lower, &|p| {
-                layout.surface_height(p)
-            }))
-        }
+        (Some(s), Some(c)) if s >= 0.0 => Some(super::silbon::catch_frame(s, &c, layout, &tuning.0)),
         _ => None,
     };
     let want = frame.map_or(0.0, |f| 14_000.0 * f.face_light);

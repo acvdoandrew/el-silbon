@@ -643,12 +643,8 @@ fn torch_light(
     // The catch has the torch: it dies in the silence, strobes back on him.
     let level = match (fright.lunge, fright.catch) {
         (Some(s), Some(c)) => {
-            let t = &tuning.0;
-            let f = crate::world::silbon::lunge_frame(s, &c, t.eye_height - t.downed_lower, &|p| {
-                layout.0.surface_height(p)
-            });
             // Whatever it had left, it has now.
-            f.torch
+            crate::world::silbon::catch_frame(s, &c, &layout.0, &tuning.0).torch
         }
         _ => level,
     };
@@ -725,9 +721,7 @@ fn head_bob(
     if let (Some(s), Some(c)) = (fright.lunge, fright.catch)
         && s < crate::world::omen::CUT_AT
     {
-        let t = &tuning.0;
-        let f =
-            crate::world::silbon::lunge_frame(s, &c, t.eye_height - t.downed_lower, &|p| layout.0.surface_height(p));
+        let f = crate::world::silbon::catch_frame(s, &c, &layout.0, &tuning.0);
         let jitter = |k: f32| (s * k).sin() * (s * k * 0.37 + 1.3).sin();
         let shake = Vec3::new(jitter(71.0), jitter(59.0), 0.0) * 0.025 * f.shake;
         tf = Transform::from_translation(f.eye + shake).looking_at(f.look, Vec3::Y);

@@ -14,7 +14,9 @@ use super::mesh::{MeshBuilder, Rgba, Ring, WHITE, scale_rgb, srgb};
 use super::noise2;
 use crate::app::{Truth, TuningRes};
 use crate::control::wrap_angle;
+use crate::geometry::Layout;
 use crate::sim::ThreatState;
+use crate::tuning::Tuning;
 
 const HIP_Y: f32 = 1.66;
 const THIGH: f32 = 0.84;
@@ -898,17 +900,36 @@ pub fn lunge_black(s: f32) -> f32 {
     }
 }
 
-pub fn lunge_frame(s: f32, c: &Catch, downed_eye: f32, ground: &dyn Fn(Vec2) -> f32) -> LungeFrame {
+/// The catch as the district shapes it: what the view, the torch, his face
+/// light and his body all read while it plays. He stands on the ground (a
+/// channel's bed too); the caught eye falls to where the body will lie,
+/// afloat in deep water rather than under it.
+pub fn catch_frame(s: f32, c: &Catch, layout: &Layout, tuning: &Tuning) -> LungeFrame {
+    lunge_frame(
+        s,
+        c,
+        tuning.eye_height - tuning.downed_lower,
+        &|p| layout.surface_height(p),
+        &|p| layout.rest_height(p),
+    )
+}
+
+/// `ground`: where his feet and a standing eye stand; `rest`: where the
+/// fallen lie (the same on dry land).
+pub fn lunge_frame(
+    s: f32,
+    c: &Catch,
+    downed_eye: f32,
+    ground: &dyn Fn(Vec2) -> f32,
+    rest: &dyn Fn(Vec2) -> f32,
+) -> LungeFrame {
     let at0 = Vec2::new(c.eye.x, c.eye.z);
     // The caught eye: knocked back onto the ground as he comes.
     let fall = smooth(0.1, 0.5, s);
     let standing = (c.eye.y - c.ground).max(0.9);
     let eye_at = at0 - c.dir * 0.35 * fall;
-    let eye = Vec3::new(
-        eye_at.x,
-        ground(eye_at) + standing + (downed_eye - standing) * fall,
-        eye_at.y,
-    );
+    let (up, down) = (ground(eye_at) + standing, rest(eye_at) + downed_eye);
+    let eye = Vec3::new(eye_at.x, up + (down - up) * fall, eye_at.y);
 
     // Which flash we are in, and whether it is lit.
     let station = FLASHES.iter().rposition(|f| s >= f.0).unwrap_or(0);
@@ -1027,8 +1048,7 @@ pub fn animate_silbon(
     // Caught: the catch owns him until its black falls, whatever the
     // snapshot says. In the silence before, he is nowhere at all.
     if let (Some(s), Some(c)) = (fright.lunge, fright.catch) {
-        let t = &tuning.0;
-        let f = lunge_frame(s, &c, t.eye_height - t.downed_lower, &|p| layout.0.surface_height(p));
+        let f = catch_frame(s, &c, &layout.0, &tuning.0);
         let want = if f.visible {
             Visibility::Visible
         } else {
@@ -1196,7 +1216,7 @@ mod tests {
                 let mut shown = 0;
                 for step in 0..=((CUT_AT + 1.0) / 0.01) as i32 {
                     let s = step as f32 * 0.01 - 1.0;
-                    let f = lunge_frame(s, &c, downed_eye, &ground);
+                    let f = lunge_frame(s, &c, downed_eye, &ground, &ground);
                     let feet = Vec2::new(f.root.x, f.root.z);
                     let foot_y = f.root.y + HIP_Y - (THIGH + SHIN) * f.thigh.cos();
                     assert!(
@@ -1223,6 +1243,42 @@ mod tests {
                     }
                 }
                 assert!(shown > 50, "he is seen: {shown} steps");
+            }
+        }
+    }
+
+    /// Caught waist-deep in the caño, the fallen eye comes to rest where the
+    /// body floats, above the water sheet, while he stands on the bed.
+    #[test]
+    fn a_catch_in_the_channel_is_watched_from_above_the_water() {
+        use crate::control::Pose;
+        use crate::geometry::{Wade, district::WATER_LEVEL};
+        let (l, t) = (Layout::new(), Tuning::default());
+        let deep = Vec2::new(34.0, -65.5);
+        assert_eq!(l.wade(deep), Wade::Deep);
+        for variation in 0..CATCH_WAYS {
+            let forward = Vec2::NEG_Y;
+            let c = Catch {
+                eye: Pose::at(deep, 0.0).eye(&t, &l),
+                ground: l.surface_height(deep),
+                dir: Vec2::from_angle([0.0, 0.9, -0.9][variation as usize]).rotate(forward),
+                forward,
+                variation,
+            };
+            for step in 0..=((CUT_AT + 1.0) / 0.01) as i32 {
+                let s = step as f32 * 0.01 - 1.0;
+                let f = catch_frame(s, &c, &l, &t);
+                assert!(
+                    f.eye.y > WATER_LEVEL + 0.1,
+                    "s {s}: the caught eye sinks to {} (the water at {WATER_LEVEL})",
+                    f.eye.y
+                );
+                let feet = Vec2::new(f.root.x, f.root.z);
+                let foot_y = f.root.y + HIP_Y - (THIGH + SHIN) * f.thigh.cos();
+                assert!(
+                    (foot_y - l.surface_height(feet)).abs() < 0.02,
+                    "s {s}: he wades on the bed"
+                );
             }
         }
     }

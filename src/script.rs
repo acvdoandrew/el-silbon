@@ -179,8 +179,17 @@ const BLOCKED: u8 = 5;
 /// Path cost multiplier by clearance class: prefer open ground, squeeze
 /// through doors when nothing else exists. Wading waist-deep takes about
 /// three times as long as walking and everything hears it, so it costs
-/// twice that: the ford and the bridge, unless wading saves a long way.
+/// twice that where it is allowed (see [`Water`]).
 const COST: [f32; 6] = [0.0, 1.0, 1.5, 3.0, 6.0, f32::INFINITY];
+
+/// Which water a path search may cross.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Water {
+    /// Waist-deep too, at `COST[DEEP]`, where that saves a long way.
+    Wade,
+    /// Never waist-deep; shallows (the ford, a channel's edge) are fine.
+    Dry,
+}
 
 /// How much room a walker of `radius` has at `p`, or waist-deep water.
 fn classify(layout: &Layout, radius: f32, p: Vec2) -> u8 {
@@ -284,8 +293,9 @@ struct Nav {
 impl Nav {
     /// A* on a fine grid inside the padded box around both ends, then
     /// string-pulled. `out` receives the corners after `from`, ending exactly
-    /// at `to`. False when no collision-free way exists inside the box.
-    fn local(&mut self, layout: &Layout, radius: f32, from: Vec2, to: Vec2, out: &mut Vec<Vec2>) -> bool {
+    /// at `to`. False when no collision-free way (a dry one, for
+    /// [`Water::Dry`]) exists inside the box.
+    fn local(&mut self, layout: &Layout, radius: f32, from: Vec2, to: Vec2, water: Water, out: &mut Vec<Vec2>) -> bool {
         out.clear();
         let lo = from.min(to) - Vec2::splat(8.0);
         let hi = from.max(to) + Vec2::splat(8.0);
@@ -320,6 +330,7 @@ impl Nav {
             f: heuristic(sx, sy),
             i: start as u32,
         });
+        let passable = |class: u8| class != BLOCKED && (class != DEEP || water == Water::Wade);
         let mut found = false;
         let mut expanded = 0usize;
         while let Some(Open { i, .. }) = self.open.pop() {
@@ -357,13 +368,13 @@ impl Nav {
                     continue;
                 }
                 let class = cell_class(&mut self.class, layout, radius, lo, w, nx, ny, forced);
-                if class == BLOCKED {
+                if !passable(class) {
                     continue;
                 }
                 let diagonal = dx != 0 && dy != 0;
                 if diagonal
-                    && (cell_class(&mut self.class, layout, radius, lo, w, nx, y, forced) == BLOCKED
-                        || cell_class(&mut self.class, layout, radius, lo, w, x, ny, forced) == BLOCKED)
+                    && (!passable(cell_class(&mut self.class, layout, radius, lo, w, nx, y, forced))
+                        || !passable(cell_class(&mut self.class, layout, radius, lo, w, x, ny, forced)))
                 {
                     continue;
                 }
@@ -428,9 +439,11 @@ impl Nav {
         let mut first = Vec::new();
         let mut second = Vec::new();
         let ok = if on_lookout(to) {
-            self.route(layout, tuning, from, foot, &mut first) && self.local(layout, r, foot, to, &mut second)
+            self.route(layout, tuning, from, foot, &mut first)
+                && self.local(layout, r, foot, to, Water::Wade, &mut second)
         } else {
-            self.local(layout, r, from, foot, &mut first) && self.route(layout, tuning, foot, to, &mut second)
+            self.local(layout, r, from, foot, Water::Wade, &mut first)
+                && self.route(layout, tuning, foot, to, &mut second)
         };
         out.clear();
         if ok {
@@ -440,11 +453,29 @@ impl Nav {
         ok
     }
 
-    /// Straight grid search when close, otherwise onto the trail network,
-    /// along it, and off again.
+    /// A way on the ground: dry if there is one anywhere, and only otherwise
+    /// through waist-deep water. The box around a short walk can hold no dry
+    /// way where the far bank is near (from the lookout's ramp foot to the
+    /// base shed it holds neither the bridge nor the bank road), and then the
+    /// trail network goes round by them, as before the caño could be waded.
     fn route(&mut self, layout: &Layout, tuning: &Tuning, from: Vec2, to: Vec2, out: &mut Vec<Vec2>) -> bool {
+        self.route_by(layout, tuning, from, to, Water::Dry, out)
+            || self.route_by(layout, tuning, from, to, Water::Wade, out)
+    }
+
+    /// Straight grid search when close, otherwise onto the trail network,
+    /// along it, and off again, crossing only the `water` given.
+    fn route_by(
+        &mut self,
+        layout: &Layout,
+        tuning: &Tuning,
+        from: Vec2,
+        to: Vec2,
+        water: Water,
+        out: &mut Vec<Vec2>,
+    ) -> bool {
         let r = tuning.player_radius;
-        if from.distance(to) <= 40.0 && self.local(layout, r, from, to, out) {
+        if from.distance(to) <= 40.0 && self.local(layout, r, from, to, water, out) {
             return true;
         }
         out.clear();
@@ -465,13 +496,14 @@ impl Nav {
         let mut onto: Vec<Option<Vec<Vec2>>> = Vec::new();
         for &a in &starts {
             let mut leg = Vec::new();
-            let ok = from.distance(patrol.nodes[a]) < 60.0 && self.local(layout, r, from, patrol.nodes[a], &mut leg);
+            let ok =
+                from.distance(patrol.nodes[a]) < 60.0 && self.local(layout, r, from, patrol.nodes[a], water, &mut leg);
             onto.push(ok.then_some(leg));
         }
         let mut off: Vec<Option<Vec<Vec2>>> = Vec::new();
         for &b in &ends {
             let mut leg = Vec::new();
-            let ok = to.distance(patrol.nodes[b]) < 60.0 && self.local(layout, r, patrol.nodes[b], to, &mut leg);
+            let ok = to.distance(patrol.nodes[b]) < 60.0 && self.local(layout, r, patrol.nodes[b], to, water, &mut leg);
             off.push(ok.then_some(leg));
         }
         let mut best: Option<(f32, usize, usize)> = None;
@@ -676,7 +708,7 @@ impl Peril<'_> {
             return None;
         }
         let mut path = Vec::new();
-        if !nav.local(self.layout, r, self.pos, p, &mut path) {
+        if !nav.local(self.layout, r, self.pos, p, Water::Wade, &mut path) {
             return None;
         }
         let len = poly_len(self.pos, &path);
@@ -2542,5 +2574,51 @@ impl RouteScript {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Somewhere along the walk from `from` through `path` is waist-deep.
+    fn wades(layout: &Layout, from: Vec2, path: &[Vec2]) -> bool {
+        let mut at = from;
+        path.iter().any(|&p| {
+            let deep = segment_deep(layout, at, p);
+            at = p;
+            deep
+        })
+    }
+
+    /// From the lookout's ramp foot the base shed lies straight across the
+    /// caño, and the search box around the two holds neither the bridge nor
+    /// the bank road. The walk still keeps out of waist-deep water, there and
+    /// back: over the bridge and along the bank road, as before the caño could
+    /// be waded. Where no dry way exists at all (a bundle afloat
+    /// mid-channel), it wades.
+    #[test]
+    fn the_walk_keeps_out_of_the_cano_while_a_dry_way_exists() {
+        let (l, t) = (Layout::new(), Tuning::default());
+        let foot = l.district.landmark(LandmarkId::Watchtower).approach;
+        // Open ground nearest the bundle's hiding place by the base shed.
+        let bundle = Vec2::new(52.5, -87.5);
+        let shed = (-12..=12)
+            .flat_map(|x| (-12..=12).map(move |y| bundle + Vec2::new(x as f32, y as f32) * 0.5))
+            .filter(|&p| l.is_free(p, t.player_radius + 0.25))
+            .min_by(|a, b| a.distance(bundle).total_cmp(&b.distance(bundle)))
+            .expect("open ground by the base shed");
+        let mut nav = Nav::default();
+        let mut path = Vec::new();
+        for (from, to) in [(foot, shed), (shed, foot)] {
+            assert!(segment_deep(&l, from, to), "the straight way from {from} wades");
+            assert!(nav.plan(&l, &t, from, to, &mut path), "no way from {from} to {to}");
+            assert_eq!(path.last(), Some(&to));
+            assert!(!wades(&l, from, &path), "waded from {from} to {to}: {path:?}");
+        }
+        let afloat = Vec2::new(34.0, -65.5);
+        assert_eq!(l.wade(afloat), Wade::Deep);
+        assert!(nav.plan(&l, &t, foot, afloat, &mut path), "no way to {afloat}");
+        assert_eq!(path.last(), Some(&afloat));
     }
 }
