@@ -1114,6 +1114,7 @@ const MENU_SHOTS: &[(&str, MenuStep)] = {
         ("17_pause", MenuStep::Pause),
         ("18_pause_settings", MenuStep::Pause),
         ("18b_pause_calibrate", MenuStep::Pause),
+        ("18c_pause_journal", MenuStep::Pause),
         ("19_back_on_title", MenuStep::Leave),
     ]
 };
@@ -1203,6 +1204,8 @@ fn menu_shots_drive(
                 Page::Settings
             } else if name.ends_with("calibrate") {
                 Page::Calibrate
+            } else if name.ends_with("journal") {
+                Page::Journal
             } else {
                 Page::Pause
             };

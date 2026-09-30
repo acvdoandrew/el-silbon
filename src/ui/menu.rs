@@ -158,6 +158,67 @@ impl Row {
     }
 }
 
+/// A run of a page's rows laid side by side in `cols` columns, each filled
+/// top to bottom, so the order of the rows (and Up / Down through them)
+/// reads down one column and on into the next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Columns {
+    start: usize,
+    len: usize,
+    cols: usize,
+}
+
+impl Columns {
+    /// Rows in each column.
+    fn lines(self) -> usize {
+        self.len.div_ceil(self.cols)
+    }
+    /// Row `i`'s column and line, if it is in this run.
+    fn place(self, i: usize) -> Option<(usize, usize)> {
+        let k = i.checked_sub(self.start).filter(|&k| k < self.len)?;
+        Some((k / self.lines(), k % self.lines()))
+    }
+}
+
+/// The page's rows that sit in columns: the Journal's twenty pages and six
+/// chapters, two columns each (one long list outgrows a 720-px screen).
+/// Every other row is a full-width line of its own.
+fn columns(page: Page) -> Vec<Columns> {
+    let pages = crate::lore::PAGES as usize;
+    match page {
+        Page::Journal => vec![
+            Columns {
+                start: 0,
+                len: pages,
+                cols: 2,
+            },
+            Columns {
+                start: pages,
+                len: crate::lore::CHAPTERS as usize,
+                cols: 2,
+            },
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// Left (-1) or right (+1) from row `focus` across its run of columns: the
+/// row that can be chosen in the next column that way, nearest in line
+/// (the higher on a tie). Nowhere to go keeps the focus.
+fn across(rows: &[Row], runs: &[Columns], focus: usize, dir: i32) -> usize {
+    let Some((run, (col, line))) = runs.iter().find_map(|r| r.place(focus).map(|p| (*r, p))) else {
+        return focus;
+    };
+    let Some(to) = col.checked_add_signed(dir.signum() as isize).filter(|&c| c < run.cols) else {
+        return focus;
+    };
+    (run.start..run.start + run.len)
+        .filter(|&i| rows.get(i).is_some_and(|r| r.enabled))
+        .filter_map(|i| run.place(i).filter(|&(c, _)| c == to).map(|(_, l)| (i, l)))
+        .min_by_key(|&(_, l)| l.abs_diff(line))
+        .map_or(focus, |(i, _)| i)
+}
+
 /// The menus' state: the page, the focused row, where Back goes, and the
 /// choices being made on the way into a night.
 #[derive(Resource)]
@@ -671,6 +732,72 @@ fn spawn_menu(mut commands: Commands) {
     ));
 }
 
+/// One row: its label, and its value or chooser (`‹ value ›`) at the right.
+/// A row with no `min_width` (the Journal's, in columns) is compact:
+/// smaller, and as wide as its column.
+fn spawn_row(
+    c: &mut ChildSpawnerCommands<'_>,
+    fonts: &Fonts,
+    i: usize,
+    row: &Row,
+    focused: bool,
+    min_width: Option<f32>,
+) {
+    let compact = min_width.is_none();
+    let (text, bg, edge) = row_colors(focused, row.enabled);
+    c.spawn((
+        Button,
+        MenuRow(i),
+        Node {
+            flex_direction: FlexDirection::Row,
+            justify_content: JustifyContent::SpaceBetween,
+            align_items: AlignItems::Center,
+            padding: UiRect::axes(px(14), px(if compact { 3.0 } else { 7.0 })),
+            border: UiRect::left(px(3)),
+            min_width: min_width.map_or(Val::Auto, px),
+            ..default()
+        },
+        BackgroundColor(bg),
+        BorderColor::all(edge),
+    ))
+    .with_children(|row_ui| {
+        row_ui.spawn((
+            RowLabel(i),
+            Text::new(row.label.clone()),
+            font(&fonts.sans, if compact { 15.0 } else { 20.0 }),
+            TextColor(text),
+        ));
+        let value = |v: &String| {
+            (
+                RowValue(i),
+                Text::new(v.clone()),
+                font(&fonts.sans, 18.0),
+                TextColor(text),
+            )
+        };
+        match &row.value {
+            // A chooser: ‹ value ›, each arrow its own button.
+            Some(v) if row.act.turns() => {
+                row_ui
+                    .spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    })
+                    .with_children(|chooser| {
+                        chooser.spawn(arrow(fonts, i, -1, text));
+                        chooser.spawn(value(v));
+                        chooser.spawn(arrow(fonts, i, 1, text));
+                    });
+            }
+            Some(v) => {
+                row_ui.spawn(value(v));
+            }
+            None => {}
+        }
+    });
+}
+
 /// The rows' look when focused or not.
 fn row_colors(focused: bool, enabled: bool) -> (Color, Color, Color) {
     let text = if !enabled {
@@ -713,6 +840,16 @@ fn build(
         menu.page,
         Page::Reading(_) | Page::Chapter(_) | Page::HowTo | Page::Credits
     );
+    let runs = columns(menu.page);
+    let journal = !runs.is_empty();
+    // Rails and cards widen for a page to read, and more for columns.
+    let wide = if journal {
+        860.0
+    } else if reading {
+        760.0
+    } else {
+        0.0
+    };
     commands.entity(root).with_children(|r| {
         // Where the rows sit: a dark rail on the left of the title screen,
         // a centred card in a run, a row of choices under the outcome.
@@ -761,7 +898,7 @@ fn build(
             column.left = px(0);
             column.top = px(0);
             column.height = percent(100);
-            column.width = px(if reading { 760.0 } else { 600.0 });
+            column.width = px(if wide > 0.0 { wide } else { 600.0 });
             column.padding = UiRect::new(px(64), px(40), px(56), px(40));
             column.justify_content = JustifyContent::Center;
             gradient = Some(BackgroundGradient::from(LinearGradient::to_right(vec![
@@ -773,8 +910,9 @@ fn build(
             column.position_type = PositionType::Absolute;
             column.left = percent(50);
             column.top = percent(50);
-            column.width = px(if reading { 760.0 } else { 520.0 });
-            column.margin = UiRect::new(px(if reading { -380.0 } else { -260.0 }), px(0), px(-300), px(0));
+            let width = if wide > 0.0 { wide } else { 520.0 };
+            column.width = px(width);
+            column.margin = UiRect::new(px(-width / 2.0), px(0), px(-300), px(0));
             column.padding = UiRect::all(px(28));
             column.border = UiRect::all(px(1));
             column.border_radius = BorderRadius::all(px(8));
@@ -858,65 +996,46 @@ fn build(
                     TextColor(if reading { INK } else { DIM }),
                     Node {
                         margin: UiRect::bottom(px(18)),
-                        max_width: px(if reading { 660.0 } else { 470.0 }),
+                        max_width: px(if wide > 0.0 { wide - 100.0 } else { 470.0 }),
                         ..default()
                     },
                 ));
             }
-            let journal = menu.page == Page::Journal;
-            for (i, row) in rows.iter().enumerate() {
-                let (text, bg, edge) = row_colors(i == menu.focus, row.enabled);
-                c.spawn((
-                    Button,
-                    MenuRow(i),
-                    Node {
-                        flex_direction: FlexDirection::Row,
-                        justify_content: JustifyContent::SpaceBetween,
-                        align_items: AlignItems::Center,
-                        padding: UiRect::axes(px(14), px(if journal { 3.0 } else { 7.0 })),
-                        border: UiRect::left(px(3)),
-                        min_width: px(if menu.page == Page::Outcome { 360.0 } else { 440.0 }),
-                        ..default()
-                    },
-                    BackgroundColor(bg),
-                    BorderColor::all(edge),
-                ))
-                .with_children(|row_ui| {
-                    row_ui.spawn((
-                        RowLabel(i),
-                        Text::new(row.label.clone()),
-                        font(&fonts.sans, if journal { 15.0 } else { 20.0 }),
-                        TextColor(text),
-                    ));
-                    let value = |v: &String| {
-                        (
-                            RowValue(i),
-                            Text::new(v.clone()),
-                            font(&fonts.sans, 18.0),
-                            TextColor(text),
-                        )
-                    };
-                    match &row.value {
-                        // A chooser: ‹ value ›, each arrow its own button.
-                        Some(v) if row.act.turns() => {
-                            row_ui
-                                .spawn(Node {
-                                    flex_direction: FlexDirection::Row,
-                                    align_items: AlignItems::Center,
-                                    ..default()
-                                })
-                                .with_children(|chooser| {
-                                    chooser.spawn(arrow(fonts, i, -1, text));
-                                    chooser.spawn(value(v));
-                                    chooser.spawn(arrow(fonts, i, 1, text));
-                                });
-                        }
-                        Some(v) => {
-                            row_ui.spawn(value(v));
-                        }
-                        None => {}
+            // Rows in a run of columns sit side by side (see `columns`);
+            // the rest are full-width lines.
+            let width = (!journal).then_some(if menu.page == Page::Outcome { 360.0 } else { 440.0 });
+            let mut i = 0;
+            while i < rows.len() {
+                let Some(run) = runs.iter().find(|r| r.start == i && r.len > 0) else {
+                    spawn_row(c, fonts, i, &rows[i], i == menu.focus, width);
+                    i += 1;
+                    continue;
+                };
+                c.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    column_gap: px(14),
+                    margin: UiRect::bottom(px(8)),
+                    ..default()
+                })
+                .with_children(|grid| {
+                    for col in 0..run.cols {
+                        let from = run.start + col * run.lines();
+                        let to = (from + run.lines()).min(run.start + run.len);
+                        grid.spawn(Node {
+                            flex_direction: FlexDirection::Column,
+                            flex_basis: px(0),
+                            flex_grow: 1.0,
+                            row_gap: px(2),
+                            ..default()
+                        })
+                        .with_children(|column| {
+                            for (k, row) in rows.iter().enumerate().take(to).skip(from) {
+                                spawn_row(column, fonts, k, row, k == menu.focus, None);
+                            }
+                        });
                     }
                 });
+                i = (run.start + run.len).max(i + 1);
             }
             c.spawn((
                 MenuNote,
@@ -1254,6 +1373,10 @@ fn navigate(
             input.turn = 1;
         }
     }
+    // Left and right cross the Journal's columns (its rows turn nothing).
+    if input.turn != 0 && !rows.get(menu.focus).is_some_and(|r| r.act.turns()) {
+        menu.focus = across(&rows, &columns(menu.page), menu.focus, input.turn);
+    }
     input.enter = keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]);
     let (focus, mut chosen) = choose(&rows, menu.focus, input);
     menu.focus = focus;
@@ -1540,6 +1663,42 @@ mod tests {
         assert_eq!(choose(&rows, 2, with(|i| i.click = Some(3))), (2, None));
         // The pointer alone only moves the focus.
         assert_eq!(choose(&rows, 2, with(|i| i.hover = Some(0))), (0, None));
+    }
+
+    #[test]
+    fn left_and_right_cross_the_journal_columns_to_a_page_that_was_found() {
+        let runs = columns(Page::Journal);
+        let total = runs.iter().map(|r| r.len).sum::<usize>() + 1;
+        let found = [2, 11, 14, 17];
+        let rows: Vec<Row> = (0..total)
+            .map(|i| {
+                let row = Row::go("", Act::Read(i as u8));
+                if found.contains(&i) || i >= crate::lore::PAGES as usize {
+                    row
+                } else {
+                    row.off()
+                }
+            })
+            .collect();
+        let pages = runs[0];
+        let line = |i: usize| pages.place(i).unwrap().1;
+        // From the left column to the nearest found page on the right.
+        let right = across(&rows, &runs, 2, 1);
+        assert_eq!(pages.place(right).unwrap().0, 1);
+        assert!(found.contains(&right));
+        let nearest = found[1..].iter().map(|&i| line(i).abs_diff(line(2))).min().unwrap();
+        assert_eq!(line(right).abs_diff(line(2)), nearest);
+        // And back again; the outer edges and full-width rows stay put.
+        assert_eq!(across(&rows, &runs, right, -1), 2);
+        assert_eq!(across(&rows, &runs, 2, -1), 2);
+        assert_eq!(across(&rows, &runs, right, 1), right);
+        assert_eq!(across(&rows, &runs, total - 1, 1), total - 1);
+        // The chapters cross their own two columns, never into the pages.
+        let chapters = runs[1];
+        let first = chapters.start;
+        let other = across(&rows, &runs, first, 1);
+        assert_eq!(chapters.place(other), Some((1, 0)));
+        assert_eq!(across(&rows, &runs, other, -1), first);
     }
 
     #[test]
