@@ -8,6 +8,7 @@ mod calibrate;
 mod hud;
 mod map;
 pub(crate) mod menu;
+mod splash;
 pub(crate) mod title;
 
 use bevy::prelude::*;
@@ -196,6 +197,7 @@ impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         menu::plugin(app);
         title::plugin(app);
+        splash::plugin(app);
         calibrate::plugin(app);
         app.init_resource::<Hint>()
             .init_resource::<CaptionLine>()

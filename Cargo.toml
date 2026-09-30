@@ -16,11 +16,20 @@ bevy = { version = "=0.19.1", default-features = false, features = [
     "wav",
     "keyboard",
     "mouse",
+    # The launch splash and the window icon decode PNGs.
+    "png",
 ] }
 renet = "=2.0.0"
 renet_netcode = "=2.0.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Only for the window's icon types; the exact version bevy_winit uses, so the
+# types agree (its features come from bevy_winit).
+winit = { version = "=0.30.13", default-features = false }
+
+[build-dependencies]
+# Compiles the branding icon into the Windows executable (see build.rs).
+winresource = { version = "0.1.31", default-features = false }
 
 [lib]
 name = "el_silbon"

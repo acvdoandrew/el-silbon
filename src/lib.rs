@@ -17,8 +17,8 @@
 //! - [`display`]: brightness and contrast as the camera's grade.
 //! - [`script`], [`photos`]: DEBUG smoke route and photo viewpoints.
 //!
-//! Bevy adapters and presentation: [`app`], [`player`], [`encounter`],
-//! [`audio`], [`ui`], [`world`], [`debug`].
+//! Bevy adapters and presentation: [`app`], [`icon`], [`player`],
+//! [`encounter`], [`audio`], [`ui`], [`world`], [`debug`].
 
 // Bevy systems and procedural builders legitimately take many parameters
 // and wide query types.
@@ -34,6 +34,7 @@ pub mod director;
 pub mod display;
 pub mod encounter;
 pub mod geometry;
+pub mod icon;
 pub mod lore;
 pub mod mix;
 pub mod net;

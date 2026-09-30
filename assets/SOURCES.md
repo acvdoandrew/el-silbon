@@ -2,10 +2,12 @@
 
 Provenance for everything the game ships or builds at startup. All of it is
 original work made for this project, except the bundled Noto fonts
-(third party, SIL Open Font License) and the whistle recording the user
+(third party, SIL Open Font License), the whistle recording the user
 chose (third party, licence unknown, **not cleared for release**; see
-"Third-party audio" below). No other image, model or sound files from
-elsewhere are shipped, and no network service or asset store is used.
+"Third-party audio" below) and the branding art the user supplied (the
+cover and the icons; see "Branding" below). No other image, model or sound
+files from elsewhere are shipped, and no network service or asset store is
+used.
 
 ## Audio — original, generated
 
@@ -212,6 +214,23 @@ deer's entrails, the father, the grandfather's curse, the whip, the ají, the
 dog Tureco, the sack of bones, the inverted whistle) is Venezuelan folklore;
 the Hacienda Santa Rosa, its people and every page's words are fiction
 written for this game.
+
+## Branding — user-supplied art
+
+The user supplied this kit ("whistle-branding", 2026-09-30) for the cover
+and the executable's icon. It is not original work of this project, and the
+kit does not say who made it or under what terms: confirm both before any
+public release. Kept in plain Git (not LFS). The cover's painted title reads
+"WHISTLE"; the game keeps its name, El Silbón — The Return.
+
+| File | Content | Used by |
+|---|---|---|
+| `branding/whistle-cover.png` | 1536×1024 key art: a gaunt hatted figure with a sack beneath a ceiba at night, the hacienda's lamp behind, the painted title "WHISTLE" | the launch splash (`src/ui/splash.rs`, loaded at run time; `tools/package.sh` ships it) and the README header |
+| `branding/whistle-icon.png` | 1254×1254 RGBA icon art (the hat and shoulders) | kept for future exports; not loaded by the game |
+| `branding/whistle-icon-256.png` | 256×256 RGBA export of the icon | the live window's title bar and taskbar icon (`src/icon.rs`, embedded with `include_bytes!`) |
+| `branding/whistle.ico` | Windows icon with seven PNG-compressed sizes (16, 24, 32, 48, 64, 128, 256) | compiled into the Windows executable by `build.rs` (`winresource`) |
+
+The kit's own handoff notes (`IMPLEMENTATION.md`) are not copied here.
 
 ## Fonts — third party, SIL Open Font License 1.1
 

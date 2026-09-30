@@ -1,3 +1,5 @@
+![Cover art: a gaunt hatted figure with a sack beneath a ceiba at night; its painted title reads WHISTLE](assets/branding/whistle-cover.png)
+
 # El Silbón — The Return
 
 A first-person folk-horror game set in one connected, authored district of
