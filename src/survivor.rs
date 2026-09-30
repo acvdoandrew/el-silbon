@@ -67,6 +67,17 @@ impl Survivor {
         }
     }
 
+    /// Their voice, as a playback speed for the groans and cries of the
+    /// fallen: each friend is known by ear.
+    pub fn voice(self) -> f32 {
+        match self {
+            Survivor::Llanero => 0.9,
+            Survivor::Coplera => 1.2,
+            Survivor::Encargado => 0.82,
+            Survivor::Muchacho => 1.08,
+        }
+    }
+
     /// The next one along (the menu's ‹ ›).
     pub fn cycle(self, step: i32) -> Self {
         let n = Self::ALL.len() as i32;
@@ -109,5 +120,16 @@ mod tests {
         assert_eq!(Survivor::from_code(200), Survivor::Llanero);
         assert_eq!(Survivor::Llanero.cycle(-1), Survivor::Muchacho);
         assert_eq!(Survivor::Muchacho.cycle(1), Survivor::Llanero);
+    }
+
+    #[test]
+    fn each_friend_is_known_by_their_voice() {
+        for a in Survivor::ALL {
+            for b in Survivor::ALL.into_iter().filter(|b| *b != a) {
+                // At least a semitone apart.
+                let ratio = a.voice().max(b.voice()) / a.voice().min(b.voice());
+                assert!(ratio > 1.059, "{a:?} and {b:?} sound alike");
+            }
+        }
     }
 }

@@ -5,7 +5,7 @@ use el_silbon::{
     geometry::{Layout, ground},
     net::{
         Wire, controls_live, follow_body, mirror,
-        protocol::{Action, HOST, Input, SEND_INTERVAL, STEP, ServerMessage, Snapshot},
+        protocol::{Action, CallKind, HOST, Input, SEND_INTERVAL, STEP, ServerMessage, Snapshot},
         session::Session,
         status_of,
     },
@@ -982,6 +982,181 @@ fn tureco_barks_the_sack_open() {
         "out of the sack"
     );
     assert!(r.s.players[&2].status.is_downed(), "down, and can be helped up");
+}
+
+/// Pepper in his path while he hauls: he stops to count, and drops the sack.
+fn ward_off(r: &mut Rig) {
+    let th = r.s.encounter.threat.pos;
+    let ahead = th + r.s.encounter.threat.facing * 2.5;
+    r.s.encounter.place_aji(&r.t, ahead, &mut Vec::new());
+    for _ in 0..(10.0 / STEP) as usize {
+        r.tick();
+        if r.s.encounter.threat.state == ThreatState::Counting {
+            return;
+        }
+    }
+    panic!("the ward never stopped him");
+}
+
+/// Player 2 falls with player 1 far off and standing: into his sack.
+fn sacked(r: &mut Rig) {
+    r.put(1, Vec2::new(-30.0, 20.0));
+    doom(r, 2, Vec2::new(0.0, 8.0));
+    r.idle(0.05);
+    assert_eq!(r.s.encounter.threat.state, ThreatState::Hauling);
+}
+
+#[test]
+fn a_body_in_his_sack_is_no_crosshair_target_until_he_drops_it() {
+    let mut r = Rig::new(2);
+    sacked(&mut r);
+    // What a friend's own client offers the crosshair, from its snapshot.
+    let bodies = |r: &Rig| -> Vec<u64> {
+        let snap = r.s.snapshot(1, &r.l, &r.t);
+        snap.scene_data(1, false).bodies.iter().map(|b| b.0).collect()
+    };
+    assert!(!bodies(&r).contains(&2), "the sack is no body to kneel beside");
+    r.idle(1.0);
+    ward_off(&mut r);
+    assert!(bodies(&r).contains(&2), "dropped, they are a body to help up");
+}
+
+#[test]
+fn a_dropped_sack_leaves_time_to_find_them() {
+    // Late in the haul, dropped for pepper or for Tureco's bark: the fallen
+    // lie where nobody saw them fall, and get time to be found.
+    for bark in [false, true] {
+        let mut r = Rig::new(2);
+        if bark {
+            r.s.dog.free = true;
+            r.s.dog.owner = Some(1);
+        }
+        sacked(&mut r);
+        r.idle(1.0);
+        r.s.players.get_mut(&2).unwrap().status = Status::Downed { bleed: 5.0 };
+        if bark {
+            r.s.dog.pos = r.s.encounter.threat.pos + Vec2::new(3.0, 0.0);
+            r.tick();
+            assert!(r.events(1).contains(&Event::SackDropped));
+        } else {
+            ward_off(&mut r);
+        }
+        let Status::Downed { bleed } = r.s.players[&2].status else {
+            panic!("still down (bark: {bark})")
+        };
+        assert!(
+            bleed >= r.t.bleed_after_sack - 1e-3,
+            "{bleed:.1} s left to find them (bark: {bark})"
+        );
+    }
+    // It is a floor: a fall caught at once keeps its own, longer bleed.
+    let mut r = Rig::new(2);
+    sacked(&mut r);
+    r.idle(1.0);
+    r.s.players.get_mut(&2).unwrap().status = Status::Downed { bleed: 50.0 };
+    ward_off(&mut r);
+    let Status::Downed { bleed } = r.s.players[&2].status else {
+        panic!("still down")
+    };
+    assert!(bleed > 45.0, "{bleed:.1} s: the floor never takes time away");
+}
+
+const HELP: Action = Action::Call { kind: CallKind::Help };
+
+/// Player 2 lies downed on open ground (not in his sack), player 1 stands
+/// far off out of the way, and the night is still and dry.
+fn fallen() -> (Rig, Vec2) {
+    let mut r = Rig::new(2);
+    r.t.rain_mask = 0.0;
+    r.t.thunder_mask = 0.0;
+    let body = Vec2::new(0.0, 12.0);
+    r.put(1, Vec2::new(-30.0, 20.0));
+    r.put(2, body);
+    r.s.players.get_mut(&2).unwrap().status = Status::Downed { bleed: 40.0 };
+    r.idle(0.1);
+    (r, body)
+}
+
+/// He stands calm and listening `dist` metres from `at`, going nowhere.
+fn listening(r: &mut Rig, at: Vec2, dist: f32) {
+    let th = &mut r.s.encounter.threat;
+    th.state = ThreatState::Stalking;
+    th.presence = Presence::Present;
+    th.pos = at + Vec2::new(dist, 0.0);
+    th.movement = el_silbon::sim::Movement::AtAnchor(r.l.patrol.nearest(th.pos));
+    th.cooldown = 1.0e9;
+    th.focus = None;
+}
+
+#[test]
+fn a_cry_for_help_comes_from_the_body_and_draws_him_within_earshot() {
+    use el_silbon::sim::Variant;
+    for (inside, heard) in [(0.8, true), (1.25, false)] {
+        let (mut r, body) = fallen();
+        let reach = r.t.noise_call * r.t.hearing_gain(r.s.encounter.pressure) * Variant::of(r.t.seed).hearing();
+        listening(&mut r, body, reach * inside);
+        r.tick();
+        assert!(r.s.encounter.threat.focus.is_none(), "nothing else he heard");
+        r.act(2, HELP).expect("the fallen may call");
+        r.tick();
+        let focus = r.s.encounter.threat.focus;
+        assert_eq!(focus.is_some(), heard, "a cry {inside} × its reach away");
+        if let Some(f) = focus {
+            assert!(f.pos.distance(body) < 0.01, "he heard it where they lie");
+        }
+        // Everyone is told of it, placed at the caller's own body.
+        let snap = r.s.snapshot(1, &r.l, &r.t);
+        let call = snap.calls.iter().find(|c| c.by == 2).expect("the call is shared");
+        assert_eq!(call.kind, CallKind::Help);
+        let at = Vec3::from_array(call.pos);
+        assert!(ground(at).distance(body) < 0.01);
+        assert!(
+            (at.y - r.l.rest_height(body)).abs() < 0.01,
+            "on the ground, not in the air"
+        );
+    }
+}
+
+#[test]
+fn a_cry_for_help_waits_for_breath_and_fades() {
+    let (mut r, body) = fallen();
+    r.act(2, HELP).unwrap();
+    assert!(r.act(2, HELP).is_err(), "the voice needs breath");
+    r.idle(r.t.call_cooldown - 1.0);
+    assert!(r.act(2, HELP).is_err(), "still spent");
+    assert!(r.s.snapshot(1, &r.l, &r.t).calls.is_empty(), "the call has faded");
+    r.idle(1.1);
+    r.act(2, HELP).expect("breath enough to call again");
+    let calls = r.s.snapshot(1, &r.l, &r.t).calls;
+    assert_eq!(calls.len(), 1);
+    assert!(ground(Vec3::from_array(calls[0].pos)).distance(body) < 0.01);
+}
+
+#[test]
+fn nobody_cries_for_help_from_his_sack_the_grave_or_their_feet() {
+    let mut r = Rig::new(2);
+    sacked(&mut r);
+    assert!(r.act(2, HELP).is_err(), "in his sack, nobody calls");
+    // A friend's view: in his sack, nothing leads to the fallen.
+    let snap = r.s.snapshot(1, &r.l, &r.t);
+    assert!(snap.calls.is_empty());
+    assert!(!snap.player(2).unwrap().findable(), "no cue while he carries them");
+    r.idle(1.0);
+    ward_off(&mut r);
+    assert!(
+        r.s.snapshot(1, &r.l, &r.t).player(2).unwrap().findable(),
+        "dropped, they can be found"
+    );
+    r.act(2, HELP).expect("out of the sack, they may call");
+    // On your feet, the cry is not yours to give.
+    assert!(r.act(1, HELP).is_err(), "standing, nobody cries for help");
+    // The dead are past calling.
+    r.calm = true;
+    r.s.players.get_mut(&2).unwrap().status = Status::Dead;
+    r.idle(r.t.call_cooldown + 0.1);
+    assert!(!r.s.encounter.outcome.is_over(), "one still stands");
+    assert!(r.act(2, HELP).is_err(), "the dead are past calling");
+    assert!(!r.s.snapshot(1, &r.l, &r.t).player(2).unwrap().findable());
 }
 
 #[test]

@@ -5,7 +5,11 @@ use crate::{
     audio::AmbienceLoop,
     encounter::CurrentTarget,
     player::{CurrentIntent, Player},
-    world::{CarriedSatchel, avatar::AvatarTorch, silbon::SilbonRoot},
+    world::{
+        CarriedSatchel,
+        avatar::{AvatarTorch, GroundTorch, GroundTorchLight},
+        silbon::SilbonRoot,
+    },
 };
 use bevy::{
     prelude::*,
@@ -106,14 +110,15 @@ fn inspect(
     launch: Res<Launch>,
     mut state: ResMut<RenderSmoke>,
     cameras: Query<(), With<Camera3d>>,
-    spots: Query<(), (With<SpotLight>, Without<AvatarTorch>)>,
-    points: Query<(), With<PointLight>>,
+    spots: Query<(), (With<SpotLight>, Without<AvatarTorch>, Without<GroundTorchLight>)>,
+    points: Query<(), (With<PointLight>, Without<GroundTorchLight>)>,
     moon: Query<(), With<DirectionalLight>>,
     ambience: Query<(), With<AmbienceLoop>>,
     silbon: Query<(), With<SilbonRoot>>,
     carried: Query<(), With<CarriedSatchel>>,
     remote: Query<(), With<RemotePlayer>>,
     torches: Query<(), With<AvatarTorch>>,
+    grounds: Query<(), With<GroundTorch>>,
     capturing: Query<(), With<Capturing>>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -148,16 +153,17 @@ fn inspect(
                 remote.iter().count()
             );
         }
-        // Every teammate carries one torch beam; the world census above
-        // excludes them, so roster changes (a partner joining or leaving)
-        // cannot read as a leak while a torch or avatar left behind still does.
+        // Every teammate carries one torch beam and has one torch to drop
+        // when down; the world census above excludes them, so roster changes
+        // (a partner joining or leaving) cannot read as a leak while a torch
+        // or avatar left behind still does.
         let expected = s.players.len().saturating_sub(1);
-        let (avatars, beams) = (remote.iter().count(), torches.iter().count());
-        if state.frames > 120 && (avatars != expected || beams != expected) {
+        let (avatars, beams, dropped) = (remote.iter().count(), torches.iter().count(), grounds.iter().count());
+        if state.frames > 120 && (avatars != expected || beams != expected || dropped != expected) {
             state.roster_bad += 1;
             if state.roster_bad > 30 {
                 error!(
-                    "NET RENDER SMOKE FAIL: {avatars} teammate avatars and {beams} torch beams for a roster of {expected}"
+                    "NET RENDER SMOKE FAIL: {avatars} teammate avatars, {beams} torch beams and {dropped} ground torches for a roster of {expected}"
                 );
                 state.failed = true;
                 state.exit_frames = Some(1);

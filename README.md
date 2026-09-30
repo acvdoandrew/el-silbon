@@ -158,7 +158,7 @@ Surviving him:
 | G | put a bundle down |
 | Q | scatter ají |
 | X | with friends, aboard the ready truck: drive off now, leaving whoever is not aboard |
-| V or middle click | mark a spot for the party |
+| V or middle click | mark a spot for the party; down, a hoarse cry for help from where you lie (he may hear it too) |
 | M | map |
 | Esc | pause (solo) / local menu (shared); releases the cursor |
 | F12 | screenshot of the game window |

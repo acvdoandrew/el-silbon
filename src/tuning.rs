@@ -130,6 +130,9 @@ pub struct Tuning {
     pub revive_hold: f32,
     /// A downed player dies after this long without help.
     pub bleed_out: f32,
+    /// Dropped from his sack, the fallen have at least this long left: they
+    /// lie where nobody saw them fall, and must be found.
+    pub bleed_after_sack: f32,
     /// The beacon burns this long, then must cool down.
     pub beacon_burn: f32,
     pub beacon_cooldown: f32,
@@ -197,6 +200,10 @@ pub struct Tuning {
     pub ping_cooldown: f32,
     pub ping_life: f32,
     pub ping_range: f32,
+    /// A call out loud (the downed player's cry for help): seconds before
+    /// the same voice calls again, and how long the call shows.
+    pub call_cooldown: f32,
+    pub call_life: f32,
 
     // ---------------------------------------------------------------- threat
     /// He never manifests closer than this to a player.
@@ -277,6 +284,8 @@ pub struct Tuning {
     pub noise_pickup: f32,
     pub noise_drop: f32,
     pub noise_aji: f32,
+    /// A cry for help from the ground: he hears it too.
+    pub noise_call: f32,
     /// A missed skill check: the windmill screeches, the engine backfires,
     /// the bones clatter. At least `noise_miss`, and always louder than the
     /// work it spoils (its own noise × `noise_miss_over`).
@@ -396,6 +405,11 @@ pub struct Tuning {
     pub sound_near: f32,
     pub sound_far: f32,
     pub sound_occluded: f32,
+    /// Seconds between a downed friend's groans: at the last of their bleed
+    /// and with all of it left (they groan more often as it runs out), and
+    /// the groans' gain on the effects.
+    pub groan_every: (f32, f32),
+    pub groan_gain: f32,
 
     // ------------------------------------------------------------ simulation
     /// Largest step the truth layer integrates at once (hitches are clamped).
@@ -442,6 +456,7 @@ impl Default for Tuning {
             beacon_hold: 2.0,
             revive_hold: 4.0,
             bleed_out: 60.0,
+            bleed_after_sack: 30.0,
             beacon_burn: 26.0,
             beacon_cooldown: 70.0,
             battery_life: 300.0,
@@ -480,6 +495,8 @@ impl Default for Tuning {
             ping_cooldown: 2.0,
             ping_life: 14.0,
             ping_range: 140.0,
+            call_cooldown: 8.0,
+            call_life: 3.0,
 
             manifest_min_distance: 30.0,
             rise_time: 1.6,
@@ -525,6 +542,7 @@ impl Default for Tuning {
             noise_pickup: 5.0,
             noise_drop: 11.0,
             noise_aji: 7.0,
+            noise_call: 18.0,
             noise_miss: 40.0,
             noise_miss_over: 1.6,
             noise_rattle: 12.0,
@@ -588,6 +606,8 @@ impl Default for Tuning {
             sound_near: 3.0,
             sound_far: 90.0,
             sound_occluded: 0.45,
+            groan_every: (3.5, 8.0),
+            groan_gain: 0.55,
 
             max_step: 0.1,
         }
@@ -665,6 +685,15 @@ impl Tuning {
         let fade = edge * edge * (3.0 - 2.0 * edge);
         inverse * fade * if occluded { self.sound_occluded } else { 1.0 }
     }
+
+    /// Seconds until a downed friend with `bleed` seconds left groans again:
+    /// more often as the bleed runs out, varied by `jitter` (about 0.8..1.2)
+    /// so no two keep time, and never outside `groan_every`.
+    pub fn groan_gap(&self, bleed: f32, jitter: f32) -> f32 {
+        let (last, full) = self.groan_every;
+        let left = (bleed / self.bleed_out).clamp(0.0, 1.0);
+        ((last + (full - last) * left) * jitter).clamp(last, full)
+    }
 }
 
 #[cfg(test)]
@@ -685,6 +714,24 @@ mod tests {
         }
         assert_eq!(t.heard(t.sound_far, false), 0.0);
         assert!(t.heard(30.0, false) > 0.02, "a machine across the llano is still heard");
+    }
+
+    #[test]
+    fn the_fallen_groan_more_often_as_they_bleed() {
+        let t = Tuning::default();
+        let mut before = f32::MAX;
+        for left in (0..=(t.bleed_out as u32)).rev() {
+            let gap = t.groan_gap(left as f32, 1.0);
+            assert!(gap <= before, "{left} s left: a groan never comes later as they weaken");
+            before = gap;
+        }
+        assert!(t.groan_gap(5.0, 1.0) < t.groan_gap(t.bleed_out - 5.0, 1.0));
+        for jitter in [0.8, 1.0, 1.2] {
+            for left in [0.0, t.bleed_after_sack, t.bleed_out, t.bleed_out * 2.0] {
+                let gap = t.groan_gap(left, jitter);
+                assert!(gap >= t.groan_every.0 && gap <= t.groan_every.1, "{gap} s");
+            }
+        }
     }
 
     #[test]

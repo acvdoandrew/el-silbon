@@ -62,13 +62,13 @@ pub fn controls_live(snapshot: Option<&Snapshot>, me: Option<PlayerId>, playing:
 
 /// What one client frame puts on the wire: the input packet (orientation as
 /// this frame left it), then the presses of the intent, in order: interact
-/// only where the crosshair is on a bundle or pepper, drop, pepper, and a
-/// mark of what the crosshair holds. The game and every smoke driver build
-/// their frames here; only explicit session commands (start, restart, a
-/// scripted mark) follow them. Run and sequence are stamped by the sender.
+/// only where the crosshair is on a bundle or pepper, drop, pepper, a mark
+/// of what the crosshair holds, and a call. The game and every smoke driver
+/// build their frames here; only explicit session commands (start, restart,
+/// a scripted mark) follow them. Run and sequence are stamped by the sender.
 pub struct Wire {
     pub input: Input,
-    commands: [Option<Action>; 8],
+    commands: [Option<Action>; 9],
 }
 
 impl Wire {
@@ -94,7 +94,7 @@ impl Wire {
         if !live {
             return Self {
                 input,
-                commands: [None; 8],
+                commands: [None; 9],
             };
         }
         let pickup = intent.interact_pressed
@@ -117,6 +117,7 @@ impl Wire {
                 intent.drop.then_some(Action::Drop),
                 intent.use_aji.then_some(Action::UseAji),
                 mark,
+                intent.call.map(|kind| Action::Call { kind }),
                 intent.skill.map(|(id, needle)| Action::Skill { id, needle }),
                 intent.code.map(|code| Action::TryCode { code }),
                 intent.name.map(|variant| Action::Name { variant }),
@@ -285,7 +286,7 @@ impl Plugin for NetworkPlugin {
             .add_systems(Update, update.in_set(GameSet::Simulate))
             .add_systems(
                 Update,
-                (avatars, crate::world::avatar::animate, banner)
+                (avatars, ground_torches, crate::world::avatar::animate, banner)
                     .chain()
                     .in_set(GameSet::Present),
             );
@@ -750,6 +751,63 @@ fn avatars(
     }
 }
 
+/// A downed teammate's torch lies lit in the grass just past their hand, its
+/// beam low along the ground and sweeping where they look, so a friend can
+/// find them in the dark. Only from their own row, and only while they lie
+/// where they can be found (`PlayerView::findable`): never from his sack.
+fn ground_torches(
+    mut commands: Commands,
+    time: Res<Time<Real>>,
+    net: Res<Network>,
+    kit: Res<crate::world::avatar::AvatarKit>,
+    layout: Res<LayoutRes>,
+    mut torches: Local<std::collections::BTreeMap<u64, Entity>>,
+    mut placed: Query<(&mut Transform, &mut Visibility), With<crate::world::avatar::GroundTorch>>,
+) {
+    let local = net.id();
+    let players = net.snapshot().map_or(&[][..], |s| s.players.as_slice());
+    torches.retain(|id, entity| {
+        let keep = players.iter().any(|p| p.id == *id && Some(p.id) != local);
+        if !keep {
+            commands.entity(*entity).despawn();
+        }
+        keep
+    });
+    let k = (time.delta_secs() * 18.0).min(1.0);
+    for p in players.iter().filter(|p| Some(p.id) != local) {
+        let entity = *torches
+            .entry(p.id)
+            .or_insert_with(|| kit.spawn_ground_torch(&mut commands, p.id));
+        // Spawned this frame: placed from the next.
+        let Ok((mut tf, mut vis)) = placed.get_mut(entity) else {
+            continue;
+        };
+        let lit = p.findable() && p.light;
+        let want_vis = if lit { Visibility::Inherited } else { Visibility::Hidden };
+        let fresh = *vis == Visibility::Hidden;
+        if *vis != want_vis {
+            *vis = want_vis;
+        }
+        if !lit {
+            continue;
+        }
+        let facing = Quat::from_rotation_y(p.yaw);
+        let body = Vec2::from_array(p.position);
+        // Never inside a wall they lie against.
+        let at = layout
+            .0
+            .move_circle(body, (facing * crate::world::avatar::GROUND_TORCH).xz(), 0.1);
+        let to = Vec3::new(at.x, layout.0.rest_height(at) + 0.08, at.y);
+        let turn = facing * Quat::from_rotation_x(p.pitch.clamp(-0.15, 0.2));
+        if fresh || tf.translation.distance(to) > 4.0 {
+            *tf = Transform::from_translation(to).with_rotation(turn);
+        } else {
+            tf.translation = tf.translation.lerp(to, k);
+            tf.rotation = tf.rotation.slerp(turn, k);
+        }
+    }
+}
+
 fn banner(
     net: Res<Network>,
     flow: Res<State<Flow>>,
@@ -802,8 +860,10 @@ fn banner(
             "SHARED VICTORY: the truck is away with everyone still standing."
         } else if s.outcome == 2 {
             "SHARED FAILURE: nobody is left on their feet. The host can restart."
+        } else if net.me().is_some_and(|p| p.hauled) {
+            "IN HIS SACK: ají in his path, or Tureco's bark, makes him drop you."
         } else if net.status() == 1 {
-            "DOWN: a teammate can revive you (hold E beside you)."
+            "DOWN: crawl toward your friends | V: call for help (he may hear it too)."
         } else if net.status() == 2 {
             "You bled out. Watch over your teammates."
         } else {

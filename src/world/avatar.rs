@@ -21,6 +21,20 @@ pub struct AvatarTorch;
 /// Where the torch's beam leaves the lens (root space, at rest).
 const BEAM: Vec3 = Vec3::new(0.27, 0.95, -0.36);
 
+/// A downed teammate's torch, lying lit in the grass beside them: its own
+/// entity, since the body's roll must not tip it. Placed by `net`.
+#[derive(Component)]
+pub struct GroundTorch(pub u64);
+
+/// A light of a `GroundTorch`: like the teammates' beams, it comes and goes
+/// with the party, so the world's light census leaves it out.
+#[derive(Component)]
+pub struct GroundTorchLight;
+
+/// Where the torch lies from a downed teammate's position (their feet, as
+/// the avatar root; facing -Z at zero yaw): just past the reaching right hand.
+pub const GROUND_TORCH: Vec3 = Vec3::new(0.4, 0.0, -1.8);
+
 /// A joint of a survivor's rig (`tools/models/survivors.py` JOINTS): its
 /// rest position in the model (root space, feet at the origin, facing -Z)
 /// and its parent. Rest rotations are identity.
@@ -680,6 +694,57 @@ impl AvatarKit {
             Transform::from_scale(Vec3::splat(1.1)),
             NotShadowCaster,
             ChildOf(bag),
+        ));
+        root
+    }
+
+    /// Teammate `id`'s torch as it lies in the grass when they are down: the
+    /// club on its side with its lens at the origin, a beam low along the
+    /// ground (where the origin faces, -Z) and a small glow round it. Hidden
+    /// until it is placed.
+    pub fn spawn_ground_torch(&self, commands: &mut Commands, id: u64) -> Entity {
+        let root = commands
+            .spawn((
+                GroundTorch(id),
+                Name::new(format!("ground torch {id}")),
+                Transform::IDENTITY,
+                Visibility::Hidden,
+            ))
+            .id();
+        commands.spawn((
+            Mesh3d(self.torch.clone()),
+            MeshMaterial3d(self.torch_mat.clone()),
+            Transform::from_translation(Vec3::new(-0.27, -0.94, 0.23)),
+            NotShadowCaster,
+            ChildOf(root),
+        ));
+        commands.spawn((
+            GroundTorchLight,
+            SpotLight {
+                color: Color::srgb(1.0, 0.93, 0.82),
+                intensity: 60_000.0,
+                range: 14.0,
+                radius: 0.03,
+                inner_angle: 0.2,
+                outer_angle: 0.5,
+                shadow_maps_enabled: false,
+                ..default()
+            },
+            Transform::from_xyz(0.0, 0.02, -0.12).with_rotation(Quat::from_rotation_x(-0.06)),
+            ChildOf(root),
+        ));
+        commands.spawn((
+            GroundTorchLight,
+            PointLight {
+                color: Color::srgb(1.0, 0.9, 0.75),
+                intensity: 3_000.0,
+                range: 3.5,
+                radius: 0.05,
+                shadow_maps_enabled: false,
+                ..default()
+            },
+            Transform::from_xyz(0.0, 0.2, -0.3),
+            ChildOf(root),
         ));
         root
     }

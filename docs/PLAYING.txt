@@ -61,6 +61,8 @@ Space                skill check (press as the needle crosses the zone)
 F                    torch on/off
 G                    put a bundle down          Q   scatter ají
 V / middle click     mark a spot for the party  M   map
+                     (down: cry for help from where you lie;
+                     he may hear it too)
 X                    aboard the ready truck: drive off now
 Esc                  menu (with friends the night goes on)
 F12                  screenshot

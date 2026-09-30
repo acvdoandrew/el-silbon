@@ -50,6 +50,8 @@ pub struct Participant {
     cue: CueDirector,
     ground_height: f32,
     ping_wait: f32,
+    /// Seconds before this voice can call again.
+    call_wait: f32,
     prayed: bool,
     praying: bool,
     /// Pulse timers: pump, ignition, prayer and revive noises, and the torch
@@ -79,6 +81,7 @@ impl Participant {
             action_sequence: 0,
             cue: CueDirector::new(seed),
             ping_wait: 0.0,
+            call_wait: 0.0,
             prayed: false,
             praying: false,
             pulse: [0.0; 5],
@@ -129,10 +132,20 @@ pub struct Ping {
     pub by: PlayerId,
 }
 
+/// A call out loud, where the caller is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Call {
+    pub kind: CallKind,
+    pub pos: Vec3,
+    pub left: f32,
+    pub by: PlayerId,
+}
+
 pub struct Session {
     pub encounter: Encounter,
     pub players: BTreeMap<PlayerId, Participant>,
     pub pings: Vec<Ping>,
+    pub calls: Vec<Call>,
     pub run: u64,
     pub tick: u64,
     pub started: bool,
@@ -160,6 +173,7 @@ impl Session {
             encounter: Encounter::new(layout),
             players: BTreeMap::new(),
             pings: Vec::new(),
+            calls: Vec::new(),
             run: 1,
             tick: 0,
             started: false,
@@ -239,6 +253,7 @@ impl Session {
         self.survivors.remove(&id);
         self.outbox.retain(|(recipient, _)| *recipient != id);
         self.pings.retain(|p| p.by != id);
+        self.calls.retain(|c| c.by != id);
         if self.target == Some(id) || self.captive == Some(id) {
             self.target = None;
             self.captive = None;
@@ -307,6 +322,7 @@ impl Session {
                 Ok(())
             }
             Action::Ping { at } => self.ping(id, at, tuning),
+            Action::Call { kind } => self.call(id, kind, tuning),
             _ => {
                 if !self.started || self.encounter.outcome.is_over() {
                     return Err("The run is not active.".into());
@@ -357,6 +373,50 @@ impl Session {
             by: id,
         });
         Ok(())
+    }
+
+    /// A call out loud. It comes from the caller's own body, whatever the
+    /// client claims, and it is a noise he hears. The cry for help is the
+    /// fallen's alone: never from his sack, never from the dead.
+    fn call(&mut self, id: PlayerId, kind: CallKind, tuning: &Tuning) -> Result<(), String> {
+        if !self.started || self.encounter.outcome.is_over() {
+            return Err("The run is not active.".into());
+        }
+        let captive = self.captive == Some(id);
+        let p = self.players.get_mut(&id).ok_or("Player is disconnected.")?;
+        if captive {
+            return Err("You are in his sack.".into());
+        }
+        match (kind, p.status) {
+            (_, Status::Dead) => return Err("You are dead.".into()),
+            (CallKind::Help, Status::Active) => return Err("You are on your feet.".into()),
+            (CallKind::Help, Status::Downed { .. }) => {}
+        }
+        if p.call_wait > 0.0 {
+            return Err("Your voice is spent; wait a moment.".into());
+        }
+        p.call_wait = tuning.call_cooldown;
+        let at = p.pose.pos;
+        let pos = Vec3::new(at.x, p.ground_height, at.y);
+        self.noises.push((at, tuning.noise_call));
+        self.calls.retain(|c| c.by != id);
+        self.calls.push(Call {
+            kind,
+            pos,
+            left: tuning.call_life,
+            by: id,
+        });
+        Ok(())
+    }
+
+    /// Whoever was in his sack falls out, and gets time to be found.
+    fn release_captive(&mut self, tuning: &Tuning) {
+        if let Some(id) = self.captive.take()
+            && let Some(p) = self.players.get_mut(&id)
+            && let Status::Downed { bleed } = &mut p.status
+        {
+            *bleed = bleed.max(tuning.bleed_after_sack);
+        }
     }
 
     /// What the crosshair may act on for `id`, built from truth.
@@ -604,6 +664,7 @@ impl Session {
         self.dog = Dog::tied(layout);
         self.outbox.clear();
         self.pings.clear();
+        self.calls.clear();
         self.events.clear();
         self.noises.clear();
         self.beacon_pulse = 0.0;
@@ -669,6 +730,10 @@ impl Session {
             p.left -= dt;
         }
         self.pings.retain(|p| p.left > 0.0);
+        for c in &mut self.calls {
+            c.left -= dt;
+        }
+        self.calls.retain(|c| c.left > 0.0);
         self.move_players(layout, tuning, dt);
         self.resolve_holds(layout, tuning, dt);
         self.world_noise(layout, tuning, dt);
@@ -691,6 +756,7 @@ impl Session {
             };
             p.input_age += dt;
             p.ping_wait = (p.ping_wait - dt).max(0.0);
+            p.call_wait = (p.call_wait - dt).max(0.0);
             for t in &mut p.pulse {
                 *t = (*t - dt).max(0.0);
             }
@@ -1098,7 +1164,7 @@ impl Session {
                     self.events.push((None, e));
                 }
                 Event::SackDropped => {
-                    self.captive = None;
+                    self.release_captive(tuning);
                     self.events.push((None, e));
                 }
                 Event::Taken => {
@@ -1215,7 +1281,7 @@ impl Session {
                 self.dog.barking = 1.2;
                 self.noises.push((self.dog.pos, tuning.noise_bark));
                 if ev.contains(&Event::SackDropped) {
-                    self.captive = None;
+                    self.release_captive(tuning);
                 }
                 self.target = None;
                 self.events.extend(ev.into_iter().map(|e| (None, e)));
@@ -1573,6 +1639,16 @@ impl Session {
             } else {
                 Vec::new()
             },
+            calls: self
+                .calls
+                .iter()
+                .map(|c| CallView {
+                    kind: c.kind,
+                    pos: c.pos.to_array(),
+                    left: c.left,
+                    by: c.by,
+                })
+                .collect(),
         }
     }
 

@@ -36,6 +36,9 @@ pub(crate) struct MapPanel;
 pub(crate) struct MapDot(usize);
 #[derive(Component)]
 pub(crate) struct MapPing(usize);
+/// A ring round a downed friend's dot while they can be found.
+#[derive(Component)]
+pub(crate) struct MapRing;
 
 struct Canvas {
     w: usize,
@@ -389,6 +392,22 @@ pub(crate) fn spawn_map_panel(root: &mut ChildSpawnerCommands<'_>, f: &Fonts, ma
                                 },
                                 BackgroundColor(INK),
                             ));
+                            // Down where they can be found: a ring (no fill,
+                            // so the dot's colour never paints it).
+                            dot.spawn((
+                                MapRing,
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    width: px(DOT * 2.2),
+                                    height: px(DOT * 2.2),
+                                    border: UiRect::all(px(2)),
+                                    border_radius: BorderRadius::MAX,
+                                    ..default()
+                                },
+                                BorderColor::all(RED),
+                                UiTransform::IDENTITY,
+                                Visibility::Hidden,
+                            ));
                         });
                 }
             });
@@ -434,6 +453,7 @@ pub(crate) fn update_markers(
     mut dots: Query<(&MapDot, &mut Node, &mut Visibility, &mut UiTransform, &Children), Without<MapPing>>,
     mut pings: Query<(&MapPing, &mut Node, &mut Visibility), Without<MapDot>>,
     mut backgrounds: Query<&mut BackgroundColor>,
+    mut rings: Query<(&mut Visibility, &mut UiTransform), (With<MapRing>, Without<MapDot>, Without<MapPing>)>,
 ) {
     if !map.0 {
         return;
@@ -463,9 +483,16 @@ pub(crate) fn update_markers(
             _ => player_color(dot.0),
         };
         set_vis(&mut vis, true);
+        // Only where they can be found: in his sack, the dot is his.
+        let ring = Some(p.id) != me && p.findable();
+        let pulse = 1.0 + 0.25 * (time.elapsed_secs() * 3.0).sin();
         for kid in kids.iter() {
             if let Ok(mut bg) = backgrounds.get_mut(kid) {
                 bg.0 = color;
+            }
+            if let Ok((mut ring_vis, mut ring_tf)) = rings.get_mut(kid) {
+                set_vis(&mut ring_vis, ring);
+                ring_tf.scale = Vec2::splat(pulse);
             }
         }
     }

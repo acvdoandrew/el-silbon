@@ -62,6 +62,17 @@ pub enum Action {
     /// Drive off in the ready truck now, with whoever is aboard; everyone
     /// else is left behind.
     DriveOff,
+    /// Call out loud, from where you are: everyone hears it, and so may he.
+    Call {
+        kind: CallKind,
+    },
+}
+
+/// What a call says (the call wheel). So far only the fallen's cry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CallKind {
+    /// "¡Auxilio!": a downed player's hoarse cry for help, from where they lie.
+    Help,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -147,6 +158,15 @@ pub struct PlayerView {
     /// Who they are (`survivor::Survivor` code): only how they look.
     #[serde(default)]
     pub survivor: u8,
+}
+
+impl PlayerView {
+    /// Down where a friend can find them: not dead, and not in his sack
+    /// (there, where they are is where he is). Every cue that leads a friend
+    /// to the fallen reads this, and only this player's own row.
+    pub fn findable(&self) -> bool {
+        self.status == 1 && !self.hauled
+    }
 }
 
 /// Only sent when physically present, in the listener's view cone and with
@@ -238,6 +258,16 @@ pub struct PingView {
     pub by: PlayerId,
 }
 
+/// A call heard by everyone, placed at the caller (never anywhere else).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CallView {
+    pub kind: CallKind,
+    pub pos: [f32; 3],
+    /// Seconds it still shows.
+    pub left: f32,
+    pub by: PlayerId,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
     pub run: u64,
@@ -272,6 +302,9 @@ pub struct Snapshot {
     /// Each player's deeds, sent once the night is over.
     #[serde(default)]
     pub deeds: Vec<(PlayerId, crate::awards::Deeds)>,
+    /// Calls still in the air.
+    #[serde(default)]
+    pub calls: Vec<CallView>,
 }
 
 impl Snapshot {
@@ -299,10 +332,11 @@ impl Snapshot {
             carrying: mine.map_or(0, |p| p.carrying as usize),
             aji_held: self.me.aji,
             battery: self.me.battery,
+            // As the session sees them: a body in his sack is no body to kneel beside.
             bodies: self
                 .players
                 .iter()
-                .filter(|p| p.status == 1)
+                .filter(|p| p.findable())
                 .map(|p| (p.id, Vec2::from_array(p.position)))
                 .collect(),
             me,

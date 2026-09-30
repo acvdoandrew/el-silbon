@@ -447,6 +447,10 @@ fn read_devices(
         axis.x -= 1.0;
     }
     let k = tuning.0.mouse_radians_per_count * settings.sensitivity;
+    let v = keys.just_pressed(KeyCode::KeyV) || mouse.just_pressed(MouseButton::Middle);
+    // Down, V is no mark: it is a hoarse cry for help from where you lie
+    // (and from his sack, nothing at all).
+    let (down, hauled) = net.me().map_or((false, false), |p| (p.status == 1, p.hauled));
     intent.0 = Intent {
         move_axis: axis.normalize_or_zero(),
         look_delta: Vec2::new(
@@ -465,7 +469,8 @@ fn read_devices(
         drop: keys.just_pressed(KeyCode::KeyG),
         use_aji: keys.just_pressed(KeyCode::KeyQ),
         drive_off: keys.just_pressed(KeyCode::KeyX),
-        ping: keys.just_pressed(KeyCode::KeyV) || mouse.just_pressed(MouseButton::Middle),
+        ping: v && !down,
+        call: (v && down && !hauled).then_some(crate::net::protocol::CallKind::Help),
         skill: if keys.just_pressed(KeyCode::Space) {
             net.needle(&tuning.0)
         } else {

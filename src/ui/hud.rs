@@ -157,6 +157,7 @@ pub(crate) fn roster(
     // Only a shared night has a party to list (hosting can begin at runtime).
     let playing = matches!(*state.get(), Flow::Playing | Flow::Paused) && net.is_shared();
     let me = net.id();
+    let here = net.me().map(|m| Vec2::from_array(m.position));
     for (line, mut t, mut c) in &mut lines {
         let Some(p) = net.snapshot().filter(|_| playing).and_then(|s| s.players.get(line.0)) else {
             set_text(&mut t, "");
@@ -164,14 +165,104 @@ pub(crate) fn roster(
         };
         let you = if Some(p.id) == me { " (you)" } else { "" };
         let who = crate::survivor::Survivor::from_code(p.survivor).name();
+        // How far a friend lies, never where the one in his sack is.
+        let far = here
+            .filter(|_| p.findable() && Some(p.id) != me)
+            .map(|h| h.distance(Vec2::from_array(p.position)));
         let text = match p.status {
-            1 => format!("P{} {who}{you}  DOWN {:.0}s", line.0 + 1, p.bleed.max(0.0)),
+            1 if p.hauled => format!("P{} {who}{you}  IN HIS SACK {:.0}s", line.0 + 1, p.bleed.max(0.0)),
+            1 => match far {
+                Some(d) => format!("P{} {who}{you}  DOWN {:.0}s · {d:.0} m", line.0 + 1, p.bleed.max(0.0)),
+                None => format!("P{} {who}{you}  DOWN {:.0}s", line.0 + 1, p.bleed.max(0.0)),
+            },
             2 => format!("P{} {who}{you}  lost", line.0 + 1),
             _ if p.carrying > 0 => format!("P{} {who}{you}  carrying {}", line.0 + 1, p.carrying),
             _ => format!("P{} {who}{you}", line.0 + 1),
         };
         set_text(&mut t, &text);
         set_color(&mut c, if p.status == 0 { player_color(line.0) } else { RED });
+    }
+}
+
+/// Where each downed friend lies: a mark over the body with who they are and
+/// how far, pinned to the screen's side when they are out of view. Truth
+/// only, from their own row, and only while they can be found (never while
+/// he carries them). It pulses faster as they bleed, and a fresh cry for
+/// help from them flashes it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn downed_markers(
+    net: Res<Network>,
+    state: Res<State<Flow>>,
+    time: Res<Time<Real>>,
+    layout: Res<LayoutRes>,
+    tuning: Res<TuningRes>,
+    camera: Single<(&Camera, &Transform), With<crate::player::Player>>,
+    mut markers: Query<(&DownedMarker, &mut Node, &mut Visibility, &Children)>,
+    mut labels: Query<(&mut Text, &mut TextColor), With<DownedMarkerLabel>>,
+    mut diamonds: Query<&mut BackgroundColor, With<DownedMarkerDiamond>>,
+) {
+    let (cam, tf) = camera.into_inner();
+    let t = &tuning.0;
+    let shown = *state.get() == Flow::Playing && net.is_shared();
+    let me = net.id();
+    let (players, calls) = net
+        .snapshot()
+        .map_or((&[][..], &[][..]), |s| (s.players.as_slice(), s.calls.as_slice()));
+    let eye = tf.translation;
+    let view = GlobalTransform::from(*tf);
+    let size = cam.logical_viewport_size().filter(|s| s.x > 0.0 && s.y > 0.0);
+    for (marker, mut node, mut vis, kids) in &mut markers {
+        let found = players
+            .get(marker.0)
+            .filter(|p| shown && Some(p.id) != me && p.findable())
+            .zip(size);
+        set_vis(&mut vis, found.is_some());
+        let Some((p, size)) = found else {
+            continue;
+        };
+        let body = Vec2::from_array(p.position);
+        let over = Vec3::new(body.x, layout.0.rest_height(body) + 0.35, body.y);
+        let inside = |v: &Vec2| (0.04..=0.96).contains(&(v.x / size.x)) && (0.04..=0.96).contains(&(v.y / size.y));
+        // In view: over the body. Behind or beside you: at that side's edge.
+        let (x, y, side) = match cam.world_to_viewport(&view, over).ok().filter(inside) {
+            Some(v) => (v.x / size.x, v.y / size.y, 0),
+            None if tf.right().dot(over - eye) >= 0.0 => (0.92, 0.5, 1),
+            None => (0.08, 0.5, -1),
+        };
+        let (left, top) = (percent(x * 100.0), percent(y * 100.0));
+        if node.left != left || node.top != top {
+            node.left = left;
+            node.top = top;
+        }
+        let who = crate::survivor::Survivor::from_code(p.survivor).name();
+        let far = crate::geometry::ground(eye).distance(body);
+        let mut text = format!("{who} · {far:.0} m");
+        if p.bleed < 20.0 {
+            text = format!("{text} · {:.0}s", p.bleed.max(0.0));
+        }
+        let text = match side {
+            -1 => format!("‹ {text}"),
+            1 => format!("{text} ›"),
+            _ => text,
+        };
+        // Faint, then brighter and quicker as their time runs out; a call
+        // just heard lights it up.
+        let called = calls.iter().any(|c| c.by == p.id && c.left > t.call_life - 1.0);
+        let urgency = 1.0 - (p.bleed / t.bleed_out).clamp(0.0, 1.0);
+        let beat = 0.5 + 0.5 * (time.elapsed_secs() * (2.0 + 6.0 * urgency)).sin();
+        let alpha = if called { 1.0 } else { 0.55 + 0.45 * beat };
+        for kid in kids.iter() {
+            if let Ok((mut label, mut color)) = labels.get_mut(kid) {
+                set_text(&mut label, &text);
+                set_color(&mut color, RED.with_alpha(alpha));
+            }
+            if let Ok(mut bg) = diamonds.get_mut(kid) {
+                let want = RED.with_alpha(0.5 * alpha);
+                if bg.0 != want {
+                    bg.0 = want;
+                }
+            }
+        }
     }
 }
 
@@ -466,6 +557,7 @@ pub(crate) fn downed_panel(
     time: Res<Time<Real>>,
     mut panel: Query<&mut Visibility, With<DownedPanel>>,
     mut text: Query<&mut Text, With<DownedText>>,
+    mut help: Query<&mut Text, (With<DownedHelp>, Without<DownedText>)>,
     mut tint: Query<&mut BackgroundColor, With<Tint>>,
     mut wash: Local<(f32, [f32; 3])>,
 ) {
@@ -473,6 +565,15 @@ pub(crate) fn downed_panel(
     let me = net.me();
     let status = if playing { me.map_or(0, |p| p.status) } else { 0 };
     let shared = net.is_shared();
+    // Down where friends can find you: what you can still do about it.
+    let can = if shared && status == 1 && me.is_some_and(|p| p.findable()) {
+        "Crawl (WASD) toward your friends   ·   V  cry for help (he may hear it too)   ·   F  your torch shows where you lie"
+    } else {
+        ""
+    };
+    for mut t in &mut help {
+        set_text(&mut t, can);
+    }
     let (label, want, rgb) = match (status, me) {
         (1, Some(p)) if p.hauled => (
             "IN HIS SACK\nThe bones press on you in the dark. Only ají in his path will make him drop you.".to_string(),
@@ -569,6 +670,7 @@ pub(crate) fn hints_and_captions(
         Query<&mut Text, With<HintText>>,
         Query<(&mut Text, &mut TextFont, &mut TextColor, &mut TextShadow), With<CaptionText>>,
     )>,
+    mut heard: Local<std::collections::BTreeMap<u64, f32>>,
 ) {
     let dt = time.delta_secs();
     let show = |hint: &mut Hint, text: &'static str, secs: f32, priority: u8| {
@@ -607,11 +709,12 @@ pub(crate) fn hints_and_captions(
                 6.0,
                 2,
             ),
+            // Under a dropped sack's hint in the same moment, never over it.
             Event::DogBark => show(
                 &mut hint,
                 "Tureco barks — and out in the dark, something flinches away.",
                 6.0,
-                3,
+                2,
             ),
             Event::Hauled => {
                 if net.status() == 0 {
@@ -625,8 +728,8 @@ pub(crate) fn hints_and_captions(
             }
             Event::SackDropped => show(
                 &mut hint,
-                "He drops the sack to count his bones — get them up, now!",
-                6.0,
+                "The sack falls! Follow their groans, their torch and the red mark — then hold E beside them.",
+                7.0,
                 3,
             ),
             Event::Taken => show(&mut hint, "He is gone into the grass. And so are they.", 7.0, 3),
@@ -742,6 +845,21 @@ pub(crate) fn hints_and_captions(
             Event::BeaconLit => show(&mut hint, "The beacon flares. He turns toward the light.", 5.0, 2),
             Event::Prayed => show(&mut hint, "The fear eases.", 3.0, 1),
             _ => {}
+        }
+    }
+    // A friend's cry for help, heard as it comes.
+    let calls = net.snapshot().map_or(&[][..], |s| s.calls.as_slice());
+    heard.retain(|by, _| calls.iter().any(|c| c.by == *by));
+    for c in calls {
+        let fresh = heard.get(&c.by).is_none_or(|left| c.left > *left);
+        heard.insert(c.by, c.left);
+        if fresh && Some(c.by) != net.id() {
+            show(
+                &mut hint,
+                "¡Auxilio! A friend cries out from the grass — follow the voice and the red mark.",
+                6.0,
+                2,
+            );
         }
     }
     // Only over play: a menu (pause, outcome) has the screen to itself, and

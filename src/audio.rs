@@ -9,8 +9,9 @@
 //! them exactly, so a silence is silent at any frame rate.
 //!
 //! The llano's own things are *placed*: the machines, the frogs and the
-//! windmill, Tureco, teammates' footsteps, marks, the altar and the key box,
-//! a bolt's thunder, an omen's clatter behind you. They pan to where they
+//! windmill, Tureco, teammates' footsteps, marks, a fallen friend's groans
+//! and cries for help, the altar and the key box, a bolt's thunder, an
+//! omen's clatter behind you. They pan to where they
 //! are and fade with distance and behind walls (`Tuning::heard`). The
 //! whistle and everything whose source is him (stings, his signs, the hunt)
 //! stay unplaced, and nothing here reads the Silbón's position — only this
@@ -28,10 +29,12 @@ use crate::app::{
 };
 use crate::mix::{Bus, GLIDE_RATE, glide};
 use crate::net::Network;
+use crate::net::protocol::CallKind;
 use crate::perception::{WHISTLE_TAKES, WhistleVariant};
 use crate::player::Player;
 use crate::sim::{Event, ThreatState};
 use crate::storm;
+use crate::survivor::Survivor;
 
 /// Ground the footfalls land on, in the order of `Sounds::steps`.
 #[derive(Clone, Copy)]
@@ -91,6 +94,9 @@ struct Sounds {
     theme: Handle<AudioSource>,
     ear_whistle: Handle<AudioSource>,
     ringing: Handle<AudioSource>,
+    /// A fallen friend's groans, and their cry for help.
+    groans: [Handle<AudioSource>; 3],
+    call_help: Handle<AudioSource>,
 }
 
 /// Where a placed sound truly comes from.
@@ -250,8 +256,10 @@ impl Plugin for SoundPlugin {
                         play_effects,
                         play_stings,
                         play_pings,
+                        play_calls,
                         footsteps,
                         party_steps,
+                        party_cries,
                         thunder,
                         play_preview,
                         place_emitters,
@@ -328,6 +336,8 @@ fn load_sounds(
         theme: a("title_theme"),
         ear_whistle: a("whistle_ear"),
         ringing: a("ringing"),
+        groans: std::array::from_fn(|k| a(&format!("downed_groan_{k}"))),
+        call_help: a("call_help"),
     };
     let frogs = a("frogs_loop");
     let windmill = a("windmill_creak");
@@ -769,6 +779,94 @@ fn play_pings(
                 &settings,
             );
         }
+    }
+}
+
+/// A call, from where the caller is and in their own voice. It carries like
+/// a mark (a call is meant to be heard) and still says where it comes from.
+fn play_calls(
+    mut commands: Commands,
+    net: Res<Network>,
+    sounds: Res<Sounds>,
+    settings: Res<Settings>,
+    ears: Ears,
+    mut seen: Local<BTreeMap<u64, f32>>,
+) {
+    let Some(s) = net.snapshot() else {
+        seen.clear();
+        return;
+    };
+    seen.retain(|by, _| s.calls.iter().any(|c| c.by == *by));
+    for c in &s.calls {
+        let fresh = seen.get(&c.by).is_none_or(|left| c.left > *left);
+        seen.insert(c.by, c.left);
+        if !fresh {
+            continue;
+        }
+        let clip = match c.kind {
+            CallKind::Help => &sounds.call_help,
+        };
+        let voice = s.player(c.by).map_or(1.0, |p| Survivor::from_code(p.survivor).voice());
+        let at = Vec3::from_array(c.pos) + Vec3::Y * 0.3;
+        let lift = mark_lift(heard_at(&ears.layout.0, &ears.tuning.0, ears.eye(), at));
+        placed_shot(
+            &mut commands,
+            &ears,
+            clip,
+            (ears.tuning.0.sfx_gain * 0.9 * lift, voice),
+            Some(Anchor::at(at)),
+            VoiceKind::Effect,
+            &settings,
+        );
+    }
+}
+
+/// The fallen groan where they lie, now and then and more often as they
+/// bleed, each in their own voice: a friend can follow the sound in the
+/// dark. Only from their own row and only while they can be found
+/// (`PlayerView::findable`): from his sack the sound would be his. These are
+/// the party's to hear, never noises he hears.
+#[allow(clippy::too_many_arguments)]
+fn party_cries(
+    mut commands: Commands,
+    time: Res<Time<Real>>,
+    settings: Res<Settings>,
+    sounds: Res<Sounds>,
+    net: Res<Network>,
+    state: Res<State<Flow>>,
+    ears: Ears,
+    mut cries: Local<BTreeMap<u64, (f32, u64)>>,
+) {
+    let Some(s) = net.snapshot().filter(|_| *state.get() == Flow::Playing) else {
+        cries.clear();
+        return;
+    };
+    let me = net.id();
+    // Whoever gets up, dies or is carried off starts afresh when next found.
+    cries.retain(|id, _| s.player(*id).is_some_and(|p| p.findable()));
+    let t = &ears.tuning.0;
+    for p in s.players.iter().filter(|p| Some(p.id) != me && p.findable()) {
+        // Just fallen, or just dropped from his sack: a groan at once.
+        let (wait, count) = cries.entry(p.id).or_insert((0.0, 0));
+        *wait -= time.delta_secs();
+        if *wait > 0.0 {
+            continue;
+        }
+        let mut rng = crate::rng::Rng::fork(t.seed ^ p.id, *count);
+        *wait = t.groan_gap(p.bleed, rng.range(0.8, 1.2));
+        // From their head, lying ahead of where they fell.
+        let pos = Vec2::from_array(p.position) + Vec2::new(-p.yaw.sin(), -p.yaw.cos()) * 1.3;
+        let at = Vec3::new(pos.x, ears.layout.0.rest_height(pos) + 0.3, pos.y);
+        placed_shot(
+            &mut commands,
+            &ears,
+            &sounds.groans[(*count % 3) as usize],
+            (t.sfx_gain * t.groan_gain, Survivor::from_code(p.survivor).voice()),
+            Some(Anchor::at(at)),
+            VoiceKind::Effect,
+            &settings,
+        );
+        *count += 1;
     }
 }
 

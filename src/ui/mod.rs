@@ -120,6 +120,17 @@ pub(crate) struct Tint;
 pub(crate) struct DownedPanel;
 #[derive(Component)]
 pub(crate) struct DownedText;
+/// The downed player's second line: what they can still do.
+#[derive(Component)]
+pub(crate) struct DownedHelp;
+/// Where a downed friend lies (one per party slot): a diamond over the body
+/// and a label with who and how far.
+#[derive(Component)]
+pub(crate) struct DownedMarker(pub usize);
+#[derive(Component)]
+pub(crate) struct DownedMarkerDiamond;
+#[derive(Component)]
+pub(crate) struct DownedMarkerLabel;
 #[derive(Component)]
 pub(crate) struct BriefingPanel;
 #[derive(Component)]
@@ -182,6 +193,7 @@ impl Plugin for HudPlugin {
                         hud::objectives,
                         hud::status_text,
                         hud::roster,
+                        hud::downed_markers,
                         hud::vitals,
                         hud::prompt,
                         hud::skill_bar,
@@ -421,6 +433,54 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, map_image: Res<map
                 }
             });
 
+            // Downed friends: where each lies, placed by `hud::downed_markers`.
+            for i in 0..4 {
+                root.spawn((
+                    DownedMarker(i),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: percent(50),
+                        top: percent(50),
+                        width: px(0),
+                        height: px(0),
+                        overflow: Overflow::visible(),
+                        justify_content: JustifyContent::Center,
+                        ..default()
+                    },
+                    Visibility::Hidden,
+                    GlobalZIndex(5),
+                ))
+                .with_children(|m| {
+                    m.spawn((
+                        DownedMarkerDiamond,
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: px(-7),
+                            top: px(-7),
+                            width: px(14),
+                            height: px(14),
+                            border: UiRect::all(px(2)),
+                            ..default()
+                        },
+                        BorderColor::all(player_color(i)),
+                        BackgroundColor(RED.with_alpha(0.5)),
+                        UiTransform::from_rotation(Rot2::degrees(45.0)),
+                    ));
+                    m.spawn((
+                        DownedMarkerLabel,
+                        Text::new(""),
+                        font(&f.sans, 13.0),
+                        TextColor(RED),
+                        TextShadow::default(),
+                        Node {
+                            position_type: PositionType::Absolute,
+                            top: px(11),
+                            ..default()
+                        },
+                    ));
+                });
+            }
+
             // Controls (bottom right, always readable, out of the way).
             root.spawn((
                 Node {
@@ -435,7 +495,7 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, map_image: Res<map
                 BackgroundColor(PANEL_BG),
                 children![label(
                     f,
-                    "WASD move · Shift run · Ctrl crouch · E use / hold · F light · G drop · Q ají · V mark · M map · Esc",
+                    "WASD move · Shift run · Ctrl crouch · E use / hold · F light · G drop · Q ají · V mark (down: cry for help) · M map · Esc",
                     12.0,
                     Color::srgb(0.62, 0.62, 0.58),
                     false,
@@ -622,6 +682,14 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, map_image: Res<map
                             TextShadow::default(),
                             TextLayout::justify(Justify::Center),
                         ));
+                        c.spawn((
+                            DownedHelp,
+                            Text::new(""),
+                            font(&f.sans, 16.0),
+                            TextColor(INK),
+                            TextShadow::default(),
+                            TextLayout::justify(Justify::Center),
+                        ));
                     });
                 });
 
@@ -674,7 +742,7 @@ fn spawn_ui(mut commands: Commands, assets: Res<AssetServer>, map_image: Res<map
                         c.spawn((
                             Text::new(
                                 "WASD move · Mouse look · Shift run · Ctrl/C crouch · E or click use (hold at sites) · F flashlight\n\
-                                 Space skill check · G put a bundle down · Q scatter ají · V mark a spot · N name him (at the ceiba) · X drive off (with friends)\n\
+                                 Space skill check · G put a bundle down · Q scatter ají · V mark a spot (down: cry for help) · N name him (at the ceiba) · X drive off (with friends)\n\
                                  M map · Esc pause · F12 screenshot",
                             ),
                             font(&f.sans, 14.0),

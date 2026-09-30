@@ -30,6 +30,8 @@ pub struct Intent {
     pub use_aji: bool,
     /// Mark where you look this frame.
     pub ping: bool,
+    /// Call out loud this frame (down, V is a cry for help).
+    pub call: Option<crate::net::protocol::CallKind>,
     /// Press for a skill check this frame: the check's id and where the
     /// needle stood as far as this player could tell.
     pub skill: Option<(u32, f32)>,

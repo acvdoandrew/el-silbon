@@ -107,6 +107,45 @@
   - Lore page 5 is untouched.
 - Bounds moved: none. Invariant tests are untouched (hunt and stalk slower than walking, warnings over 1.5 s, continuous pressure hidden). Committed on m1b; not pushed.
 
+**Downed allies and the help call (item 8, roadmap fix 7, investigation Tier 1 + the call's first kind + `bleed_after_sack`).**
+- One gate for every cue that leads a friend to the fallen: `PlayerView::findable()` = downed and not `hauled` (their own row only; in his sack their position is his). The torch, groans, HUD marker, roster distance, map ring and the client crosshair's bodies all read it, so none of them shows while he carries them.
+- `Snapshot::scene_data` now counts only findable bodies (it counted the sack as a revivable body, which the session then ignored).
+- **Protocol hygiene.** The fingerprint change is on purpose; test.3 will not pair with test.1. `Action::Call` is added at the end of `Action`. `Snapshot.calls` has `#[serde(default)]`. No hidden AI state goes on the wire.
+- **The help call** (the call wheel's first kind, no separate help flag):
+  - Wire: `Action::Call { kind: CallKind }` appended after `DriveOff`, accepted before the `is_active` guard like `Ping`; `CallKind { Help }`; `Snapshot.calls: Vec<CallView { kind, pos, left, by }>` with `#[serde(default)]`. No new `Event` codes, no hidden AI state.
+  - `Session::call`: refused for the captive, the dead and (for `Help`) anyone on their feet; per-player `call_wait` (`call_cooldown` 8 s). It pushes `noise_call` 18 m from the caller's own body (masked by rain like any noise; he hears it only Stalking and Present) and a call at `(pos.x, rest height, pos.y)` whatever the client claims, living `call_life` 3 s.
+  - Client: `Intent.call`; `read_devices` turns V into `Call { Help }` while down (and into nothing while hauled). A downed player's V is no longer a mark. The session still accepts a `Ping` from the downed or the captive as before (unchanged rule; the game's client no longer sends one).
+- **`bleed_after_sack` 30 s** (user decision): `release_captive` on both release paths (the ward's `SackDropped` in `threat_step`, Tureco's bark in `dog_step`). **Read as a floor** (`bleed.max(30)`), not a reset: a fall dropped at once keeps its longer bleed. Confirm this reading with the user.
+- Presentation:
+  - Ground torch: `world::avatar::GroundTorch` (top-level, one per teammate, hidden unless findable with `light`), placed `GROUND_TORCH` (0.4, 0, -1.8) from the body (past the reaching hand, kept out of walls with `move_circle`), beam low along the ground turned by their yaw and clamped pitch, so it sweeps as they look around. Lights carry `GroundTorchLight`; the render smoke census excludes them and checks one ground torch per teammate. The hand beam stays hidden for any non-zero status (the prone pose aims it at the sky). No battery gutter (charge is not on the wire for others).
+  - Groans: `audio::party_cries`, placed at the head, every `Tuning::groan_gap` (3.5 s at no bleed left to 8 s at full, ±20% from `Rng::fork(seed ^ id, count)`, clamped to `groan_every`), first one at once, pitched by `Survivor::voice()` (Llanero 0.9, Coplera 1.2, Encargado 0.82, Muchacho 1.08). Never a session noise.
+  - Calls: `audio::play_calls`, placed at the caller, their voice, lifted like a mark (`mark_lift`); a hint for a friend's fresh call.
+  - HUD: `hud::downed_markers` (shared play only; a diamond in the slot colour and "who · N m", "· Ns" under 20 s; pinned to the left or right edge with ‹ › when out of view; pulses faster as they bleed; a fresh call flashes it). Roster: "DOWN 42s · 23 m", or "IN HIS SACK 42s" with no distance. Downed panel second line (crawl, V, F); banner, controls line and briefing mention the cry. SackDropped hint rewritten; DogBark hint down to priority 2 so it no longer overwrites it in the same batch.
+  - Map: a pulsing red ring round a findable friend's dot (border only, so the dot recolouring never paints it). The hauled dot still blinks red and tracks him (decision D1, left open).
+- Audio: `downed_groan_{0,1,2}.wav` and `call_help.wav` from `make_groan` / `make_call_help` on seeds `SEED+127..130`. Regenerated into `assets/audio`: `git status` shows exactly the four new files, all 72 existing ones byte-identical (checked before too: a fresh regeneration reproduced all 72). A second run reproduces the four new ones byte for byte. `assets/SOURCES.md`: 76 WAVs, two rows.
+- Tuning added (none night-scaled): `bleed_after_sack` 30, `call_cooldown` 8, `call_life` 3, `noise_call` 18, `groan_every` (3.5, 8), `groan_gain` 0.55.
+- Tests:
+  - Red first on the old code, each for its root cause: `a_body_in_his_sack_is_no_crosshair_target_until_he_drops_it` ("the sack is no body to kneel beside"), `a_dropped_sack_leaves_time_to_find_them` ("5.0 s left to find them (bark: false)"; ward and bark paths, plus a 50 s bleed kept).
+  - Written with the new API: `a_cry_for_help_comes_from_the_body_and_draws_him_within_earshot` (still, dry night; a Stalking, Present threat at 0.8 × the call's reach hears it at the body, at 1.25 × does not; the shared call lies at the caller's body at rest height), `a_cry_for_help_waits_for_breath_and_fades`, `nobody_cries_for_help_from_his_sack_the_grave_or_their_feet` (captive, dead and standing refused; `findable` false in the sack and for the dead, true once dropped).
+  - Lib: `tuning::the_fallen_groan_more_often_as_they_bleed`, `survivor::each_friend_is_known_by_their_voice`.
+- Fingerprint checkpoint for this tree: 0x8d808c5460a8c897 (Python model of `fingerprint_of`; it reproduces HEAD's 0x078a48644d371cd7). Items 9-11 move it again.
+- Verified: fmt, check, test (lib 93, district 9, session 51 + 3 ignored), clippy -D warnings clean; the same when rerun at commit.
+- Route sweep on the final tree, rerun at commit and identical: normal solo 150/150, shared 148/150 (11, 35); gentle 150/150, 150/150; hard 150/150, 138/150 (the test's own 97% assert fires on hard, not the bar). Every failure report on every night is identical, character for character, to HEAD's `sweep7v-*` (only the assert's line number moved). No newly failing seeds (routes never call and never outlive a sack drop). Normal shared 11 and 35 and hard shared 4, 123 and 126 fail against 3288232 but came with item 7. With `ROUTE_LOG`, 11 and 35 fail at the first down, before any sack or call. Logs `target\sweep8f-*.log`, and at commit `sweep8v-*`.
+- Net smoke (headless, two processes, 127.0.0.1:5311):
+  - Implementer, release build, run once: `NET SMOKE PASS host` and `NET SMOKE PASS client`. Exit codes were not captured. Logs `target\net8-*.{out,err}`.
+  - At commit, debug build, about 9.5 min: both PASS, host exit 0, client exit 0. Logs `target\net8v-*`.
+  - Every snapshot carried the new `calls` field over real UDP, and it was always empty. The route never calls, so `Action::Call` itself was not sent there.
+- Audio at commit: `tools/gen_audio.py --out` into a scratch folder reproduced all 76 WAVs, byte for byte, the four new ones included.
+- **Line endings.** `src/net/mod.rs` and `tests/session.rs` were LF in the working copy and were converted back to CRLF to match the checkout; every changed file is CRLF. Git stores LF, and the fingerprint ignores `\r`.
+- README and `docs/PLAYING.txt` controls now say V is a cry for help while down.
+- Unverified (user-led, rendered): the lying torch's look and brightness in tall grass (the trailer's `91_survivors_down` mates are `down`, `light` and not hauled, so they now show one); groan and cry levels, pitch and whether the cry reads as "¡Auxilio!"; the marker's placement, edge pins and the ‹ › glyphs; the map ring; the two-window find-them check (`--host 127.0.0.1:5000` / `--join 127.0.0.1:5000`: get one player hauled, pepper the path, then find them by groan, torch and marker); the rendered net smoke (new ground-torch census).
+- Open:
+  - `Deeds.calls` and the "Called for mamá" / "Silbó de noche" awards are not built (roadmap section 3 item 2, M2).
+  - D1 (the hauled dot and `PlayerView.position` track him), D2 (flare), D3 (a cry from nobody), D4 (whether the lying torch lures him; it does not: `light_lure` ignores the non-active).
+  - No 3D help marker over the caller (the HUD marker flashes instead).
+- Hint priority: the DogBark hint moving from 3 to 2 is presentation only (it no longer overwrites the SackDropped hint shown at the same moment). It is not a rule change.
+- Bounds moved: none. Invariant tests are untouched (hunt and stalk slower than walking, warnings over 1.5 s, continuous pressure hidden; `tests/session.rs` only gains tests and one import). Committed on m1b; not pushed. Next: spectating (item 9) moves the fingerprint again.
+
 ## Current handoff — 2026-09-30 (M1a landed: fingerprint-neutral, pairs with test.1)
 
 **Audio mix (fix 3).**

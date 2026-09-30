@@ -1899,6 +1899,76 @@ def make_ringing(rng):
     return normalize(fade(out, 0.002, 0.3), 0.8)
 
 
+def make_groan(rng):
+    """A fallen friend groaning in the grass, close by: a short voiced moan
+    that swells and sags, catching in the throat, with breath through the
+    teeth; dry, with only a trace of room. The game pitches it per survivor."""
+    length = rng.uniform(0.85, 1.35)
+    n = int((length + 0.3) * SR)
+    out = [0.0] * n
+    breath = biquad_bandpass(noise(rng, n), rng.uniform(900.0, 1300.0), 1.1)
+    f0 = rng.uniform(125.0, 150.0)
+    sag = rng.uniform(0.12, 0.22)
+    onset = rng.uniform(0.05, 0.12)
+    catch = rng.uniform(24.0, 34.0)
+    ph = 0.0
+    for i in range(n):
+        t = i / SR
+        u = min(1.0, t / length)
+        env = min(1.0, t / onset) * (1.0 - u) ** 0.8
+        pitch = f0 * (1.0 + 0.08 * math.sin(math.pi * u) - sag * u * u) * (1.0 + 0.02 * math.sin(TAU * 6.0 * t))
+        ph += TAU * pitch / SR
+        voice = math.sin(ph) + 0.55 * math.sin(2 * ph) + 0.3 * math.sin(3 * ph) + 0.15 * math.sin(4 * ph)
+        rasp = 0.6 + 0.4 * math.sin(TAU * catch * t + math.sin(TAU * 4.0 * t))
+        out[i] = voice * env * rasp * 0.5 + breath[i] * env * 0.35
+    out = biquad_bandpass(out, 600.0, 0.6)
+    room = reverb(out, size=0.6, damp=0.6, feedback=0.6)
+    out = [d * 0.9 + r * 0.15 for d, r in zip(out, room)]
+    return normalize(fade(out, 0.01, 0.15), 0.6)
+
+
+def hoarse_syllable(rng, length, f_start, f_end, formants, hoarse):
+    """One hoarse syllable: a buzzing, breathy voice gliding from f_start to
+    f_end through its vowel's resonances (centre, Q, gain)."""
+    n = int(length * SR)
+    src = [0.0] * n
+    air = noise(rng, n)
+    ph = 0.0
+    for i in range(n):
+        t = i / SR
+        f = (f_start + (f_end - f_start) * t / length) * (1.0 + 0.015 * math.sin(TAU * 7.0 * t))
+        ph += TAU * f * (1.0 + rng.uniform(-0.01, 0.01)) / SR
+        buzz = sum(math.sin(k * ph) / k for k in range(1, 12))
+        env = max(0.0, min(1.0, t / 0.03) * min(1.0, (length - t) / 0.08))
+        src[i] = (buzz * (1.0 - hoarse) + air[i] * hoarse * 1.6) * env
+    out = [0.0] * n
+    for centre, q, gain in formants:
+        mix(out, biquad_bandpass(src, centre, q), 0, gain)
+    return out
+
+
+def make_call_help(rng):
+    """"¡Auxilio!" from someone lying in the grass: three hoarse syllables,
+    the middle one strained high, more a cry than words, with a little room.
+    The game pitches it per survivor."""
+    out = silence(1.9)
+    vowel_a = [(800.0, 4.0, 1.0), (1200.0, 5.0, 0.6)]
+    vowel_i = [(320.0, 4.0, 1.0), (2300.0, 6.0, 0.5)]
+    vowel_o = [(500.0, 4.0, 1.0), (900.0, 5.0, 0.6)]
+    t = 0.05
+    mix(out, hoarse_syllable(rng, 0.22, 190.0, 210.0, vowel_a, 0.35), int(t * SR), 0.8)
+    t += 0.24
+    hiss = biquad_bandpass(noise(rng, int(0.09 * SR)), 3500.0, 1.5)
+    mix(out, fade(hiss, 0.01, 0.03), int(t * SR), 0.5)
+    t += 0.08
+    mix(out, hoarse_syllable(rng, 0.42, 300.0, 270.0, vowel_i, 0.45), int(t * SR), 1.0)
+    t += 0.44
+    mix(out, hoarse_syllable(rng, 0.38, 220.0, 150.0, vowel_o, 0.55), int(t * SR), 0.7)
+    room = reverb(out, size=0.9, damp=0.5, feedback=0.7)
+    out = [d * 0.85 + r * 0.25 for d, r in zip(out, room)]
+    return normalize(fade(out, 0.005, 0.4), 0.7)
+
+
 def make_horror():
     """Sounds added after the first two streams, each on its own seed so
     adding or changing one never changes another."""
@@ -1929,6 +1999,10 @@ def make_horror():
         "dynamo_hum.wav": make_hum(random.Random(SEED + 124)),
         "whistle_ear.wav": make_ear_whistle(random.Random(SEED + 125)),
         "ringing.wav": make_ringing(random.Random(SEED + 126)),
+        "downed_groan_0.wav": make_groan(random.Random(SEED + 127)),
+        "downed_groan_1.wav": make_groan(random.Random(SEED + 128)),
+        "downed_groan_2.wav": make_groan(random.Random(SEED + 129)),
+        "call_help.wav": make_call_help(random.Random(SEED + 130)),
     }
 
 
