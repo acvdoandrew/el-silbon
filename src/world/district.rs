@@ -1327,7 +1327,7 @@ fn supports(k: &mut Kit, layout: &Layout) {
             beam(&mut k.metal, best, lamp.pos + Vec3::Y * 0.2, 0.05, 0.05, iron());
             continue;
         }
-        if gap < 0.5 || gap > 5. {
+        if !(0.5..=5.).contains(&gap) {
             continue;
         }
         let hook = if own_pole.iter().all(|(c, r)| p.distance(*c) > *r) {

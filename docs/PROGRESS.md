@@ -1,6 +1,903 @@
 # Progress
 
-## Current handoff — 2026-09-29 (first remote playtest notes)
+## Current handoff — 2026-09-29 (roadmap v3; M1 starting)
+
+Research and design only so far; no gameplay code has changed except the
+clippy fix below. A multi-agent pass read the code behind every playtest
+note (below), researched co-op party and co-op horror games, and produced
+"Roadmap v3" (next section): root causes and fixes for the playtest notes,
+a slower night (El Respiro, La Rabia), fifteen voice-chat co-op features,
+the radio numbers station for the truck key, and a build order (M1a, M1b,
+M2, M3). The per-note investigations, with file and line evidence and fix
+plans, are kept in `docs/research/2026-09-29-playtest-investigations.json`,
+and a dense map of the current game in `docs/research/2026-09-29-game-map.md`.
+
+- Fixed: clippy 1.97 `manual_range_contains` at `world/district.rs:1330`,
+  which failed the gate on Windows with the newer toolchain.
+- Windows development: the repository now also builds on Windows with the
+  MSVC toolchain (`rustup override` for the checkout; Smart App Control must
+  be off, since it blocks Cargo's unsigned build scripts). Gate green there
+  at `3288232` apart from the clippy fix above. `python` on that machine is
+  3.11 (the audio tools need only the standard library); `python3` is the
+  Microsoft Store stub.
+- Route sweep baseline on Windows at `3288232` (150 seeds, solo / shared):
+  Normal 150/150, 150/150; Gentle 150/150, 149/150; Hard 136/150,
+  134/150 (below the 97 % bar before any change; Hard is not the gate).
+  Compare [b]-tier items against these, not against 150/150.
+- User decisions (2026-09-29), from the roadmap's list: the dawn floor at
+  1.5 × `night_length` (30 min on Normal) as a new `Outcome::Dawn`, yes;
+  `anima_sight` on (the dead see what the friend they watch sees);
+  `bleed_after_sack` 30 s; fullscreen by default on first launch, yes
+  (the roadmap default). Local commits per item, no push until asked.
+- Next: M1a (fingerprint-neutral: audio mix, whistle distances, Journal
+  code leak, fullscreen, brightness and contrast), then M1b.
+
+## Roadmap v3: playtest fixes, a slower night, co-op comedy (proposal, 2026-09-29)
+
+Nothing here is built. This roadmap answers the first remote playtest (the notes at the top of this file) and the user's request for a slower night with mechanics that are funny between friends on voice chat. It draws on three kinds of input:
+
+- seven read-only investigations of the code at `3288232`
+- six research passes over co-op party games, co-op horror and llanero folklore
+- three competing design proposals
+
+Where the inputs disagreed, the call is marked **Decided**, with the reason. File references are to `3288232`.
+
+Every item keeps these rules:
+
+- The whistle stays inverted, categorical and unplaced.
+- Tureco is the only truthful proximity cue.
+- Omens and phantoms are placed from the listener's own eye.
+- `net::session` decides every outcome.
+- All randomness comes from the seed.
+- He stays slower than a walking player, and a warning lasts over 1.5 s.
+
+Voice runs over Discord, so any voice comedy has to come from situations the game creates.
+
+Cost is S (small), M (medium) or L (large). Each item also has a tier:
+
+- **[a]**: presentation or an omen only. No sweep impact.
+- **[b]**: a session rule the route driver may ignore. The fingerprint changes, so re-run the 150-seed `the_routes_hold_over_many_storms` sweep at Gentle, Normal and Hard.
+- **[c]**: a mandatory objective. Everything in [b], plus a new `script.rs` Want.
+
+### 1. Playtest fixes
+
+1. **River** (M, [b]).
+   - *Cause*: the caño is one deep `water` rect. All of it becomes Bank blockers except the bridge deck and a 6 m ford (`geometry/district.rs:664`, `:1340-1360`). The drawn waterline recedes up to 2.8 m inside the rect (`:1224`), so players hit an invisible wall on dry, reedy bank. The ford is drawn as dark as deep water (`:1230`), so nobody finds it.
+   - *Fix* (the investigation's Phase 1):
+     - `District::channels` carves the caño out of the banks.
+     - A pure `Wade { Dry, Shallow, Deep }` from `Layout::wade` checks surfaces first and runs the rect tests before any terrain sampling.
+     - Deep water: tuning `deep_wade_factor` 0.35, no sprint, `noise_deep` 14 m.
+     - `Layout::rest_height` makes downed bodies and dropped bundles float (`control.rs:72`, `:349`, `net/mod.rs:698`).
+     - The ford gets a raised, lighter bed.
+     - The boat and the mooring stumps become Layout blockers.
+     - The route A* treats deep water as TIGHT, and the map shades the channel.
+     - He wades unslowed and silent (Phase 2A). A splash would place him.
+     - This reverses PROGRESS.md:1724 for the caño only. The marsh, the pond and the creek stay banks.
+     - Invert the check at `tests/district.rs:85-87`.
+2. **Skill checks** (M, [b]).
+   - *Cause*: a miss is applied (`net/session.rs:566-583`), but it only costs a fixed 8 %: 0.8 s of pump work, 0.48 s of truck work. That is less than the 2.05 s of full-rate work the task earns while the check runs, because `resolve_holds` never gates work on the rhythm (`:770`, `:805`, `:814`). Finishing a task also drops a pending check without penalty (`control.rs:319`, `skill.rs:132`). And the 40 m miss is no louder than the crank (34 m) and quieter than the engine (75 m).
+   - *Fix*, in the pure `skill::Rhythm`:
+     - A miss throws back `check_setback` (2.5 s of work) and stalls the hands for `check_stall` (1.8 s). This is a new `Pulse::Stalled`, and the stall survives `rest()`.
+     - `allow()` holds the last 1 % of a task while a check is in flight (`LAST_TURN`).
+     - The miss noise is `max(noise_miss, work noise × 1.6)`: about 54 m at the pump and a 120 m backfire at the truck.
+     - `Vitals.stall` carries the stall to the HUD, which shows a label.
+     - Rewrite the test that only checks the dip (`tests/session.rs:482-533`), and make the co-op pump test answer its checks (`:885`).
+3. **Audio level** (M, [a]).
+   - *Cause*: the master slider is linear amplitude with a default near maximum (0.8 is only −1.9 dB; `app.rs:39`, `ui/menu.rs:1125`), and the mix has no headroom. The loop glide in `audio.rs:976-983` also stops a frame-rate-dependent distance short of its target (±0.058 at 144 Hz). So 0 % is not silent, the title theme plays under the whole night, and the whistle duck, the insect hush and the omen silences never reach their designed depth.
+   - *Fix*:
+     - A dB slider with a −40 dB floor and 5 % steps.
+     - Master, music, ambience and effects buses, with −4 dB of headroom. `Settings.master` replaces `volume`, so stale saved volumes reset.
+     - The whistle and the catch stay on master only, so no sub-slider can hide him.
+     - A frame-rate-independent `glide()` that snaps to its target.
+     - An audible preview when a slider moves, including in the pause menu.
+     - Catch trims: ear whistle ×1.7 → ×0.8, caught sting ×1.6 → ×1.2.
+     - `whistle_lab.py` mirrors the new curve.
+     - Nothing touches `tuning.rs`, so the fingerprint is unchanged.
+4. **Whistle distance** (M, [a]).
+   - *Cause*: with the recording, the three bands differ only in level. `gen_audio.py:410-414` drops the breath and air the design relied on. Filtering a near-pure tone only scales it, and `level()` normalises that away: the middling and faint spectra correlate 0.963. Random pitch and take variation within a band is also larger than the difference between bands.
+   - *Fix*:
+     - Bake three signatures into the 12 WAVs:
+       - near: breath and air, dry, an inhale and an exhale
+       - middling: a clear quarter-second slap
+       - far: seeded fragments that always keep the final held note, a shimmer, mostly room
+     - Gate them with `python tools/whistle_lab.py measure --check`, on both the recording build and the `--synth` build. On this machine the interpreter is `python`; `python3` is the Store stub.
+     - Style the captions per band: loud is large and warm, faint is small and fading.
+     - Gains, thresholds and the inversion are untouched.
+     - Re-listen only after the audio-level glide fix, because the duck never reached its depth before.
+     - Before the next remote test: Windows Sound → Communications → "Do nothing", and Discord attenuation at 0 %.
+5. **Fullscreen** (S, [a]).
+   - *Cause*: the toggle exists, but it is the last Settings row, labelled "Display: Window" with no chooser marks (`ui/menu.rs:453`). There is no F11 or Alt+Enter. The saved mode is applied a frame late, by a one-shot in `remember` (`:1168`). It was never checked on Windows (PROGRESS.md:726).
+   - *Fix*:
+     - `Settings.fullscreen` is the single source of truth.
+     - `app.rs` creates the window in the saved mode (`MonitorSelection::Primary`), and a single `apply_display` system mirrors later changes, restoring a centred 1600×900 window when leaving fullscreen.
+     - F11 and Alt+Enter work in PreUpdate. Alt+Enter consumes Enter, so it cannot start the host's night or name him by accident.
+     - The row moves to the top of Settings and is labelled "Fullscreen".
+     - The controls text in How to play, the briefing and PLAYING.txt mentions F11.
+6. **Brightness and contrast** (M, [a]).
+   - *Cause*: brightness is an exposure offset worth at most ×1.6 (`player.rs:529`), which cannot lift him out of the near-black band on panels that crush blacks. Bevy's sectional contrast pivots at linear 0.5 and wrecks night HDR (`player.rs:184`). Nothing shows players what "correct" looks like.
+   - *Fix*:
+     - A new pure `display.rs`: brightness becomes a shadow gamma that holds white, and contrast becomes a log-contrast about the fog level. Both go through sectional CDL gamma plus exposure. At the defaults the picture is bit-identical to today.
+     - A calibration page with three unlit hats (should vanish / barely visible / plainly seen), offered once on first launch. This also fixes discoverability.
+     - The trailer keeps its look through `EXPOSURE_LIFT`.
+7. **Finding downed allies** (M, [b]).
+   - *Cause*: a downed friend is usually sacked and dropped somewhere else with the bleed still running (`session.rs:1077-1105`). Once dropped, they lie prone and dark, because the beam is hidden for any non-zero status (`net/mod.rs:735`). They are also silent (`audio.rs:811`). There is no marker and no distance.
+   - *Fix* (the investigation's Tier 1):
+     - The downed friend's own torch lies lit in the grass and sweeps as they look around.
+     - Placed groans every 3.5–8 s, more often as they bleed, in their survivor's pitch.
+     - A truth-only HUD marker, and the distance on the roster.
+     - A ring on the map.
+     - `scene_data` stops counting hauled players as bodies.
+     - None of these show while the friend is in his sack.
+     - Also the help call, the first kind of the call wheel (section 3), and `bleed_after_sack` 30 s (recommended; confirm in play).
+8. **Spectating** (M–L, [b]).
+   - *Cause*: snapshots and cues are built only from the recipient's own pose (`session.rs:1386-1454`), so the dead stare at frozen grass. A Taken player also keeps stale stun (`body.rs:156`).
+   - *Fix* (the investigation's Phase 1):
+     - `Action::Watch`, auto-advancing when the watched friend falls.
+     - An over-the-shoulder camera authored in `net::update` (Simulate).
+     - The watched player's categorical cue is copied with the same serial.
+     - `die()` clears stun.
+     - An `anima_sight` tunable (see decisions in section 5).
+     - Haunts come in M2 (Ánimas).
+9. **Rising difficulty** (L, [b]).
+   - *Cause*: laying a bundle nets only +0.01 pressure on Normal (rite 0.08 minus the 0.07 carry it replaces), and lowers pressure on Gentle, because `with_night` scales rite but not carry (`tuning.rs:604`). The clock's 0.5 drowns the bones. Every lever is a smooth lerp. Nothing says he is angrier, and the caption at `ui/hud.rs:616` is calming.
+   - *Fix*: La Rabia, in section 2.
+10. **Telling the tale** (S, then M, [a]).
+    - *Cause*: the legend is 20 unordered pages, and nothing ties it to progress.
+    - *Fix*: section 4. The Madrina's chapter per bundle laid comes in M1, the radio's tale station in M2, and the four survivor versions in M3.
+11. **Truck key code** (L, [c]).
+    - *Cause*: the digits sit in three pages that look like the other seventeen (`lore.rs:116`, `:127`, `:280-289`), and the game rewards reading all twenty. The pause Journal also fills pages read on earlier nights with tonight's code (`ui/menu.rs:404`), so returning players can skip the puzzle.
+    - *Fix*: the radio's numbers hour (section 4). Close the Journal leak at once in M1a.
+
+### 2. Slower pacing
+
+**Target.** A Normal co-op night runs 15–20 min; solo 12–18 min, Gentle about 20–25 min, Hard 12–16 min. Today the scripted route wins inside 10 min, and no human night has been timed. The slower pace comes from beats that make people stop, listen and talk. Walk, crouch and sprint speeds do not change.
+
+**Decided:**
+
+- 15–20 min rather than 20–28 min: the user asked for "a bit" slower, and doubling today's night keeps "one more night" alive.
+- The module is a new pure `pacing.rs`, and the feature is called **El Respiro**.
+
+**Tuning** (`src/tuning.rs` unless noted):
+
+| Value | Now | v3 | Why |
+|---|---|---|---|
+| `night_length` | 840 s | 1200 s | the clock spans a 20-minute night |
+| `pressure_base` | 0.12 | 0.10 | a calmer opening |
+| `pressure_night` | 0.5 | 0.2 | the clock stops drowning the bones |
+| `pressure_carry` | 0.07 | 0.04 | carrying stays risky, and laying becomes a step |
+| `pressure_rite` | 0.08 | 0.12 | a laying nets +0.08 on Normal (was +0.01) |
+| `with_night` | scales rite only | scales carry and rite by the same 1.3 / 0.5 | a laying can never lower pressure |
+| `first_warn_delay` | 9 s | grace: Gentle 240, Normal 120, Hard 45 s | a real setup phase after he wakes |
+| `stalk_phrase_interval` | 5–11 s | 6–13 s × (1 − 0.05·stage) | sparser early, denser than today by stage 5 (4.5–9.8 s) |
+| `stalk_silence_chance` | 0.2 | 0.2 − 0.04·stage | he fills the silence as he angers |
+| `stalk_answer_chance` | 0.15 | 0.15 + 0.03·stage | as above |
+| stalk_gap pressure factor (`perception.rs:166`) | 0.35 | 0.2 | the stage is the change players feel |
+| `omen_quiet` | 35–70 s | 45–85 s × (1 − 0.08·stage) | fewer omens early |
+| `pump_hold` | 10 s | 12 s | the pump is a longer stand |
+| `deliver_hold` | 3 s | 3 s | the new miss rule already adds cost |
+| `truck_warmup` | 26 s | 26 s | at pressure 1.0 (hunt 3.1 m/s) a longer warm-up is only more lethal |
+| `check_loss` | 8 % of the task | `check_setback` 2.5 s + `check_stall` 1.8 s | see fix 2 |
+| carry cap | none | new `carry_max` 2 (Gentle 3) | at least three trips; the scripted route already carries at most 2 |
+| deep caño | a wall | 0.35 × walk, no sprint, +14 m | see fix 1 |
+| `grass_sight` | 5 m | 5 + 0.8·stage (7.4 m at stage 3) | a rage lever, gated on the sweep |
+| `light_lure_range` | 45 m | 45 + 4·stage (53 m at stage 2) | a rage lever, gated on the sweep |
+
+**El Respiro, the pacing director** (L, [b]). A new pure module, `src/pacing.rs`. Add it to `lib.rs`, the AGENTS.md pure list and `protocol::fingerprint()`.
+
+- **Grace.** After the first pickup he rises as today, at least 30 m from everyone.
+  - For the grace period he cannot warn anyone: `th.cooldown = th.cooldown.max(grace_left)`.
+  - He is leashed at least 30 m from every standing player.
+  - He still walks, whistles honestly and investigates noise, so the calm teaches the inverted whistle.
+  - **Decided:** the grace does not end at the first laying. The house-table bundle is always near the start, so the grace would often be under a minute.
+- **Menace.** The director keeps a menace value M from 0 to 100, the worst over all active players. It is read from session truth:
+  - +12/s while he sees someone
+  - +8/s while someone is inside 16 m
+  - +5/s while a torch lures him
+  - +4/s while Tureco growls
+  - +3/s while someone's fear is at 0.7 or more
+  - M decays 4/s.
+- **Cycle: Build → Peak → Fade → Relax.**
+  - **Build**, 60–120 s: normal stalking. This is also where roadmap A1's placed fake-outs play: a cow lows beside you, a door bangs, Tureco knocks a bucket over. At most one real scare every 4–6 min.
+  - **Peak**: warnings and hunts are allowed. It ends when a hunt resolves (a down, lost track, or three averts into a withdraw), when menace stays at 80 or more for 45 s, or after 120 s.
+  - **Fade**: the existing `Encounter::withdraw()`. He sinks and rises at the patrol node farthest from everyone.
+  - **Relax**: 75–120 s × (1 − 0.1 × bones laid), never under 40 s. Hard ×0.7, Gentle ×1.3.
+    - He is leashed at least 45 m from every standing player, so the ordinary whistle honestly reads loud and Tureco settles on his own.
+    - Nothing in the first 40 s can end it. After that it ends on a push: laying a bundle, cranking, turning the ignition, lighting the beacon, any noise of 34 m or more, or someone walking within 30 m of him.
+    - Lifting and carrying bones is not a push.
+- **Hunt budget.** Committed hunts per rolling 10 min: Gentle 1, Normal 2, Hard 3. Once the budget is spent, his warning floor holds until the next slot opens. He still stalks, so the night stays tense.
+- **Hidden state.** The phase is hidden AI state and never goes on the wire.
+  - **Decided:** no phase-keyed "the llano sings" event. It would broadcast the director's state; the honest loud whistle already says he is far.
+- **Dawn floor** (*Decision*). The rooster crows at 1.5 × `night_length` (30 min on Normal) and he sinks for the night. With bones still out, the night ends as a new `Outcome::Dawn`, "you lived, but he will be back", tallied in the Journal. It gives slow teams a floor instead of a death spiral.
+- **Build.**
+  - `sim`: `Threat.leash: Option<f32>`, honoured by the patrol step through the existing `farthest_from`.
+  - `session`: builds the menace inputs, applies the director's orders before `threat_step`, and calls `push_forward()` from the push sites.
+  - `Stats` gains seconds per phase, peaks, hunts and early exits from Relax, logged in `smoke_exit`, so the next remote playtest gives the first human-timed night.
+- **Tests.**
+  - Pure: a Relax of at least 40 s always follows a Peak; hunts per rolling 600 s never exceed the budget; a push ends Relax only after the floor; the same seed gives the same beats.
+  - Session: a player in plain view 10 m from him is never warned during the grace or a Relax; after a sack resolves, he stays at least 45 m from every standing player until a push.
+
+**La Rabia, bones drive the night** (M, [b]). The rage stage is the number of bones laid (0–5). It is public, because it is already `WorldView.delivered`, so no protocol change is needed. Continuous pressure stays hidden (`tests/session.rs:1325` must stay green). A pure `Tuning::at_rage(stage)` sits beside `at_pressure`, and `Progress::rage()`, `CueDirector` and `Mood.rage` read it. Following Andy Bray's rule for Alien: Isolation, nothing ever unlocks because a player died.
+
+| Stage | He learns |
+|---|---|
+| 1 | whistles and omens start to crowd in, and do more at every later stage |
+| 2 | a lit torch draws him from 53 m; the stolen-torch omen unlocks; La Cuenta becomes possible (M2) |
+| 3 | he finds you in tall grass from 7.4 m (was 5 m) |
+| 4 | at a spent ají ward he waits at the edge (M2, a Tier 2 lever); a second Cuenta |
+| 5 | the engine calls him (as today); Relax is at its floor |
+
+- **Telegraph.** Each laying brings:
+  - an unplaced stinger (a gust, roots groaning, far thunder; never a whistle; `sting_rage` from `gen_audio.py` on a new seed)
+  - every lamp on the llano stutters for 1.2 s
+  - anger pips on the bones line ("his anger ■■□□□")
+  - a stepped dread drone
+  - the Madrina's chapter, whose last line hints at the new trick (section 4)
+  - Layings within 8 s of each other merge, because players tend to lay in bursts of 1, 2 and 2.
+- **Decided:** stage 5 does not raise the chance of silence (one proposal). That would fight the rule that silence falls with each stage.
+- **Later levers.** Habit unlocks, fed only by escapes (for example, three grass escapes bring the grass sight a stage early), and the ají edge-wait land in M2, one at a time, each behind the sweep. Lanterns going out for good waits until brightness is verified by eye.
+- **Tests:**
+  - `every_bundle_laid_is_a_step_up_on_every_night_and_variant` replaces `sim.rs:1743`.
+  - `rage_only_tightens_and_never_outruns_a_walker` (stages × pressure × Night).
+  - A crouched player 7 m away in grass is unseen at stage 0 and seen at stage 3.
+  - Stalking gaps are denser at stage 5, but still with no steady rhythm.
+
+**Other slowers.**
+
+- The skill-check stall (fix 2).
+- Deep wading (fix 1).
+- The carry cap.
+- The radio relay: the radio and the key box are 38 m apart (section 4).
+- La Cuenta vigils (M2).
+
+**Timeline** (Normal co-op, after M1):
+
+| Time | Beat |
+|---|---|
+| 0–2 min | Dusk: untie Tureco, read the tag on the padlock, plan |
+| ~2 min | First pickup, then 2 min of grace |
+| 4–9 min | Bundles 1–2, one Peak, one Relax |
+| 9–14 min | Bundles 3–4, one or two Peaks (M2 adds a vigil at each stage) |
+| 14–16 min | Bundle 5 and the pump (12 s plus checks) |
+| 16–18 min | Radio relay and the key |
+| 18–20 min | The truck, or naming him at the ceiba |
+
+**Tests and caps that move on purpose.** Record each move in the handoff.
+
+- The scripted solo route bound: 3–14 min → 5–22 min.
+- "Quick hands": under 8 min → under 12 min.
+- The net-smoke host cap: 600 s → 1500 s.
+- The `script.rs` route timeouts: 600 s → 1500 s.
+- The sweep stays at ≥97 % solo and shared, at all three difficulties.
+
+The tuning invariants (hunt and stalk slower than walking, warnings over 1.5 s) gain a grid over stage × pressure × Night.
+
+### 3. Voice-chat comedy and co-op
+
+**Principles.**
+
+- Voice comedy comes from information asymmetry: one player hears, sees or holds what the others cannot.
+- Every in-game way to talk costs noise he hears.
+- Fakes need a fair tell.
+- The dead get jobs that cannot reveal where he is.
+- Every co-op rule has a solo form.
+
+1. **La Cuenta: someone has to hear him count** (M, [b], M2).
+   - *What*:
+     - After the 2nd and 4th bundle, the director turns the next Relax into a vigil.
+     - A caption names one enclosed building, chosen by the seed (the rancho, the stilt hut or the lookout cabin). After a 20 s lead-in he counts his father's bones for 30–40 s.
+     - He is Hidden (sunk) throughout, and the unplaced bone clacks are heard only inside that building.
+     - The rule: at least one listener (two when three or four players stand) stays inside to the last clack, with the torch off, not sprinting, and making no noise louder than a walk. Breaking the rule restarts the count once, faster.
+     - Heard: he rises far away, the listeners' fear drops 0.2, and Tureco's courage refills.
+     - Unheard: the standing player farthest from the building is *señalado* until the next laying. He prefers them as if they were 15 m closer, their omens come sooner, and their torch drains ×1.5. An ají thrown at their own feet lifts the mark.
+     - The rhythm is naming evidence: the Borracho loses count and starts over, the Hijo sobs before the last bone, and the Arriero clacks in pairs.
+   - *On voice*: "EVERYBODY SHUT UP, HE'S COUNTING." Then "seven or eight?", then "pairs, it's the Drover".
+   - *From*: the legend's own rule (if nobody hears the count, someone does not wake); Buckshot Roulette's public count; Don't Scream.
+   - **Decided:** he is Hidden, not standing at the door. A building he is known to stand at would be a new truthful location of him. Failure gives a readable, reversible mark rather than a death at dawn.
+   - *Build*:
+     - `sim`: `Encounter::hide()` and `rise()`.
+     - A pure `count.rs`: `beats(variant, rng)` and `listeners_needed(standing)`.
+     - The vigil sites are the existing enclosed `district.sheds`, tested with `Layout::inside`.
+     - Session: `Vigil { site, t, restarts }` and `Participant.marked`, which feeds `choose_prey`, the omen interval and battery drain.
+     - Protocol: `WorldView.vigil` (serde default); `Event::{CountBegan, CountHeard, CountUnheard, Marked}` appended.
+     - Audio times the clacks from `snapshot.elapsed`.
+     - The vigil is optional, so the driver gets no new Want; expect scripted routes to be marked in the sweep.
+   - *Tests*: no WarningBegan during a vigil; staying through clears it; leaving restarts it once, then fails it; an unheard count marks the farthest standing player; ají clears the mark; the patterns differ by variant; deterministic per seed.
+2. **Gritos y silbos: the call wheel** (M, [b]; the help call in M1, the rest in M2).
+   - *What*: hold Q for the wheel.
+
+     | Call | Effect | Noise he hears |
+     |---|---|---|
+     | ¡Aquí! | a placed call | 18 m |
+     | ¡Corran! | flashes everyone's HUD | 30 m |
+     | ¡Shh! | a silent gesture | none |
+     | your survivor's silbo | two or three finger-whistle notes at 600–1000 Hz, never his rising steps; Tureco trots to his friend's silbo | 26 m |
+     | ¡Ave María Purísima! | asks who is real | a shout |
+     | ¡Sin pecado concebida! | the reply; a real one flashes a true 2 s marker over whoever answered | a shout |
+
+     - Every call is placed at the caller, so the group learns that anything with a direction is a friend; his whistle never has one.
+     - Downed, V becomes a hoarse ¡Auxilio! at your own body: 18 m, 8 s cooldown. The captive and the dead cannot call.
+   - *On voice*: every call is an argument ("stop whistling, he'll come back!"). Groups invent codes, and whoever spams the silbo becomes the night's villain.
+   - *From*: roadmap B2; the Lethal Company walkie-talkie's cost; Sea of Thieves' shout wheel; the superstition against whistling at night; the doorstep call and response.
+   - **Decided:** one call system, whose first kind is the downed help call. There is no separate `PingView.help` flag.
+   - *Build*:
+     - Protocol: `Action::Call { kind }`, accepted before the `is_active` guard like `Ping`; `Snapshot.calls: Vec<CallView>` (serde default).
+     - Session: `call()` with a cooldown and radius per kind (tuning `noise_call`, `noise_corran`, `noise_silbo`, `call_cooldown`).
+     - A pure `Survivor::voice()` gives each survivor's pitch.
+     - Clips from `gen_audio.py` on new seeds.
+     - `Deeds.calls`, and the awards "Silbó de noche" and "Called for mamá".
+     - Check in `whistle_lab.py` that the silbo band misses his 1.2–2.35 kHz phrase.
+   - *Tests*: a call draws a present, stalking threat inside its radius and not beyond; rate limits hold; the captive and the dead are refused; a help call lands on the caller's own body; a reply marker only answers a live Ave María.
+3. **El Compadre, the borrowed call and the house that is not safe** (S–M, [a], M2).
+   - *What*: new director omens, all placed from the listener's eye.
+     - **El Compadre** (co-op, fear 0.55 or more): a living teammate's own survivor model, torch lit, waves slowly from a treeline 25–40 m away. It is always a teammate the viewer cannot see. When a beam or an Ave María reaches it, it stretches to three metres under a sombrero for 0.4 s and is gone. It never answers.
+     - **The borrowed call**: once a friend's call has been heard three times, another listener at fear 0.7 or more hears it from 15–25 m, at least 10 m from the real friend. A fake silbo has one note too many.
+     - **The house** (roadmap A5), while you are inside: knocks on the wall you are not facing, a door bangs, the local radio sound bursts into static, the porch lamp dies for a moment.
+   - *On voice*: "Is that you waving at the ceiba?" "I'm in the TRUCK." It hits hardest with two players, because there is only one friend it can be.
+   - *From*: Lethal Company's Masked; the Skinwalkers and Mirage mods; MIMESIS; Unfortunate Spacemen.
+   - *Build*:
+     - `director.rs`: new omens, with `Mood.indoors` and `Mood.learned`; events appended.
+     - `world/omen.rs`: an `AvatarKit` stand-in wearing the teammate's survivor and colour.
+   - *Tests* (director): Compadre only in co-op, over the fear threshold and never under pursuit; house omens only indoors; deterministic.
+4. **Ánimas: haunt the friend you watch** (M, [b], M2; Phase 1 spectating is in M1).
+   - *What*:
+     - Every 45 s an ánima can haunt the friend it watches: flicker lamps, knock, footsteps, a false mark, a phantom whistle, a nudge of the radio dial, or a candle over a downed friend's body.
+     - The candle is the one act signed with the dead player's colour. Every other haunt except the dial nudge looks exactly like the night's own omens.
+     - The dead also see dropped bundles glow, and downed friends burn like candles (never while hauled).
+     - Haunts are refused while the target is warned, hunted or mid check, and they never change fear, noise or rules.
+   - *On voice*: "Was that you?" "...Was it?" The dead backseat-drive the rescue ("left, LEFT, past the trough").
+   - *From*: roadmap B4; Blood on the Clocktower's ghost vote; Mysterium; PEAK's ghosts; Among Us ghosts; DeadAndBored.
+   - **Decided:** no herd-spooking haunt and no Tureco haunt. A 48 m bellow would change the rules, and Tureco must stay truthful.
+   - *Build*:
+     - `Action::Haunt { kind }`; `Participant.haunt_wait` and `rest`; the ánima's own `Rng::fork(seed ^ id, 0xA417)`.
+     - `director::hush()`; `perception::conjure()`.
+     - Tuning `anima_every` 45, `anima_rest` 20.
+     - The candle is a `Ping` by the dead player's id. Award "Restless soul".
+   - *Tests*: cooldowns and refusals; noises, threat state, fear, stun and progress unchanged across a haunt; a phantom whistle reaches only its target.
+5. **El desmayo: faint, then a slap or your name** (M, [b], M2).
+   - *What*:
+     - In co-op, a susto while he is not pursuing you becomes a faint: you drop your load, the screen goes black and muffled, and the camera drifts up out of your body for up to 8 s.
+     - A friend can slap you awake (a press, instant, a 14 m noise he hears) or call your name (a 2 s hold, 4 m). Agua florida also works.
+     - Unhelped, you wake at fear 0.55. After that, 60 s of immunity.
+     - Under pursuit a susto stays today's 1.1 s freeze. Solo never faints.
+   - *On voice*: "Don't SLAP her, he'll hear!" Award "Cachetada de oro".
+   - *From*: the folk illness susto and the cure of calling the soul back; Gang Beasts (short knockouts, no chains); PEAK's 8 s ragdoll.
+   - **Decided:** waking unhelped leaves you at fear 0.55, not downed. Helplessness should last seconds.
+   - *Build*:
+     - `body.rs`: `faint` and `faint_immunity`; a pure `startle(company, pursued)`.
+     - `control.rs`: `TargetKind::Fainted(id)`.
+     - Protocol: `PlayerView.faint`, `Vitals.faint` (serde default).
+     - The soul camera is written in `net::update`.
+   - *Tests*: faints only in co-op and never under pursuit; a slap wakes you and makes a noise; carried bones drop; the immunity holds; he can still catch a fainted player.
+6. **El desamparado: whoever leaves a friend is his** (S, [b], M2).
+   - *What*:
+     - In co-op, stay more than 70 m from every standing teammate for 25 s while someone is downed, fainted or in the sack, and you become desamparado: grain on the screen, and Tureco howls where he stands.
+     - His prey choice treats you as 15 m closer, and omens crowd you.
+     - Coming back within 30 m of a teammate clears it. Speeds and warnings are untouched.
+   - *On voice*: aimed at the friend who waits alone at the truck. "Told you."
+   - *From*: PEAK's Scoutmaster (Rule Zero); roadmap B3.
+   - *Build*:
+     - Session: `Participant.alone`, `forsaken`.
+     - `choose_prey` bias, shared with the mark and the drunk.
+     - `Vitals.forsaken`; award "Dejó al compañero".
+   - *Tests*: never solo; only under the conditions and after 25 s; clears on regroup; he prefers the forsaken over a closer teammate.
+7. **Mandados and the copla at dawn** (M, [b], M2).
+   - *What*:
+     - Each survivor privately draws one errand from the hato's old people, dealt from the seed and their id, from a pool of about 24. Examples: pet Tureco three times; leave an ají at the ceiba roots for the ánimas; never light your torch in the corral; be the last aboard; carry a bundle across the caño without dropping it; keep two spare batteries until dawn; answer every Ave María; hear a whole count.
+     - There are no traitors.
+     - At dawn the errands are revealed next to the awards, and a four-line copla of the night names the survivors ("Y el Encargado, que juraba no tenerle miedo, soltó el saco en el caño"). The copla is saved to the Journal and opens the next title screen.
+   - *On voice*: "Why are you hoarding batteries?" "No reason." The reveal is the screenshot.
+   - *From*: Dead of Winter's secret objectives; Dale & Dawson's red tasks; Wildermyth.
+   - *Build*:
+     - A pure `errand.rs`: `deal(seed, id)`, distinct within a party, and `done(&Errand, &Deeds)`. Add it to the fingerprint.
+     - The needed `Deeds` counters (serde default).
+     - A pure `awards::copla()`.
+     - Each client computes its own errand from the seed; that is acceptable among friends.
+   - *Tests*: errands are deterministic and distinct; `done` depends only on deeds; no errand changes the Outcome; the copla is four lines and names only present survivors.
+8. **El paso del caño** (M, [b], M2, after fix 1).
+   - *What*:
+     - A bundle dropped in the deep channel drifts east at 0.3 m/s until it lodges at the bridge piles or the fence.
+     - Crouching in deep water with the torch on douses it for 25 s, so you hide low in the reeds, in the dark.
+     - Sprinting onto the bank in heavy rain can slip you in: a 1.2 s stun, one bundle into the current, an 18 m splash. A friend on the bank holds E to pull you out (roadmap B6).
+     - The pond is treated like the channel, which removes its invisible wall too.
+   - *On voice*: "You dropped the tibia in the RIVER." "Chase it!"
+   - *From*: the river investigation's Phase 2; R.E.P.O.'s fragile loot.
+   - *Build*:
+     - `sim`: drift of `Relic::Ground` where `wade == Deep`.
+     - Session: `Participant.soaked`; `Event::{TorchSoaked, Slipped}` appended.
+     - A pure slip rule in `body.rs` (sprint, rain above 0.85, within 1 m of the edge, seeded per player and tick).
+     - Optional: he walks on the water (presentation only).
+   - *Tests*: drift is deterministic and stays in the caño; a soaked torch cannot light; slips need rain and a sprint; the pond edges are free.
+9. **La repisa: aguardiente and tonight's remedios** (M, [b], M3).
+   - *What*:
+     - The aguardiente always works the same way: fear clears, no susto or faint for 90 s, and the skill zone widens ×1.3.
+     - The price: you hiccup (a 6 m noise every 15–30 s that friends hear and you barely do), your avatar sways, and he prefers you (as if 12 m closer, 18 m on a Borracho night).
+     - The first time he catches a drinker, he draws the drink out through the navel instead of downing or sacking them: they are left sober at fear 1.0 with a 2 s stun, and he sinks away. Once per player per night.
+     - Beside the bottle, four unlabelled remedios (guarapo, café negro, chimó, agua florida), with effects dealt per night: second wind, steady pulse, hiccups, heavy lids, loose tongue (your calls come out twice), cat's eyes (a local brightness lift). Agua florida always wakes a fainted friend.
+     - Only the taker sees what theirs did.
+   - *On voice*: "Stop drinking, he's coming for YOU." The volunteer decoy narrates their stagger, and "red is bad tonight" might be a prank.
+   - *From*: the legend (he hunts drunkards); PEAK's shroomberries; Phasmophobia's cursed items.
+   - **Decided:** the drinker keeps the inverted whistle. Un-inverting it per player breaks a pinned, tested rule.
+   - *Build*:
+     - A pure `remedy.rs`, `tonight(seed)`, added to the fingerprint.
+     - Shelf points in the Layout; `TargetKind::Shelf(i)`.
+     - Session: effects; the drunk catch path (`Event::Sobered`).
+     - `PlayerView.drunk`, `Vitals.effects`.
+   - *Tests*: deterministic per seed; the first catch of a drinker never sacks them; a `CueDirector` gives identical phrases with and without every effect.
+10. **A cuestas y en hombros** (M–L, [b], M3).
+    - *What*: one mount system with two verbs.
+      - **Piggyback**: hold G on a downed friend. Their bleed pauses, and you lose your bones and your torch hand. They ride facing backward with the torch and the ají.
+      - **Shoulders**: a friend climbs your crouched back. Their eye rises 0.9 m over the grass and can reach one or two seeded high bundle spots. You steer at crouch speed, seeing only stalks, and he sees the rider from ×1.3 farther.
+      - The pair topple (2 s stun, a 14 m clatter) on a sprint, a susto, deep water or his warning.
+    - *On voice*: "Left... your OTHER left." "Shine it behind us!" "No, the light draws him!"
+    - *From*: PEAK; Human: Fall Flat; R.E.P.O.
+    - **Decided:** the carrier moves at walk × `carry_floor` (2.23 m/s), not 0.72 × walk (2.6 m/s). A carried friend should be as dangerous to haul as a full load of bones.
+    - *Build*:
+      - The rider's pose is pinned to the carrier each tick, the same pattern as the captive at `session.rs:1124`.
+      - `Action::Dismount`; `PlayerView.mount`.
+      - High relic sites in the Layout.
+    - *Tests*: a carried friend does not bleed; mounted speed never exceeds walk × `carry_floor`; high sites are reachable only from shoulders; he can still sack the carrier.
+11. **La Vigía: binoculars at the Mirador** (S, [a], M3).
+    - *What*:
+      - Binoculars lashed to the lookout rail: hold to zoom ×3–4 while standing still.
+      - The deck already sees 130 m, so you see friends' torches, and him only in lightning or lamplight.
+      - Twenty painted posts and named spots ("poste 12", "el tanque") appear on the ground and on the map.
+      - The deck is open to his eyes, and a lit torch up there is a beacon.
+    - *On voice*: "He's by the cow thing!" "THE CORRAL?" "NO, THE OTHER COW THING."
+    - *From*: Lethal Company's radar operator; Iron Lung; Sea of Thieves' crow's nest.
+    - **Decided:** the lookout gets no wider sight rule; zoom only.
+    - *Build*: `District::scope` and `posts` in the Layout; the map reads them; a local FOV zoom in `player.rs`.
+    - *Tests*: post numbers are unique and stand on free ground.
+12. **Contener el aliento, and don't look at him** (M, [b], M3).
+    - *What*:
+      - A6: crouched in grass or within 1.5 m of a wall, hold C. Your step noise drops to ×0.3 and he notices you at ×0.6. Stamina drains, and letting go (or running out) makes a gasp he hears: 10 m, or 16 m if you ran dry.
+      - A7: during a warning, keeping him within 20° of your view fills fear 0.06/s faster.
+    - *On voice*: four friends whispering "don't breathe" while one runs out of air.
+    - *From*: roadmap A6 and A7; The Outlast Trials; Don't Scream.
+    - *Build*: `body.rs`; an `Input` bit (serde default); `Layout::near_wall`; A7 in `fear_step` from session truth.
+    - *Tests*: holding lowers noise and drains stamina; a release always gasps and the gasp draws focus; refused in the open.
+13. **Agüeros and the night of the week** (S–M, [b], M3).
+    - *What*: about 60 % of seeds deal an omen card at the briefing:
+      - **Luna llena**: little rain, and he notices you farther away, as you see him farther away.
+      - **Sin Tureco**: he ran off after a cow; find him first.
+      - **Pilas chinas**: batteries last 60 %, but there are 8 spares.
+      - **Invierno**: the ford runs deep.
+      - **Velorio next door**: candles count as lamplight, but omens crowd you.
+
+      A "Noche de la semana" seed comes from the ISO week, with best times kept in the Journal.
+    - *On voice*: comparing the weekly night between friend groups.
+    - *From*: roadmap B8; Phasmophobia's weekly challenges; The Outlast Trials' Variators.
+    - *Build*:
+      - `Twist::of(seed)` and `with_twist` after `with_night`. The twist comes from the handshaken seed, so there is no protocol field.
+      - `ROUTE_TWIST` for the sweep.
+    - *Tests*: the invariants hold for every twist; Sin Tureco's dog is reachable; the sweep stays at ≥97 % per twist.
+14. **La Kodak: flash photos developed at dawn** (M, [b], M3).
+    - *What*:
+      - A 12-exposure camera sits in the truck's glovebox. The flash lights about 20 m for 0.25 s and draws him like a beam.
+      - At dawn the roll plays as a slideshow captioned from the night, and is saved as PNGs.
+      - If he was truly in the frame but unseen, the print shows his hat brim. The host records this, and sends it only with the outcome.
+    - *On voice*: watching your friends' worst moments back together.
+    - *From*: Content Warning; Phasmophobia's photo camera.
+    - *Build*:
+      - `Action::Photo`.
+      - A host-only `Shot { t, in_frame }`; the outcome snapshot carries `shots` (serde default).
+      - Client capture through Bevy's `Screenshot` (the F12 path).
+      - Each player sees only their own roll in version 1.
+    - *Tests*: film runs out; the flash draws focus; `in_frame` never appears in a snapshot before the outcome.
+15. **El mandador: three cracks in a cross** (M, [b], M3).
+    - *What*:
+      - One drover's whip hangs in the corral each night.
+      - With him warning or hunting you within 15 m, crack it left, right and forward, each on the skill needle.
+      - Three hits: he flinches away like Tureco's bark and drops the sack.
+      - Any miss: the crack only tells him where you are (a 60 m noise), and the whip is spent.
+      - On an Arriero night it is his own whip: he does not flinch.
+    - *On voice*: "Don't use the whip, I think it's the Drover!"
+    - *From*: the legend's three wards (whip, dog, ají); Pacify's sacrificial doll.
+    - *Build*: a `skill` Rhythm kind that chains three checks; `encounter.flinch()` unless `Variant::Arriero`; `Event::WhipCracked`.
+    - *Tests*: three hits make a non-Arriero flinch; the Arriero never does; a miss focuses him on the cracker; one whip per night.
+
+### 4. Telling the tale and the key-code puzzle
+
+**The key code: La Voz del Llano** (L, [c], M1b).
+
+- **The dial.** The shelf radio gets a shared dial with six stops plus off (540, 620, 710, 880, 1010 and 1270 kc).
+  - The seed shuffles them: one numbers station, one tale station, one joropo station, three static.
+  - A tag hanging on the padlock at the windmill gives tonight's numbers frequency.
+- **The numbers station.** It repeats the code forever, in a cycle of at most 25 s:
+  - an ident
+  - each digit d as d short pips (a zero is one long tone)
+  - 2 s between digits, and a 5 s rest.
+- **Static.** Lightning can swallow one digit in a cycle, but never the same digit two cycles running, so any two cycles give every digit.
+- **Relay.** The radio and the key box are 38 m apart. In co-op one player counts pips aloud while another turns the dials; solo, you walk between them.
+- **Shared.** Anyone can turn the dial, it changes for everyone, and it squeals (an 8 m noise).
+- **Captions.** A dots caption shows within reach of the radio whatever the captions setting, as the accessibility path.
+- **Boundary.** The radio never reacts to where he is. Static near him would be a new truthful cue, like A8.
+- **Build.**
+  - Pure `radio.rs`: `stations`, `numbers_hour`, `beats_between`, `dots`, `dropped`. Add it to the fingerprint.
+  - `Progress::radio` and `Event::RadioTuned` (appended).
+  - `District::radio`. The page-10 note site moves there; the page id stays so saved Journals keep it.
+  - `TargetKind::Radio` through `Action::Interact`; `WorldView.radio`.
+  - Pips are timed from `snapshot.elapsed`, so every client hears the same beat.
+  - Pages 3, 4 and 16 are rewritten to point at the radio, and `lore::fill` is deleted, which closes the Journal leak for good.
+  - The driver gets a `Want::Radio`.
+- **Tests.**
+  - One numbers station per night, and it moves between seeds.
+  - The pips reproduce `lock_code` for 200 seeds.
+  - Each beat is heard exactly once at any frame rate.
+  - Two consecutive cycles always carry every digit.
+  - The dial is shared, its squeal draws his focus, and a restart turns it off.
+- **Decided:**
+  - A continuous cycle, not airings every 3 min: the 38 m relay is the slowdown, and scheduled waits are dead time solo.
+  - Pips, not voiced digits: voice needs TTS or recordings, which is the user's call under AGENTS.md.
+
+**The tale.**
+
+1. **La Madrina, desde las raíces** (S, [a], M1b, with the radio).
+   - Each bundle laid tells the next chapter in its own strip, in Spanish and English:
+     1. the deer's entrails
+     2. the father killed
+     3. the grandfather's post, whip, ají and dog
+     4. the curse, the sack and the whistle
+     5. Santa Rosa's storm night
+     6. when all bones are home: "name him rightly".
+   - The count is shared, so everyone reads the same chapter at the same moment.
+   - Its last line hints at his new trick, which merges the rage caption into it.
+   - The strip is separate from `Hint`, so the Hijo's weeping tell is never pushed out.
+   - Chapters are kept in the Journal (`profile.chapters`, serde default).
+2. **The tale station** (M, [a], M2). The radio's tale stop plays the legend as a serial, captioned, one chapter per rage stage, continued across nights. Standing through a full chapter adds page 10 to the Journal.
+3. **Cuatro versiones** (M, [a], M3). The pages that carry evidence about tonight's version of him read differently per survivor:
+   - La Coplera: a copla
+   - El Encargado: ledger sums
+   - El Llanero: brands and tracks
+   - El Muchacho: what his abuela told him
+
+   Each version holds a different sign. Any two narrow it down, and all four settle it. With fewer players the absent versions are dealt to those present; solo holds all four. Pure `lore::version` and `deal_versions`; client-local.
+4. **The count's rhythm** (La Cuenta) adds naming evidence in M2. Naming him stays a one-in-three choice at the ceiba for now.
+5. The twenty pages stay as optional collectibles. "Pages found n/20" leaves the in-play panel, and "Keeper of the tale" remains a between-nights reward.
+
+### 5. Build order
+
+**Decisions for the user** (the default in brackets):
+
+- the dawn floor, a new outcome [yes, at 30 min]
+- `anima_sight`, whether the dead see him through the friend they watch [on: the playtest asked to watch teammates, and they see only that friend's screen]
+- `bleed_after_sack` [30 s]
+- the velorio revive [not yet]
+- an opt-in microphone [no]
+- A8, A9, B10 and B11 [unchanged]
+- voiced digits or narration [no]
+- fullscreen by default on first launch [yes]
+
+**M1a, fingerprint-neutral** (ships as `0.1.0-test.2` and still pairs with `test.1`).
+
+Writer A owns `app.rs`, `audio.rs`, `ui/menu.rs`, `profile.rs`, `player.rs`, `display.rs`, `ui/calibrate.rs`, `ui/title.rs`, `trailer.rs` and `debug.rs`. Writer B owns `tools/gen_audio.py`, `tools/whistle_lab.py`, the whistle WAVs and `assets/SOURCES.md`, then the caption styles in `ui/hud.rs` and `ui/mod.rs`. B's volume-curve change to the lab waits for A's constants in `app.rs`.
+
+| # | Item | Cost | Now? |
+|---|---|---|---|
+| 1 | Audio mix, buses and glide (A) | M | Yes; the user checks levels by ear |
+| 2 | Whistle distance signatures and captions (B) | M | Yes; gated by `measure --check`; the user listens after 1 |
+| 3 | Journal leak: `menu.rs:404` shows "·" for digits (A) | S | Yes |
+| 4 | Fullscreen (A) | S | Yes; the user checks on Windows |
+| 5 | Brightness, contrast and calibration (A) | M | Yes; the user checks the three hats |
+
+**M1b, one fingerprint batch** (ships as `test.3`).
+
+`net/session.rs`, `protocol.rs`, `tuning.rs`, `sim.rs`, `ui/hud.rs` and `audio.rs` are shared, so a single rules writer takes items 6–11 in order. A parallel art writer may own only disjoint files: `world/avatar.rs` (ground torch), `world/wet.rs` and `world/flora.rs` (river visuals), and new clips in `gen_audio.py` once B has finished. The integrator runs the gate and the sweeps after each stable step.
+
+| # | Item | Cost | Now? |
+|---|---|---|---|
+| 6 | Skill-check miss | M | Yes |
+| 7 | River, Phase 1 | M | Yes; full sweep |
+| 8 | Downed allies Tier 1, the help call, `bleed_after_sack` | M | Yes; the bleed default needs confirming |
+| 9 | Spectating Phase 1 and the `die()` fix | M–L | Yes; the `anima_sight` default is a decision |
+| 10 | El Respiro, La Rabia Tier 1, the retune, grass and lure levers, the moved tests | L | Yes; sweep at three nights; the dawn floor waits for the user |
+| 11 | La Voz del Llano and the Madrina's chapters | L | Yes, last; if time runs short it opens M2 |
+
+After `test.3`, time a real two-player night from the `Stats` log, and tune the grace, the Relax length and `carry_max` from that number.
+
+**M2, the first comedy wave.**
+
+| Item | Cost | Now? |
+|---|---|---|
+| La Cuenta | M | After the `test.3` timing |
+| Gritos y silbos, the rest of the wheel | M | After the whistle bands are confirmed by ear |
+| El Compadre and the house (A5); the borrowed call after the wheel | S–M | Yes if M1 lands |
+| Ánimas haunts | M | After spectating is played |
+| El desmayo | M | After M1 |
+| El desamparado | S | Yes if M1 lands |
+| Mandados and the copla | M | Yes if M1 lands |
+| El paso del caño | M | After the river is played |
+| La Rabia Tier 2 levers, one per sweep | M | After M1 |
+| The tale station | M | After the radio |
+
+**M3.** La repisa, A cuestas y en hombros, La Vigía, Contener el aliento, Agüeros, La Kodak, El mandador, Cuatro versiones. All wait on the M2 playtest; La Vigía is small enough to slot in earlier.
+
+**M4, bigger bets and decisions.**
+
+- **El sombrero / velorio**: carry a taken friend's hat to the ceiba to raise them. Reverses "taken means dead".
+- **El Novenario**: nine nights, a friend's own bones among the next night's bundles, a hidden omen card, entierros on Thursday nights.
+- **Él te escucha**: an opt-in, loudness-only microphone. Sits next to B11 and needs a new `cpal` dependency.
+- **El lazo**: a rope tether at the caño, for two players first.
+- B10 (accomplice) and B11 (proximity voice).
+
+### 6. Rejected ideas
+
+- **Perception boundary.**
+  - A drinker who hears the whistle un-inverted.
+  - El Elegido (only one player hears the whistle).
+  - A count placed at his true position.
+  - Radio static, or a frog chorus, that reacts to his distance (A8 in disguise).
+  - A phase-keyed "the llano sings" event.
+  - A lamp-bulb dispatcher board (it would share one player's private omen lies, or leak true lamp deaths).
+  - Ánimas that make Tureco bark or whine.
+- **Voice and microphone.**
+  - Speech recognition (Vosk: saying "Silbón", naming him aloud).
+  - Cloning friends' voices, as in Skinwalkers or MIMESIS.
+  - Voiced digits and a live narrator (generated-audio rule).
+- **Two players and hidden roles.**
+  - A permanent traitor (el tocado, B10's accomplice).
+  - The secretly drunk rascao.
+  - El Caporal (one player holds the only ledger).
+- **Scope.**
+  - La Trocha, a driven escape.
+  - Dudo, liar's dice at the kitchen table.
+  - The contrapunteo duel.
+  - Obra Dinn-style memory dioramas.
+  - The Libro de Hierros brand ledger.
+  - Possessing a cow.
+  - Arranque en frío, a three-station truck start (the finale should be a sprint).
+  - The rabipelado thief.
+  - Inventory slots with a porch chest.
+- **Pacing.**
+  - A 45–55 min night clock.
+  - A longer truck warm-up.
+  - El fogón and the porch rest (a player-made safe zone; the director already guarantees release).
+  - Tall-tale voting at the fire.
+  - Scheduled radio airings.
+  - Unlocks triggered by deaths.
+  - Player whistles that raise his anger.
+
+### 7. Sources
+
+Some wiki pages (Phasmophobia, Outlast, Dead by Daylight, Left 4 Dead) and the Demonologist threads were read only as search snippets.
+
+**Co-op party and friendslop games**
+- https://lethal-company.fandom.com/wiki/Walkie-Talkie
+- https://lethal-company.fandom.com/wiki/Guide:Camera_duty
+- https://lethal-company.fandom.com/wiki/Signal_translator
+- https://lethal-company.fandom.com/wiki/Masked
+- https://lethal-company.fandom.com/wiki/Hoarding_Bug
+- https://lethal-company.fandom.com/wiki/Time
+- https://lethal.miraheze.org/wiki/Spectator
+- https://lethal.miraheze.org/wiki/Masks_(Enemy)
+- https://lethal.miraheze.org/wiki/Signal_Translator
+- https://lethal.miraheze.org/wiki/Walkie-talkie
+- https://primagames.com/tips/how-to-play-the-ship-duty-role-in-lethal-company
+- https://steamcommunity.com/sharedfiles/filedetails/?id=3143870501
+- https://www.thegamer.com/lethal-company-workplace-horror-comedy-politics-social-impact-quota/
+- https://www.pushtotalk.gg/p/how-lethal-company-sold-10-million-copies
+- https://www.pcgamer.com/lethal-companys-co-op-horror-comedy-is-like-phasmophobia-but-immediately-more-chaotic-and-deadly/
+- https://www.destructoid.com/lethal-companys-skinwalkers-mod-mimics-your-friends-voices/
+- https://win.gg/news/lethal-company-skinwalkers-mod-is-spooky-and-hilarious/
+- https://thunderstore.io/c/lethal-company/p/RugbugRedfern/Skinwalkers/
+- https://thunderstore.io/c/lethal-company/p/qwbarch/Mirage/
+- https://thunderstore.io/c/lethal-company/p/Quixler/DeadAndBored/
+- https://kotaku.com/content-warning-impressions-1851407637
+- https://content-warning.fandom.com/wiki/Sp%C3%B6%C3%B6ktube
+- https://contentwarning.wiki.gg/wiki/Camera
+- https://www.pcgamer.com/games/horror/content-warning-is-giving-you-a-chance-to-actually-go-viral-by-sending-your-best-clips-to-the-lost-footage-project/
+- https://en.wikipedia.org/wiki/Content_Warning
+- https://www.thegamer.com/repo-how-to-revive-teammates/
+- https://www.gamesradar.com/games/horror/repo-revive/
+- https://store.steampowered.com/app/3241660/REPO/
+- https://steamcommunity.com/app/3241660/discussions/0/689743495770948023/
+- https://hardcoregamer.com/repo-looting-guide/
+- https://gamerant.com/repo-mistakes-everyone-makes-how-to-avoid/
+- https://dotesports.com/indies/news/r-e-p-o-valuables-list-price-and-all-effects
+- https://www.gamedeveloper.com/business/peak-co-developer-aggro-crab-shares-lessons-in-friendslop
+- https://80.lv/articles/climbing-sim-peak-was-meant-to-be-friendslop-game-from-the-start
+- https://en.wikipedia.org/wiki/Peak_(video_game)
+- https://peak.wiki.gg/wiki/How_to_play
+- https://peak.wiki.gg/wiki/Campfire
+- https://peak.wiki.gg/wiki/Shroomberry
+- https://peak.wiki.gg/wiki/Scoutmaster_Myres
+- https://www.pcgamesn.com/peak/scoutmaster
+- https://gamerant.com/peak-revive-mechanics-how-to-revive-downed-koed-dead-teammates/
+- https://gamerant.com/peak-which-berries-mushrooms-safe-differences-poisoned-safe-foods/
+- https://deltiasgaming.com/peak-how-to-identify-poisonous-foods-and-mushrooms/
+- https://steamcommunity.com/app/3527290/discussions/0/592900638661148880/
+- https://www.thegamer.com/proximity-chat-is-incredible-peak-repo-lethal-company-phasmophobia-among-us/
+- https://appmagic.rocks/blog/friendslop-steam-games-2025
+- https://en.wikipedia.org/wiki/Friendslop
+- https://en.wikipedia.org/wiki/Chained_Together
+- https://indiegame.com/en/archives/28817
+- https://store.steampowered.com/app/2522520/Only_Up_With_Friends/
+- https://www.shacknews.com/article/135585/bread-and-fred-review-score
+- https://www.thegamer.com/human-fall-flat-interview-tomas-sakalauskas/
+- https://steamcommunity.com/app/285900/discussions/0/343785574531948394/
+- https://gamerant.com/grounded-guide-defeat-spiders/
+- https://medium.com/@calvinflowers7/mage-arena-review-real-voice-spells-real-chaos-and-real-fun-f8be8757269a
+- https://store.steampowered.com/app/3716600/Mage_Arena/
+- https://steamcommunity.com/app/3716600/discussions/0/595155668457012140/
+- https://store.steampowered.com/app/3097560/Liars_Bar/
+- https://www.thegamer.com/liars-bar-liars-dice-explained-guide/
+- https://thegameofnerds.com/2024/10/08/liars-bar-review-a-hilarious-russian-roulette-tabletop-game/
+- https://gameworldobserver.com/2024/10/21/liars-bar-100k-ccu-steam-curve-animation-turkey-success
+- https://www.thegamer.com/buckshot-roulette-items-explained-guide/
+- https://noisypixel.net/buckshot-roulette-review-perfect-for-streamers-2024/
+- https://80.lv/articles/buckshot-roulette-developer-on-making-the-game-solo-feedback-success
+- https://criticalvideogamestudies.com/buckshot-roulette-and-liars-bar-a-mix-of-casual-fun-uncertainties-and-psychological-warfare/
+
+**Horror design and pacing**
+- https://www.gamedeveloper.com/design/the-perfect-organism-the-ai-of-alien-isolation
+- https://www.gamedeveloper.com/design/revisiting-the-ai-of-alien-isolation
+- https://steamcdn-a.akamaihd.net/apps/valve/2009/ai_systems_of_l4d_mike_booth.pdf
+- https://left4dead.fandom.com/wiki/The_Director
+- https://en.wikipedia.org/wiki/Mike_Booth
+- https://www.aiandgames.com/p/how-the-beast-works-in-amnesia-the
+- https://www.dualshockers.com/amnesia-the-bunker-terrifying-generator-mechanic/
+- https://kineticgames.co.uk/news/phasmophobia-voice-recognition-update
+- https://phasmophobia.fandom.com/wiki/Voice_chat
+- https://phasmophobia.fandom.com/wiki/Spirit_Box
+- https://phasmophobia.fandom.com/wiki/Cursed_Possession
+- https://phasmophobia.fandom.com/wiki/Ouija_Board
+- https://phasmophobia.fandom.com/wiki/Setup_Phase
+- https://phasmophobia.fandom.com/wiki/Challenge_Mode
+- https://phasmophobia.fandom.com/wiki/Difficulty
+- https://screenrant.com/phasmophobia-ghost-voice-recognition-phrases-talking-microphone-chat/
+- https://www.exitlag.com/blog/monkey-paw-wishes-in-phasmophobia/
+- https://www.gamespot.com/articles/all-phasmophobia-tarot-cards-and-effects/
+- https://steamcommunity.com/app/1929610/discussions/0/6169410450154846224/
+- https://demonologist.fandom.com/wiki/Spirit_Box
+- https://sirusgaming.com/demonologist-voice-commands/
+- https://en.wikipedia.org/wiki/Devour_(video_game)
+- https://www.devourgame.com/
+- https://store.steampowered.com/app/967050/Pacify/
+- https://outlast.fandom.com/wiki/Escalation
+- https://outlast.fandom.com/wiki/Variators
+- https://store.steampowered.com/app/1850740/Ghost_Watchers/
+- https://deadbydaylight.wiki.gg/wiki/Hooks
+- https://deadbydaylight.wiki.gg/wiki/Totems
+- https://www.dexerto.com/gaming/new-horror-game-uses-ai-to-copy-you-and-your-teammates-movements-and-voices-3200757/
+- https://store.steampowered.com/app/2827200/MIMESIS/
+- https://game8.co/articles/reviews/mimesis-review-early-access
+- https://virus.hr/en/reviews/mimesis-early-access
+- https://boingboing.net/2025/05/29/new-horror-game-lets-ai-clone-your-voice-to-terrorize-friends.html
+- https://en.wikipedia.org/wiki/Don%27t_Scream
+- https://www.pcgamer.com/if-you-scream-while-playing-dont-scream-you-have-to-restart-the-game/
+- https://dredge.wiki.gg/wiki/Panic
+- https://www.thegamer.com/pacific-drive-developers-interview/
+- https://www.dreadcentral.com/editorials/493266/signalis-sows-terror-through-clever-save-point-design/
+- https://www.gametruth.com/editorials/limited-inventory-in-signalis-is-paradoxical-yet-intentional/
+- https://gamerant.com/indie-horror-game-iron-lung-scary-limitations-player-fov-perspective/
+- https://www.thejimquisition.com/post/mouthwashing-hurts-so-good-review
+- https://sonsoftheforest.fandom.com/wiki/Cannibals
+- https://sonsoftheforest.fandom.com/wiki/Kelvin
+- https://www.gamepressure.com/newsroom/golden-boy-kelvin-from-sons-of-the-forest-loved-by-players/z35176
+- https://www.relyonhorror.com/reviews/review-yuppie-psycho/
+
+**Communication, deduction and puzzles**
+- https://media.gdcvault.com/gdc2016/Presentations/Kane_Ben_Designing_Asymmetric_Gameplay.pdf
+- https://gdcvault.com/play/1023471/Designing-Asymmetric-Gameplay-For-Keep
+- https://www.gamedeveloper.com/design/finding-the-fun-in-bomb-defusal-with-i-keep-talking-and-nobody-explodes-i-
+- https://www.gamedeveloper.com/design/road-to-the-igf-steel-crate-games-i-keep-talking-and-nobody-explodes-i-
+- https://www.bombmanual.com/print/KeepTalkingAndNobodyExplodes-BombDefusalManual-v1.pdf
+- https://ktane.fandom.com/wiki/Who's_on_First
+- https://blog.playstation.com/2020/06/15/co-op-spy-thriller-operation-tango-explores-innovations-in-asymmetrical-co-op/
+- https://www.gamepressure.com/editorials/reviews/operation-tango-review-a-stylish-spy-co-op/zb41f
+- https://news.xbox.com/en-us/2023/01/31/co-op-puzzle-design-for-we-were-here-forever/
+- https://www.gamespew.com/2017/03/communication-key-puzzle-game/
+- https://news.xbox.com/en-us/2019/10/04/me-you-walkie-talkies-and-a-whole-lot-of-puzzles-in-we-were-here-too/
+- https://en.wikipedia.org/wiki/We_Were_Here_(series)
+- https://mcvuk.com/development-news/when-we-made-sea-of-thieves/
+- https://www.seaofthieves.com/community/forums/topic/68049/what-is-your-ship-role
+- https://www.gamedeveloper.com/design/road-to-the-igf-ghost-town-games-i-overcooked-i-
+- https://theescaperoomer.com/pine-studio-tomislav-interview/
+- https://www.co-optimus.com/interview/2510/page/1/unrailed-2-back-on-track-developer-interview.html
+- https://wiki.bloodontheclocktower.com/Drunk
+- https://en.wikipedia.org/wiki/Blood_on_the_Clocktower
+- https://draughtslondon.com/mastering-blood-on-the-clocktower/
+- https://www.meeplemountain.com/reviews/blood-on-the-clocktower/
+- https://steamcommunity.com/sharedfiles/filedetails?id=1174654924
+- https://steamcommunity.com/sharedfiles/filedetails/?id=3563090520
+- https://steamcommunity.com/sharedfiles/filedetails/?id=2950696718
+- https://en.wikipedia.org/wiki/Dale_&_Dawson_Stationery_Supplies
+- https://steamcommunity.com/sharedfiles/filedetails/?id=3321911072
+- https://www.vice.com/en_ca/article/kzmjkn/project-winter-is-the-best-game-about-betrayal-this-year
+- https://projectwinter.co/about.html
+- https://town-of-salem.fandom.com/wiki/Medium_(ToS)
+- https://town-of-salem.fandom.com/wiki/Last_Will
+- https://town-of-salem.fandom.com/wiki/Forger
+- https://mechanicsofmagic.com/2024/04/09/among-us-diego-valdez-duran/
+- https://among-us.fandom.com/wiki/Submit_Scan
+- https://among-us.fandom.com/wiki/Ghost
+- https://dread-hunger.fandom.com/wiki/Beginner_Thrall_Guide_by_Raven
+- https://www.youtube.com/watch?v=NZ3oyCEKZIw
+- https://boardgamegeek.com/thread/1795201/secret-and-betrayer-objectives
+- https://therewillbe.games/articles-boardgame-reviews/4805-dead-of-winter-review
+- https://en.wikipedia.org/wiki/Betrayal_at_House_on_the_Hill
+- https://mechanicsofmagic.com/2022/04/15/critical-play-betrayal-at-house-on-the-hill/
+- https://en.wikipedia.org/wiki/Mysterium_(board_game)
+
+**Story, radio and narration**
+- https://oxenfree.fandom.com/wiki/Radio
+- https://oxenfree-archive.fandom.com/wiki/Anomalies
+- https://www.gamedeveloper.com/design/road-to-the-igf-night-school-studio-s-i-oxenfree-i-
+- https://www.gamedesigngazette.com/2018/01/the-immersive-greatness-of-oxenfrees.html
+- https://kentucky-route-zero.fandom.com/wiki/WEVP-TV
+- https://kentucky-route-zero.fandom.com/wiki/Un_Pueblo_de_Nada
+- https://tvtropes.org/pmwiki/pmwiki.php/Main/NumbersStations
+- https://signalis.wiki.gg/wiki/Magpie_Box_Puzzle
+- https://en.wikipedia.org/wiki/Stories_Untold_(video_game)
+- https://www.pcgamer.com/play-a-radio-host-guiding-callers-to-safety-in-horror-adventure-killer-frequency/
+- https://en.wikipedia.org/wiki/The_War_of_the_Worlds_(1938_radio_drama)
+- https://www.eluniversal.com.mx/opinion/mochilazo-en-el-tiempo/el-terror-tambien-entra-por-los-oidos-radiodramas-de-suspenso-y-miedo/
+- https://es.wikipedia.org/wiki/El_siniestro_Doctor_Mortis
+- https://headstuff.org/entertainment/gaming/sagebrush-is-a-dark-and-bold-dive-into-survivors-guilt/
+- https://filmstories.co.uk/features/exploring-return-of-the-obra-dinns-rule-of-three/
+- https://en.wikipedia.org/wiki/Return_of_the_Obra_Dinn
+- https://adventuregamehotspot.com/review/2529/nobody-wants-to-die
+- https://www.pcgamesn.com/nobody-wants-to-die/review
+- https://en.wikipedia.org/wiki/Mouthwashing_(video_game)
+- https://store.steampowered.com/app/2506450/Guayota/
+- https://waytoomany.games/2024/10/06/review-guayota/
+- https://store.steampowered.com/app/1411900/Mictlan_An_Ancient_Mythical_Tale/
+- https://store.steampowered.com/app/854570/Pamali_Indonesian_Folklore_Horror/
+- https://jrfm.eu/index.php/ojs_jrfm/article/view/218
+- https://www.gamedeveloper.com/design/pentiment-director-explains-how-going-all-in-on-fonts-helped-elevate-the-medieval-detective-rpg-
+- https://www.pcgamer.com/how-pentiments-hand-crafted-fonts-give-pen-and-ink-a-voice/
+- https://www.gamedeveloper.com/design/interview-storytelling-through-narration-in-i-bastion-i-
+- https://darkestdungeon.fandom.com/wiki/Narrator_(Darkest_Dungeon)
+- http://press.konagame.com/
+- https://godisageek.com/reviews/candle-the-power-of-the-flame-review/
+- https://www.vice.com/en/article/wildermyth-review/
+- https://en.wikipedia.org/wiki/Inscryption
+- https://www.gamedeveloper.com/design/video-the-dialog-systems-and-tools-of-i-firewatch-i-
+- https://venturebeat.com/games/crafting-relationships-through-radio-in-firewatch/
+- https://gamesbeat.com/crafting-relationships-through-radio-in-firewatch/
+- https://www.gamesradar.com/making-of-monkey-island-insult-sword-fighting/
+
+**Folklore and culture**
+- https://en.wikipedia.org/wiki/El_Silb%C3%B3n
+- https://www.culturagenial.com/es/el-silbon/
+- https://www.pacarinadelsur.com/mitos-leyendas/el-silbon/
+- https://www.todacolombia.com/folclor-colombia/mitos-y-leyendas/silbon.html
+- https://steemit.com/spanish/@relatos/la-leyenda-del-silbon
+- https://www.musicallanera.net/leyendas-llaneras/la-leyenda-del-silbon/
+- https://www.welovevillavo.com/post/el-silb%C3%B3n-mitos-y-leyendas-del-llano-1
+- https://wildhunt.org/2019/11/columna-el-silbon-una-leyenda-venezolana-sobre-los-ancestros.html
+- https://wildhunt.org/2019/11/column-el-silbon-a-venezuelan-legend-about-the-ancestors.html
+- https://www.scaryforkids.com/el-silbon/
+- https://lanoticia.com/primerafila/entretenimiento/el-silbon-la-atemorizante-leyenda-de-venezuela-y-colombia/
+- https://www.eldestapeweb.com/atr/virales/por-que-la-tradicion-no-aconseja-silbar-de-noche-y-que-puede-pasar--2024121317313
+- https://notiapure.com.ve/cultura/entierros-de-morocotas-en-apure-leyendas-de-tesoros-y-espantos/
+- https://steemit.com/spanish/@juan170/leyenda-los-entierros
+- https://www.redalyc.org/pdf/712/71206804.pdf
+- https://es.wikipedia.org/wiki/Chim%C3%B3_llanero
+- https://www.radionacional.co/cultura/tradiciones/el-chimo-costumbre-y-tradicion-de-la-cultura-llanera
+- https://es.wikipedia.org/wiki/Didelphis_marsupialis
+- https://ultimasnoticias.com.ve/noticias/tu-mascota/mundo-animal/mira-hay-un-rabipelao-en-el-arbol/
+- https://es.wikipedia.org/wiki/1_Broadcasting_Caracas
+- https://www.eltiempo.com/archivo/documento/MAM-206324
+- https://en.wikipedia.org/wiki/Radio_Sutatenza
+- https://www.insai.gob.ve/hierros
+- https://ich.unesco.org/en/USL/colombian-venezuelan-llano-work-songs-01285
+- https://www.cancilleria.gov.co/newsroom/news/cantos-trabajo-llano-colombo-venezolanos-fueron-reconocidos-unesco-patrimonio
+- https://www.radionacional.co/cultura/contrapunteo-llanero-la-tradicion-musical-de-la-orinoquia
+- https://es.wikipedia.org/wiki/Florentino_y_El_Diablo
+- https://babel.banrepcultural.org/digital/collection/p17054coll10/id/2797
+- https://en.wikipedia.org/wiki/Susto
+- https://es.wikipedia.org/wiki/Truco_venezolano
+- https://www.diocesisdecordoba.es/carta-semanal-obispo/ave-maria-purisima-sin-pecado-concebida
+- https://forum.wordreference.com/threads/ave-maria-pur%C3%ADsima-sin-pecado-concebida.1321371/
+- https://www.spanishdict.com/answers/171100/beh-de-burro-o-veh-de-vaca
+- https://lotoven.com/animalitos/
+- https://dialnet.unirioja.es/descarga/articulo/5043782.pdf
+
+**Tools**
+- https://alphacephei.com/vosk/models
+- https://github.com/alphacep/vosk-api
+
+## Earlier handoff — 2026-09-29 (first remote playtest notes)
 
 Notes only; nothing below is implemented or triaged yet. From the first
 two-player test of the Windows build (`0.1.0-test.1`) over Tailscale.
