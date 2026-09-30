@@ -2,6 +2,65 @@
 
 ## Current handoff — 2026-09-30 (M1a landed: fingerprint-neutral, pairs with test.1)
 
+**Branding (main).** The user's branding kit as cover and icon. The name stays
+El Silbón — The Return everywhere (window title, menus, package, exe, saves);
+only the cover's painted title reads "WHISTLE".
+- `assets/branding/`: cover, icon art, 256 px icon, 7-size ICO (plain Git;
+  provenance in `assets/SOURCES.md` "Branding": user-supplied, author and
+  terms not stated, confirm before a public release).
+- Exe icon: root `build.rs` compiles `whistle.ico` with `winresource` 0.1.31
+  (build-dependency, `toml` feature off) only when `CARGO_CFG_TARGET_OS` is
+  `windows`; Linux builds skip it. MSVC needs `rc.exe` (Windows SDK).
+  FileDescription/ProductName stay winresource's default `el_silbon`.
+- Live window and taskbar icon: `src/icon.rs` decodes the embedded 256 px PNG
+  (Bevy's `png` feature, now listed explicitly; it was already compiled in) and
+  sets it through `bevy::winit::WINIT_WINDOWS` on the main thread
+  (`NonSendMarker`): `set_window_icon`, plus `set_taskbar_icon` on Windows.
+  Once per native window id, retried until the window exists. A direct
+  `winit = "=0.30.13"` dependency (the locked version) supplies the `Icon` type.
+- Launch splash (`src/ui/splash.rs`), plain title launch only
+  (`Launch::splash`): never `--play`, `--host`/`--join`, the debug drivers or
+  headless. Black; the cover fades in (0.5 s), holds at least 1.6 s, stays
+  while the title's models and fonts load (cap 6 s wall), fades out (0.7 s):
+  about 2.8 s when the title is ready. Any key or click skips it (0.25 s) and
+  is swallowed, so the menus never see it (`FocusPolicy::Block` stops hover and
+  clicks). Cover-fit with a bounded crop (5 % sideways, 18 % vertically, so the
+  painted title always shows), black bars beyond; 16:9, 16:10 and 3:2 fill.
+  Loaded from `assets/branding/whistle-cover.png`; `tools/package.sh` now
+  ships that one file. A missing file ends the splash at once.
+- README header image.
+- **Fingerprint changed.** `Cargo.lock` is a fingerprint input and gained the
+  `winresource` package and the direct `winit` entry, so this tree no longer
+  pairs with test.1 in multiplayer (the heading above describes M1a, not this
+  change). M1b's planned `\r` strip changes the fingerprint again.
+- Verified: gate green (fmt, check, clippy `-D warnings`; lib 95, district 7,
+  session 41 + 3 ignored). New tests: splash timing (quick start, waits for the
+  title up to the cap, a late cover keeps its hold, skip and missing cover, a
+  stalled frame), cover fit (never stretched, title never cut on ten screen
+  shapes, common screens filled), the icon decode (256 px RGBA8 with clear and
+  solid pixels, accepted by winit), `Launch::splash`. The debug `el_silbon.exe`
+  holds one icon group with all seven sizes (read as a data file, not run).
+- Integrator (Windows, same tree): gate re-run green (lib 95, district 7,
+  session 41 + 3 ignored). `cargo build --release --locked` green; the release
+  exe holds one icon group, and its 256 px icon extracted with System.Drawing
+  is pixel-identical to `whistle.ico`'s 256 px entry (16 and 32 px read back
+  too). That entry and `whistle-icon-256.png` (the live window's) are the same
+  art rasterised slightly differently (about 14 % of pixels differ, at most
+  21/255): the kit's, not the code's. Package copy step reproduced without
+  `zip` (absent from Git Bash here, so `tools/package.sh` stops at its last
+  line on this machine) into `target/dist/el_silbon-branding-check`: it holds
+  `assets/branding/whistle-cover.png`; the icons need no file. Headless
+  two-process net smoke from the debug exe (127.0.0.1:5341): NET SMOKE PASS on
+  host and client. The exe's version info (ProductName, FileDescription) still
+  reads `el_silbon`, winresource's default: a possible follow-up, not changed.
+- Unverified (user-led): the splash on screen and its skip; Explorer, title
+  bar, Alt-Tab, running and pinned taskbar icons; the icon across
+  fullscreen/window switches; a packaged build run from outside the tree
+  (`asset_root()` prefers the compile-time `CARGO_MANIFEST_DIR/assets` while it
+  exists, so on this machine set `BEVY_ASSET_ROOT` to the package folder, or
+  use another machine); the X11 window icon on Linux (Wayland ignores window
+  icons).
+
 **Audio mix (fix 3).**
 - New pure `src/mix.rs`: slider even in dB (0% silent, 5% = 2 dB), `MIX_HEADROOM_DB -4`, `DEFAULT_MASTER 0.8` (= -12 dB), and a glide that reaches its target at any frame rate.
 - `Settings`: `master` / `music` / `ambience` / `effects` replace `volume`. The old key is ignored, so every tester's saved level resets to 80%.

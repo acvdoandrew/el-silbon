@@ -178,6 +178,13 @@ impl Launch {
     pub fn forces_window(&self) -> bool {
         self.windowed || self.driven()
     }
+
+    /// The cover shows while the game starts: only a plain launch onto the
+    /// title screen. `--play`, `--host`/`--join` and the debug drivers go
+    /// straight in (and `--headless` builds no window at all).
+    pub fn splash(&self) -> bool {
+        self.menu && !self.driven() && !self.headless
+    }
 }
 
 impl Default for Launch {
@@ -547,7 +554,8 @@ pub fn build_app(launch: Launch) -> App {
             Update,
             (pause_keys, pause_on_focus_loss).chain().in_set(GameSet::Control),
         )
-        .add_systems(Update, apply_display.in_set(GameSet::Present));
+        .add_systems(Update, apply_display.in_set(GameSet::Present))
+        .add_systems(Update, crate::icon::apply);
     app
 }
 
@@ -774,6 +782,27 @@ mod tests {
         };
         assert!(!full(&chosen, ""), "a player who chose a window keeps it");
         assert_eq!(DisplayMode::Window.toggled().toggled(), DisplayMode::Window);
+    }
+
+    #[test]
+    fn only_a_plain_launch_opens_on_the_cover() {
+        for line in ["", "--windowed", "--seed 7 --night hard"] {
+            assert!(args(line).unwrap().splash(), "{line:?} shows the cover");
+        }
+        for line in [
+            "--play",
+            "--host 127.0.0.1:5000",
+            "--join 127.0.0.1:5000",
+            "--smoke",
+            "--tour",
+            "--photos",
+            "--trailer",
+            "--menu-shots",
+            "--host 127.0.0.1:5000 --net-smoke",
+            "--join 127.0.0.1:5000 --net-smoke --headless",
+        ] {
+            assert!(!args(line).unwrap().splash(), "{line:?} goes straight in");
+        }
     }
 
     #[test]

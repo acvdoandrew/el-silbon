@@ -10,11 +10,13 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 name="el_silbon-${version}-${os}"
 out="$root/target/dist/$name"
 rm -rf "$out" "$out.zip"
-mkdir -p "$out/assets/models"
+mkdir -p "$out/assets/models" "$out/assets/branding"
 cp "$exe" "$out/"
 cp -r "$root/assets/audio" "$root/assets/fonts" "$root/assets/shaders" "$root/assets/ui" "$out/assets/"
 rm -rf "$out/assets/audio/source"
 cp "$root"/assets/models/*.glb "$out/assets/models/"
+# The launch splash's cover; the icons are built into the executable.
+cp "$root/assets/branding/whistle-cover.png" "$out/assets/branding/"
 cp "$root/docs/PLAYING.txt" "$out/"
 # Git LFS pointers instead of models mean the checkout lacks the real files.
 if head -c 40 "$out/assets/models/silbon.glb" | grep -q "git-lfs"; then
