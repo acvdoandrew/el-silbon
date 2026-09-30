@@ -1089,6 +1089,7 @@ const MENU_SHOTS: &[(&str, MenuStep)] = {
         ("09_journal", MenuStep::Title(6, Journal)),
         ("10_reading", MenuStep::Title(6, Reading(0))),
         ("11_settings", MenuStep::Title(0, Settings)),
+        ("11b_calibrate", MenuStep::Title(0, Calibrate)),
         ("12_how_to_play", MenuStep::Title(1, HowTo)),
         ("13_credits", MenuStep::Title(2, Credits)),
         ("14_confirm_quit", MenuStep::Title(2, ConfirmQuit)),
@@ -1096,6 +1097,7 @@ const MENU_SHOTS: &[(&str, MenuStep)] = {
         ("16_playing", MenuStep::Playing),
         ("17_pause", MenuStep::Pause),
         ("18_pause_settings", MenuStep::Pause),
+        ("18b_pause_calibrate", MenuStep::Pause),
         ("19_back_on_title", MenuStep::Leave),
     ]
 };
@@ -1183,6 +1185,8 @@ fn menu_shots_drive(
             }
             let page = if name.ends_with("settings") {
                 Page::Settings
+            } else if name.ends_with("calibrate") {
+                Page::Calibrate
             } else {
                 Page::Pause
             };

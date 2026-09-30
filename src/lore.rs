@@ -352,6 +352,13 @@ pub fn fill(text: &str, code: [u8; 3]) -> String {
         .replace("{D3}", &code[2].to_string())
 }
 
+/// A page's words as the journal keeps them: a dot where a padlock digit
+/// was. The journal outlives the night, so its copy carries no code; each
+/// night's digits are read on the pages where they lie.
+pub fn keep(text: &str) -> String {
+    text.replace("{D1}", "·").replace("{D2}", "·").replace("{D3}", "·")
+}
+
 /// The lettering on a painted board, one string per line. Capitals and
 /// plain ASCII only: the boards are stencilled with a 5x7 face.
 pub fn sign(id: u8) -> &'static [&'static str] {
@@ -372,5 +379,41 @@ pub fn sign(id: u8) -> &'static [&'static str] {
         9 => &["SAN JUAN DE", "LOS MORROS", "30 KM"],
         10 => &["EL AGUA ESCONDE", "MAS QUE CAMINOS"],
         _ => &["TORRE VIGIA", "NO SUBIR SOLO"],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_journal_never_tells_a_nights_code() {
+        // The journal outlives the night: its copy of a page matches no
+        // night's padlock, while the page on its site still tells each digit.
+        let codes: Vec<[u8; 3]> = (0..300).map(crate::sim::lock_code).collect();
+        let mut told = [false; 3];
+        for id in 0..PAGES {
+            let page = note(id);
+            for text in [page.es, page.en] {
+                let kept = keep(text);
+                assert!(!kept.contains("{D"), "page {id} keeps a blank");
+                let carries = fill(text, [1, 2, 3]) != fill(text, [4, 5, 6]);
+                for code in &codes {
+                    let placed = fill(text, *code);
+                    assert!(!placed.contains("{D"), "page {id} leaves a blank");
+                    if carries {
+                        assert_ne!(kept, placed, "page {id} tells {code:?} in the journal");
+                    } else {
+                        assert_eq!(kept, placed, "page {id} reads differently in the journal");
+                    }
+                }
+                for (i, t) in told.iter_mut().enumerate() {
+                    let mut other = [1, 1, 1];
+                    other[i] = 2;
+                    *t |= fill(text, [1, 1, 1]) != fill(text, other);
+                }
+            }
+        }
+        assert_eq!(told, [true; 3], "every digit is on some page's site");
     }
 }

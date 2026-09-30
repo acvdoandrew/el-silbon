@@ -4,6 +4,7 @@
 //! briefing / pause / outcome overlays. All nodes are spawned once; states
 //! only toggle visibility and text, so restarts never accumulate UI.
 
+mod calibrate;
 mod hud;
 mod map;
 pub(crate) mod menu;
@@ -13,6 +14,7 @@ use bevy::prelude::*;
 
 use crate::app::{Flow, GameSet, Launch, LayoutRes, RunReset, Settings, Truth, TuningRes};
 use crate::net::Network;
+use crate::perception::WhistleVariant;
 
 pub(crate) const PANEL_BG: Color = Color::srgba(0.018, 0.022, 0.03, 0.5);
 pub(crate) const INK: Color = Color::srgb(0.93, 0.9, 0.84);
@@ -47,6 +49,9 @@ pub(crate) struct Hint {
 pub(crate) struct CaptionLine {
     pub text: &'static str,
     pub timer: f32,
+    /// The band the whistle was heard in, which styles the line; `None` for
+    /// a phantom (the caption cannot be sure of it either).
+    pub band: Option<WhistleVariant>,
 }
 
 /// The map overlay is up (M).
@@ -161,6 +166,7 @@ impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         menu::plugin(app);
         title::plugin(app);
+        calibrate::plugin(app);
         app.init_resource::<Hint>()
             .init_resource::<CaptionLine>()
             .init_resource::<MapOpen>()
@@ -889,10 +895,13 @@ fn panels(
         }
     }
     // The title screen shows the llano and its menus, no HUD (the photo
-    // driver manages the HUD itself).
+    // driver manages the HUD itself); nor does the calibration.
     if !launch.photos {
         for mut v in &mut q.p1() {
-            set_vis(&mut v, s != Flow::Title && fright.lunge.is_none());
+            set_vis(
+                &mut v,
+                s != Flow::Title && fright.lunge.is_none() && !menu.calibrating(s),
+            );
         }
     }
     // The outcome card steps aside for a confirmation.

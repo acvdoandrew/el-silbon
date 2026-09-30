@@ -67,6 +67,9 @@ pub struct Profile {
     pub join: String,
     /// Who the player likes to be with friends.
     pub survivor: crate::survivor::Survivor,
+    /// The brightness calibration has been offered (once, on the first
+    /// title screen; an older profile has not seen it).
+    pub calibrated: bool,
 }
 
 impl Profile {
@@ -117,8 +120,13 @@ mod tests {
     #[test]
     fn a_profile_survives_the_round_trip_and_tolerates_old_or_broken_files() {
         let mut p = Profile::default();
-        p.settings.volume = 0.4;
+        p.settings.master = 0.4;
+        p.settings.music = 0.25;
         p.settings.invert_y = true;
+        p.settings.display_mode = Settings::default().display_mode.toggled();
+        p.settings.brightness = 0.4;
+        p.settings.contrast = 1.15;
+        p.calibrated = true;
         p.pages.extend([0, 3, 19]);
         p.tally.record(Ending::Escaped { seconds: 500.0 });
         p.tally.record(Ending::Caught);
@@ -131,7 +139,61 @@ mod tests {
         let old = Profile::from_json(r#"{"pages":[1,2]}"#).expect("old file");
         assert_eq!(old.pages.len(), 2);
         assert_eq!(old.settings, Settings::default());
+        // Nor has it been shown the calibration: it is offered once.
+        assert!(!old.calibrated);
+        // The old linear volume is not carried onto the new curve: that
+        // player starts again from the default level, and keeps the rest.
+        let linear = Profile::from_json(r#"{"settings":{"volume":1.0,"invert_y":true}}"#).expect("old volume");
+        assert_eq!(linear.settings.master, Settings::default().master);
+        assert!(linear.settings.invert_y);
+        // Every earlier build saved "not fullscreen" without anyone choosing
+        // it: that player gets the new default once, and keeps the rest.
+        let windowed = Profile::from_json(r#"{"settings":{"fullscreen":false,"invert_y":true}}"#).expect("old window");
+        assert_eq!(windowed.settings.display_mode, Settings::default().display_mode);
+        assert!(windowed.settings.invert_y);
         // A broken one does not.
         assert!(Profile::from_json("{not json").is_none());
+    }
+
+    /// A whole profile as the 0.1.0-test.1 build saved it (every key it
+    /// wrote, with a player's own choices in them).
+    const TEST_1: &str = r#"{
+      "settings": {"volume": 0.4, "sensitivity": 1.3, "captions": false, "invert_y": true,
+                   "fov": 80.0, "brightness": 0.2, "head_bob": false, "fullscreen": false},
+      "pages": [1, 4, 15],
+      "tally": {"nights": 2, "escapes": 1, "banishments": 0, "caught": 1, "fastest": 610.5},
+      "join": "100.64.0.7:5197",
+      "survivor": "Coplera"
+    }"#;
+
+    #[test]
+    fn a_testers_saved_profile_loads_into_this_build() {
+        let p = Profile::from_json(TEST_1).expect("a test.1 profile loads");
+        let fresh = Settings::default();
+        // What the player chose and found is kept.
+        assert_eq!(p.pages, BTreeSet::from([1, 4, 15]));
+        assert_eq!((p.tally.nights, p.tally.escapes, p.tally.caught), (2, 1, 1));
+        assert_eq!(p.tally.fastest, Some(610.5));
+        assert_eq!(p.join, "100.64.0.7:5197");
+        assert_eq!(p.survivor, crate::survivor::Survivor::Coplera);
+        let s = &p.settings;
+        assert_eq!((s.sensitivity, s.fov, s.brightness), (1.3, 80.0, 0.2));
+        assert!(!s.captions && s.invert_y && !s.head_bob);
+        // The level and the window it never chose start from this build's
+        // defaults; the new settings are at theirs; calibration is offered.
+        assert_eq!(s.master, fresh.master);
+        assert_eq!(
+            (s.music, s.ambience, s.effects),
+            (fresh.music, fresh.ambience, fresh.effects)
+        );
+        assert_eq!(s.display_mode, fresh.display_mode);
+        assert_eq!(s.contrast, fresh.contrast);
+        assert!(!p.calibrated);
+        // Saved again, it carries none of the old keys.
+        let again = p.to_json();
+        let saved: serde_json::Value = serde_json::from_str(&again).expect("saved as JSON");
+        let keys = saved["settings"].as_object().expect("settings saved");
+        assert!(!keys.contains_key("volume") && !keys.contains_key("fullscreen"));
+        assert_eq!(Profile::from_json(&again), Some(p));
     }
 }

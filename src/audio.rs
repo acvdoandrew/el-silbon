@@ -1,6 +1,12 @@
 //! Sound: the night ambience, rain and thunder, the non-spatial whistle
 //! phrases chosen by the perception layer, footsteps, machines and party
-//! cues; gains are gentle and follow the master volume.
+//! cues.
+//!
+//! Every voice follows the master and one bus (music, ambience or effects)
+//! on the decibel curve in `mix`, with headroom under full scale. The
+//! whistle and the catch follow the master alone, so no other slider can
+//! hide him. The loops glide to their levels (`mix::glide`), landing on
+//! them exactly, so a silence is silent at any frame rate.
 //!
 //! The llano's own things are *placed*: the machines, the frogs and the
 //! windmill, Tureco, teammates' footsteps, marks, the altar and the key box,
@@ -11,14 +17,16 @@
 //! player's own body, the shared world state and this frame's events.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use bevy::audio::{AudioSinkPlayback, SpatialScale, Volume};
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::app::{
-    EncounterMsg, Flow, GameSet, LayoutRes, RunReset, Settings, StormClock, Truth, TuningRes, WhistleMsg,
+    EncounterMsg, Flow, GameSet, LayoutRes, RunReset, Settings, StormClock, Truth, TuningRes, VolumePreview, WhistleMsg,
 };
+use crate::mix::{Bus, GLIDE_RATE, glide};
 use crate::net::Network;
 use crate::perception::{WHISTLE_TAKES, WhistleVariant};
 use crate::player::Player;
@@ -159,15 +167,59 @@ enum VoiceKind {
     Catch,
     Whistle,
     Effect,
+    /// The truths about him besides the whistle: Tureco's growl and bark and
+    /// the hunt's sting. Played like an effect, but no slider but the master
+    /// may hide them.
+    Cue,
+    /// The omens' unplaced stingers: the night's music.
+    Sting,
+    /// A bolt's thunder.
+    Weather,
+    /// A moved volume slider, heard even in the pause menu.
+    Preview(Bus),
 }
 
 impl VoiceKind {
+    /// The loops run all along and glide to their level; every other voice
+    /// plays once at its own.
     fn is_loop(self) -> bool {
-        !matches!(self, Self::Whistle | Self::Effect | Self::Catch)
+        matches!(
+            self,
+            Self::Ambience
+                | Self::Rain
+                | Self::Heartbeat
+                | Self::Engine
+                | Self::Crank
+                | Self::Radio
+                | Self::Dread
+                | Self::Theme
+                | Self::Frogs
+                | Self::Windmill
+                | Self::Hum
+        )
+    }
+
+    /// The slider a voice follows besides the master. His whistle, the dog's
+    /// warnings, the hunt and the catch follow the master alone: no other
+    /// slider may hide him.
+    fn bus(self) -> Bus {
+        match self {
+            Self::Whistle | Self::Cue | Self::Catch => Bus::Master,
+            Self::Theme | Self::Dread | Self::Sting => Bus::Music,
+            Self::Ambience | Self::Rain | Self::Frogs | Self::Windmill | Self::Weather => Bus::Ambience,
+            Self::Heartbeat | Self::Engine | Self::Crank | Self::Radio | Self::Hum | Self::Effect => Bus::Effects,
+            Self::Preview(bus) => bus,
+        }
     }
 }
 
-/// A playing sound and its base gain before master volume.
+/// A voice's level before anything the night does to it: its gain on its
+/// bus, never over full scale.
+fn base_level(settings: &Settings, gain: f32, kind: VoiceKind) -> f32 {
+    (gain * settings.gain(kind.bus())).min(1.0)
+}
+
+/// A playing sound and its base gain before its bus and the master.
 #[derive(Component)]
 struct Voice {
     gain: f32,
@@ -201,6 +253,7 @@ impl Plugin for SoundPlugin {
                         footsteps,
                         party_steps,
                         thunder,
+                        play_preview,
                         place_emitters,
                         mix,
                     )
@@ -289,7 +342,11 @@ fn load_sounds(
         let mut e = commands.spawn((
             Name::new(name),
             AudioPlayer::new(clip.clone()),
-            PlaybackSettings::LOOP.with_volume(Volume::Linear(if on { gain * settings.volume } else { 0.0 })),
+            PlaybackSettings::LOOP.with_volume(Volume::Linear(if on {
+                base_level(&settings, gain, kind)
+            } else {
+                0.0
+            })),
             Voice { gain, kind },
         ));
         if kind == VoiceKind::Ambience {
@@ -398,11 +455,18 @@ fn load_sounds(
     commands.insert_resource(sounds);
 }
 
-fn one_shot(commands: &mut Commands, clip: &Handle<AudioSource>, gain: f32, speed: f32, kind: VoiceKind, master: f32) {
+fn one_shot(
+    commands: &mut Commands,
+    clip: &Handle<AudioSource>,
+    gain: f32,
+    speed: f32,
+    kind: VoiceKind,
+    settings: &Settings,
+) {
     commands.spawn((
         AudioPlayer::new(clip.clone()),
         PlaybackSettings::DESPAWN
-            .with_volume(Volume::Linear(gain * master))
+            .with_volume(Volume::Linear(base_level(settings, gain, kind)))
             .with_speed(speed),
         Voice { gain, kind },
     ));
@@ -415,10 +479,11 @@ fn placed_shot(
     clip: &Handle<AudioSource>,
     (gain, speed): (f32, f32),
     anchor: Option<Anchor>,
-    master: f32,
+    kind: VoiceKind,
+    settings: &Settings,
 ) {
     let Some(anchor) = anchor else {
-        one_shot(commands, clip, gain, speed, VoiceKind::Effect, master);
+        one_shot(commands, clip, gain, speed, kind, settings);
         return;
     };
     let heard = ears.heard(&anchor);
@@ -428,15 +493,12 @@ fn placed_shot(
     commands.spawn((
         AudioPlayer::new(clip.clone()),
         PlaybackSettings::DESPAWN
-            .with_volume(Volume::Linear(gain * master * heard))
+            .with_volume(Volume::Linear((gain * settings.gain(kind.bus()) * heard).min(1.0)))
             .with_speed(speed)
             .with_spatial(true)
             .with_spatial_scale(SpatialScale::new(EMITTER_SCALE)),
         Transform::from_translation(emitter_at(ears.eye(), anchor.at)),
-        Voice {
-            gain,
-            kind: VoiceKind::Effect,
-        },
+        Voice { gain, kind },
         anchor,
     ));
 }
@@ -501,14 +563,7 @@ fn play_whistles(
             WhistleVariant::Faint => &sounds.whistles[2],
         };
         let clip = &takes[(p.take % WHISTLE_TAKES) as usize];
-        one_shot(
-            &mut commands,
-            clip,
-            p.gain,
-            p.speed,
-            VoiceKind::Whistle,
-            settings.volume,
-        );
+        one_shot(&mut commands, clip, p.gain, p.speed, VoiceKind::Whistle, &settings);
     }
 }
 
@@ -529,13 +584,15 @@ fn play_stings(
         // it had unplaced.
         let (clip, gain, speed, at) = match *sting {
             // The catch's own sounds go through its silence and its black.
+            // Its files are mastered hot: the ear whistle lands a little
+            // over the loud whistle, not far over the whole night.
             Sting::EarWhistle | Sting::Cut | Sting::Caught => {
                 let catch = |commands: &mut Commands, clip: &Handle<AudioSource>, gain: f32| {
-                    one_shot(commands, clip, gain, 1.0, VoiceKind::Catch, settings.volume)
+                    one_shot(commands, clip, gain, 1.0, VoiceKind::Catch, &settings)
                 };
                 match *sting {
-                    Sting::EarWhistle => catch(&mut commands, &sounds.ear_whistle, g * 1.7),
-                    Sting::Caught => catch(&mut commands, &sounds.sting_caught, g * 1.6),
+                    Sting::EarWhistle => catch(&mut commands, &sounds.ear_whistle, g * 0.8),
+                    Sting::Caught => catch(&mut commands, &sounds.sting_caught, g * 1.2),
                     _ => {
                         catch(&mut commands, &sounds.bones, g * 1.4);
                         catch(&mut commands, &sounds.ringing, g * 0.9);
@@ -559,12 +616,19 @@ fn play_stings(
                     &sounds.steps[surface as usize][k % 3],
                     (g * 0.62 * 0.8, [0.97, 1.03, 0.94][k % 3]),
                     Some(Anchor::at(at)),
-                    settings.volume,
+                    VoiceKind::Effect,
+                    &settings,
                 );
                 continue;
             }
             // A mark's tick, carried like a real one.
             Sting::Mark(at) => (&sounds.ping, g * 0.7, 1.0, Some(at)),
+        };
+        // The stingers are music; what sounds like a thing of the llano (a
+        // clatter, a false mark) is heard as one.
+        let kind = match sting {
+            Sting::Reveal | Sting::Phantom | Sting::Lamps | Sting::Swell => VoiceKind::Sting,
+            _ => VoiceKind::Effect,
         };
         let lift = at.map_or(1.0, |at| {
             let h = heard_at(&ears.layout.0, &ears.tuning.0, ears.eye(), at);
@@ -581,7 +645,8 @@ fn play_stings(
             clip,
             (gain * lift, speed),
             at.map(Anchor::at),
-            settings.volume,
+            kind,
+            &settings,
         );
     }
 }
@@ -659,13 +724,18 @@ fn play_effects(
             Event::Escaped => (&sounds.dawn, g * 0.9, 1.0),
             _ => continue,
         };
+        let kind = match e {
+            Event::DogGrowl | Event::DogBark | Event::HuntBegan => VoiceKind::Cue,
+            _ => VoiceKind::Effect,
+        };
         placed_shot(
             &mut commands,
             &ears,
             clip,
             (gain, speed),
             at.map(Anchor::at),
-            settings.volume,
+            kind,
+            &settings,
         );
     }
 }
@@ -695,7 +765,8 @@ fn play_pings(
                 &sounds.ping,
                 (ears.tuning.0.sfx_gain * 0.7 * lift, 1.0),
                 Some(Anchor::at(at)),
-                settings.volume,
+                VoiceKind::Effect,
+                &settings,
             );
         }
     }
@@ -748,7 +819,7 @@ fn footsteps(
         tuning.0.sfx_gain * gait * load * 0.8,
         PITCH[*count % PITCH.len()],
         VoiceKind::Effect,
-        settings.volume,
+        &settings,
     );
 }
 
@@ -774,7 +845,8 @@ fn thunder(mut commands: Commands, clock: Res<StormClock>, settings: Res<Setting
                 at: Vec3::new(ground.x, 120.0, ground.y),
                 far: true,
             }),
-            settings.volume,
+            VoiceKind::Weather,
+            &settings,
         );
     }
 }
@@ -834,7 +906,8 @@ fn party_steps(
             &sounds.steps[surface as usize][entry.2 % 3],
             (ears.tuning.0.sfx_gain * gait * load * 0.8, PITCH[entry.2 % PITCH.len()]),
             Some(Anchor::at(Vec3::new(pos.x, l.surface_height(pos) + 0.1, pos.y))),
-            settings.volume,
+            VoiceKind::Effect,
+            &settings,
         );
     }
 }
@@ -852,7 +925,48 @@ fn surface_at(layout: &crate::geometry::Layout, pos: Vec2) -> Surface {
     }
 }
 
-/// Apply master volume and every loop's dynamic level to each live sink.
+/// A volume slider moved: a moment of that bus at its new level, heard even
+/// in the pause menu (the last move of a frame wins, and cuts the one
+/// before). On the title screen the theme and the night already play, so
+/// only the tick is needed there. Never a whistle: a menu must not cue him.
+fn play_preview(
+    mut commands: Commands,
+    mut moved: MessageReader<VolumePreview>,
+    sounds: Res<Sounds>,
+    settings: Res<Settings>,
+    tuning: Res<TuningRes>,
+    state: Res<State<Flow>>,
+    voices: Query<(Entity, &Voice)>,
+) {
+    let Some(&VolumePreview(bus)) = moved.read().last() else {
+        return;
+    };
+    let t = &tuning.0;
+    let (clip, gain, seconds) = match bus {
+        Bus::Master | Bus::Effects => (&sounds.ping, t.sfx_gain * 0.7, None),
+        Bus::Ambience if *state.get() == Flow::Paused => (&sounds.ambience, t.ambience_gain, Some(1.5)),
+        Bus::Music if *state.get() != Flow::Title => (&sounds.theme, t.ambience_gain * 1.2, Some(2.0)),
+        Bus::Ambience | Bus::Music => return,
+    };
+    for (entity, voice) in &voices {
+        if matches!(voice.kind, VoiceKind::Preview(_)) {
+            commands.entity(entity).try_despawn();
+        }
+    }
+    let kind = VoiceKind::Preview(bus);
+    let mut playback = PlaybackSettings::DESPAWN.with_volume(Volume::Linear(base_level(&settings, gain, kind)));
+    if let Some(s) = seconds {
+        playback = playback.with_duration(Duration::from_secs_f32(s));
+    }
+    commands.spawn((
+        Name::new("volume preview"),
+        AudioPlayer::new(clip.clone()),
+        playback,
+        Voice { gain, kind },
+    ));
+}
+
+/// Apply the sliders and every loop's dynamic level to each live sink.
 #[allow(clippy::too_many_arguments)]
 fn mix(
     time: Res<Time<Real>>,
@@ -875,7 +989,7 @@ fn mix(
     );
     let target = if tense { tuning.0.ambience_hush } else { 1.0 };
     let dt = time.delta_secs();
-    hush.0 += (target - hush.0) * (dt * 0.8).min(1.0);
+    hush.0 = glide(hush.0, target, 0.8, dt);
 
     let snap = net.snapshot();
     let me = snap.map(|s| s.me).unwrap_or_default();
@@ -927,7 +1041,7 @@ fn mix(
     let paused = *state.get() == Flow::Paused;
     let powered = world.power >= 1.0 && !over;
     let level = |voice: &Voice, sink: &mut dyn AudioSinkPlayback| -> f32 {
-        let mut v = voice.gain * settings.volume;
+        let mut v = voice.gain * settings.gain(voice.kind.bus());
         match voice.kind {
             VoiceKind::Ambience => {
                 v *= hush_omen * duck * hush.0 * if dazed { 0.5 } else { 1.0 } * (1.0 - 0.25 * (rain - 0.6) / 0.4);
@@ -949,36 +1063,36 @@ fn mix(
             VoiceKind::Crank => v *= if crank_on { 1.0 } else { 0.0 },
             VoiceKind::Radio => v *= if radio_on { 1.0 } else { 0.0 },
             VoiceKind::Whistle if net.status() == 2 => v = 0.0,
-            VoiceKind::Whistle | VoiceKind::Effect | VoiceKind::Catch => {}
+            VoiceKind::Whistle
+            | VoiceKind::Effect
+            | VoiceKind::Cue
+            | VoiceKind::Catch
+            | VoiceKind::Sting
+            | VoiceKind::Weather
+            | VoiceKind::Preview(_) => {}
         }
         v
     };
     // The catch holds the world: silent before him, a murmur in the black.
-    // Its own sounds are heard through all of it.
+    // Its own sounds are heard through all of it, and so is the menu's.
     let world_level = fright.world_level();
     let apply = |voice: &Voice, sink: &mut dyn AudioSinkPlayback, v: f32| {
-        if paused {
+        let menu = matches!(voice.kind, VoiceKind::Preview(_));
+        if paused && !menu {
             sink.pause();
         }
-        let v = if voice.kind == VoiceKind::Catch {
-            v
-        } else {
-            v * world_level
-        };
-        if world_level == 0.0 && voice.kind != VoiceKind::Catch {
-            if sink.volume().to_linear() != 0.0 {
-                sink.set_volume(Volume::Linear(0.0));
-            }
-            return;
-        }
+        let held = !menu && voice.kind != VoiceKind::Catch;
+        // No one voice goes over full scale (a lifted, placed sound near).
+        let v = if held { v * world_level } else { v }.min(1.0);
         let now = sink.volume().to_linear();
-        // Loops glide to their level; one-shots keep theirs.
-        let v = if voice.kind.is_loop() {
-            now + (v - now) * (dt * 5.0).min(1.0)
+        // Loops glide to their level and land on it; one-shots keep theirs,
+        // and the catch's silence falls at once.
+        let v = if voice.kind.is_loop() && !(held && world_level == 0.0) {
+            glide(now, v, GLIDE_RATE, dt)
         } else {
             v
         };
-        if (now - v).abs() > 0.002 || (v == 0.0 && now != 0.0) {
+        if v != now {
             sink.set_volume(Volume::Linear(v));
         }
     };

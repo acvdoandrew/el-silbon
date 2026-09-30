@@ -8,7 +8,7 @@ use bevy::light::{FogVolume, NotShadowCaster, NotShadowReceiver, VolumetricFog, 
 use bevy::post_process::bloom::Bloom;
 use bevy::post_process::effect_stack::{ChromaticAberration, Vignette};
 use bevy::prelude::*;
-use bevy::render::view::{ColorGrading, ColorGradingGlobal};
+use bevy::render::view::{ColorGrading, ColorGradingGlobal, ColorGradingSection};
 
 use crate::app::{Flow, GameSet, Launch, LayoutRes, RunReset, Settings, TuningRes};
 use crate::control::{Intent, Pose};
@@ -179,18 +179,7 @@ fn spawn_player(
             }),
             bevy::camera::Hdr,
             Tonemapping::TonyMcMapface,
-            // A dark, cool night that lets the practicals stay warm against
-            // it: slightly under-saturated, so colour belongs to the light.
-            // Global grading only: sectional contrast crushes linear-HDR darks.
-            ColorGrading {
-                global: ColorGradingGlobal {
-                    exposure: 0.3,
-                    temperature: -0.03,
-                    post_saturation: 0.9,
-                    ..default()
-                },
-                ..default()
-            },
+            night_grading(crate::display::grade(0.0, 1.0, fog_level())),
             Bloom {
                 intensity: BLOOM,
                 ..Bloom::NATURAL
@@ -303,6 +292,32 @@ fn spawn_player(
                 )],
             ));
         });
+}
+
+/// The level the night's contrast turns about: the fog's (and the sky's at
+/// the horizon) linear luminance.
+pub(crate) fn fog_level() -> f32 {
+    crate::display::luminance(crate::world::land::HORIZON)
+}
+
+/// The camera's grade for a picture setting: a dark, cool night that lets
+/// the practicals stay warm against it, slightly under-saturated, so colour
+/// belongs to the light. Brightness and contrast live in every section's
+/// gamma and the exposure (see `display`), never in the sections' contrast,
+/// whose pivot at linear 0.5 crushes linear-HDR darks.
+pub(crate) fn night_grading(grade: crate::display::Grade) -> ColorGrading {
+    ColorGrading::with_identical_sections(
+        ColorGradingGlobal {
+            exposure: grade.exposure,
+            temperature: -0.03,
+            post_saturation: 0.9,
+            ..default()
+        },
+        ColorGradingSection {
+            gamma: grade.gamma,
+            ..default()
+        },
+    )
 }
 
 /// A plain metal torch along +Y from its tail at the origin: ribbed grip,
@@ -483,8 +498,8 @@ fn apply_motion(
     }
 }
 
-/// The player's view settings: field of view and brightness (the photo
-/// driver sets its own field of view per shot).
+/// The player's view settings: field of view, brightness and contrast (the
+/// photo driver sets its own field of view per shot).
 fn view_settings(
     settings: Res<Settings>,
     launch: Res<Launch>,
@@ -526,7 +541,15 @@ fn view_settings(
     {
         p.fov = (settings.fov + fov_add).to_radians();
     }
-    grading.global.exposure = 0.3 + 0.7 * settings.brightness + exposure_add;
+    let grade = crate::display::grade(settings.brightness, settings.contrast, fog_level());
+    // The trailer's video is a touch brighter than play.
+    let video = if launch.trailer {
+        crate::trailer::EXPOSURE_LIFT
+    } else {
+        0.0
+    };
+    *grading = night_grading(grade);
+    grading.global.exposure = grade.exposure + video + exposure_add;
 }
 
 /// The torch's lights and lens follow its switch and its charge: a dead
@@ -739,4 +762,41 @@ pub(crate) fn reset_player(
     torch.on = true;
     light.0 = true;
     intent.0 = Intent::default();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn camera_grade(settings: &Settings) -> ColorGrading {
+        night_grading(crate::display::grade(
+            settings.brightness,
+            settings.contrast,
+            fog_level(),
+        ))
+    }
+
+    #[test]
+    fn the_default_picture_leaves_the_camera_as_it_was_graded() {
+        // The grade the camera had before brightness and contrast moved
+        // into the sections: global only, every section at its default.
+        let g = camera_grade(&Settings::default());
+        assert_eq!(g.global.exposure, 0.3);
+        assert_eq!(g.global.temperature, -0.03);
+        assert_eq!(g.global.tint, 0.0);
+        assert_eq!(g.global.hue, 0.0);
+        assert_eq!(g.global.post_saturation, 0.9);
+        assert_eq!(g.global.midtones_range, 0.2..0.7);
+        assert!(g.all_sections().all(|s| *s == ColorGradingSection::default()));
+        // Any other picture reaches every section alike.
+        for (brightness, contrast) in [(0.5, 1.0), (0.0, 1.1), (-0.3, 0.9)] {
+            let g = camera_grade(&Settings {
+                brightness,
+                contrast,
+                ..Settings::default()
+            });
+            assert!(g.shadows != ColorGradingSection::default());
+            assert!(g.shadows == g.midtones && g.midtones == g.highlights);
+        }
+    }
 }

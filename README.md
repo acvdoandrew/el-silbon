@@ -42,6 +42,7 @@ cargo test --locked                          # headless rules and route tests
 | `--night N` | `gentle`, `normal` (default) or `hard`; a joiner takes the host's night automatically |
 | `--play` | skip the title screen and go straight into a solo night |
 | `--size WxH` | window size (default `1600x900`) |
+| `--windowed` | play in a window this launch and leave the saved choice alone (a plain launch follows Settings > Video > Display mode, fullscreen at first; the debug drivers always use a window) |
 | `--shots DIR` | folder for F12 screenshots and the debug drivers (default `./screenshots`) |
 | `--host ADDR` | host a shared session, e.g. `127.0.0.1:5000` (loopback or private LAN only) |
 | `--join ADDR` | join a host before its run starts |
@@ -63,9 +64,13 @@ whistle, and sometimes, when lightning strikes, a tall shape. Its menus
 (keyboard or mouse): **Play** (difficulty and night number), **Play with
 friends** (host on this machine's LAN address or join one), **Journal** (the
 pages of the tale found over every night, readable again, and the tally of
-nights), **Settings** (volume, sensitivity, invert Y, field of view,
-brightness, head bob, captions, window or fullscreen), **How to play**,
-**Credits** and **Quit**. Esc in a night opens the pause menu (resume,
+nights), **Settings** (**Video**: fullscreen or a window, field of view,
+brightness and contrast with a calibration page of three hats (offered
+once, on the first title screen), head bob; **Audio**: master, music,
+ambience and effects volume, whistle captions; **Controls**: sensitivity,
+invert Y), **How to
+play**, **Credits** and **Quit**. The game opens fullscreen until the
+player picks a window. Esc in a night opens the pause menu (resume,
 settings, journal, restart, leave to the title). Settings, pages and the
 tally are saved to `$XDG_DATA_HOME/el-silbon/profile.json` (else
 `~/.local/share/el-silbon/profile.json`); the debug drivers never touch it.
@@ -161,7 +166,9 @@ Surviving him:
 | Enter / F6 / F10 | shared session: host starts / host restarts / host ends or client leaves |
 | F7 | shared session lobby: be the next free survivor |
 
-The menu adjusts master volume, mouse sensitivity and whistle captions. Solo
+The menu adjusts the master, music, ambience and effects volume (even in
+decibels, with a moment of that sound as a slider moves; the whistle and the
+catch follow the master alone), mouse sensitivity and whistle captions. Solo
 pause freezes the run; in a shared session menus and focus loss stop only
 local input while the world continues.
 
@@ -243,8 +250,11 @@ game's files. Modes: `ladder` (loud, middling, faint; `--all-takes`), `ab`
 you hear which one each distance gives) and `night` (minutes of him
 stalking, on the game's irregular cadence). `--regen` rebuilds the whistle
 files from `tools/gen_audio.py` first; `--dry`, `--tense`, `--rain`,
-`--volume` and `--out FILE` shape or save the mix. Levels are the
-`gain_loud/mid/faint` tuning values (the files are loudness-matched).
+`--master` (the master slider; `--volume` is the same), `--ambience` (the
+bed's slider only) and `--out FILE` shape or save the mix. Levels are the
+`gain_loud/mid/faint` tuning values (the files are loudness-matched) under
+the volume curve read from `src/mix.rs`, so the default master plays the
+mix 12 dB below full scale, as the game does.
 
 He walks a patrol graph over the trails and steps straight toward what he
 pursues, sliding along blockers; it is not a navmesh. Sight is 2D line of

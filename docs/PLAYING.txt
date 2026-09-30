@@ -16,6 +16,14 @@ Windows:  unzip the whole folder anywhere and run el_silbon.exe. Keep the
           the game's log (handy if something goes wrong — leave it open).
 Linux:    unzip, then run ./el_silbon (chmod +x el_silbon if needed).
 
+The game opens fullscreen. For a window instead: Settings > Video >
+Display mode (from the main menu, or Esc during a night). The choice is
+remembered.
+
+The first launch opens on a brightness page with three hats: set it so
+the middle one is just barely visible. If the night looks all black
+later, it is at Settings > Calibrate brightness.
+
 Settings, the journal and who you play as are saved in
 %APPDATA%\el-silbon (Windows) or ~/.local/share/el-silbon (Linux).
 

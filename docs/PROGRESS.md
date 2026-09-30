@@ -1,6 +1,75 @@
 # Progress
 
-## Current handoff — 2026-09-29 (roadmap v3; M1 starting)
+## Current handoff — 2026-09-30 (M1a landed: fingerprint-neutral, pairs with test.1)
+
+**Audio mix (fix 3).**
+- New pure `src/mix.rs`: slider even in dB (0% silent, 5% = 2 dB), `MIX_HEADROOM_DB -4`, `DEFAULT_MASTER 0.8` (= -12 dB), and a glide that reaches its target at any frame rate.
+- `Settings`: `master` / `music` / `ambience` / `effects` replace `volume`. The old key is ignored, so every tester's saved level resets to 80%.
+- Buses: Music = theme, dread and omen stingers. Ambience = bed, rain, frogs, windmill, thunder. Master only = the whistle, Tureco's growl and bark, the hunt sting and the catch (a new `VoiceKind::Cue` for the dog and the hunt: no sub-slider may hide a truth about him). Effects = the rest.
+- Volume previews. The catch is trimmed: ear whistle ×0.8, caught ×1.2.
+- Verified: tests reproduce the old glide stall and pass on the fix.
+- Unverified: every level by ear. Duck, hush and omen silences now reach their designed depth for the first time.
+
+**Whistle distances (fix 4, tools).**
+- `gen_audio.level()` sets each take's loudest second to WHISTLE_RMS, and a look-ahead limiter holds the peaks. Far takes 0/1 are no longer 4 dB quieter.
+- `measure --check` now also gates levels and runs every rule at speeds 0.92, 1 and 1.06. Only the 12 whistle WAVs changed.
+- Verified: check exit 0 on the recording and on the synth.
+- Unverified: listening. The limiter takes up to 6 dB on one fragment of far takes 0 and 1.
+
+**Whistle lab mirror (this pass).**
+- `tools/whistle_lab.py` reads `SLIDER_FLOOR_DB`, `MIX_HEADROOM_DB`, `DEFAULT_MASTER` and `GLIDE_RATE` from `src/mix.rs` (not `SLIDER_STEP`), and mixes each sound on its bus with a per-sound cap at full scale.
+- New flags: `--master` (`--volume` is an alias) and `--ambience` (bed only).
+- The "played" column uses the curve: loud about -23 dBFS at the default.
+- The lab no longer crashes when its output goes to a pipe or file on Windows.
+- Verified: rendered whistle at master 100% / Ambience 0 is exactly -4.00 dB with the bed silent; default about -12 dB; master 0 silent. Measure exit 0 on the shipped files and on the synth.
+- Renders are about 10 dB quieter than before, on purpose.
+
+**Whistle captions (fix 4, captions).**
+- `caption_look` depends only on the band: loud is 24 px, warm and upright; middling is unchanged; faint is 15 px, cold, alpha 0.8, and fades over its last 1.5 s; a phantom is grey.
+- Cross-check: faint takes' last loud moment is at 2.9-3.2 s (3.1-3.5 s at speed 0.92), and the faint caption holds to 3.0 s, then fades while the sound dies away. Loud and middling files end at 2.7-3.4 s; their captions stay to 4.5 s.
+- Unverified: how it reads on screen.
+
+**Journal code leak (fix 11).**
+- The Journal shows pages through the new `lore::keep`, which puts "·" where the digits were. The in-world page still shows tonight's digits.
+- Verified: a test covers every page in both languages.
+- Unverified: the rendered menu.
+
+**Display mode (fix 5, user override).**
+- `display_mode { Fullscreen (default), Window }` replaces `fullscreen`. The old key is ignored, so every test.1 profile opens fullscreen once.
+- Settings is a hub: Video / Audio / Controls / Calibrate brightness.
+- `--windowed` greys out the display-mode row. Leaving fullscreen gives a window fitted to 85% of the screen.
+- No F11 or Alt+Enter (user decision).
+- Verified: headless World test of the display switch.
+- Unverified: every real-window behaviour on Windows.
+
+**Brightness, contrast, calibration (fix 6).**
+- Pure `src/display.rs`: log-contrast about the fog level, then a shadow gamma that keeps white fixed.
+- At the defaults the picture is exactly the old one (exposure 0.3, gamma 1.0).
+- New calibration page (`ui/calibrate.rs`) with three hats, offered once per profile (`Profile.calibrated`).
+- `--menu-shots` now takes 21 captures.
+- Unverified: on screen, the HATS levels, and a one-time flash of a few frames when the picture first leaves the defaults.
+
+**Integration checks (this pass).**
+- New test `profile::a_testers_saved_profile_loads_into_this_build`: a full test.1 profile keeps its pages, tally, join address, survivor and choices; master, display mode and contrast start at defaults; calibration is offered; the old keys are not saved again.
+- No Rust code still uses the removed `volume` or `fullscreen` settings.
+- Fingerprint unchanged: 0x93dcc314afdc3f17 from a real run, equal to v0.1.0-test.1 checked out with CRLF.
+- The real test.1 Windows exe (built from CRLF sources) and this tree paired in both directions over headless loopback ("NET accepted").
+- Gate green: lib 86, district 7, session 41 + 3 ignored, clippy clean. Headless two-process net smoke: NET SMOKE PASS on host and client, exit 0.
+
+**Also in this pass.**
+- The title screen's whistles no longer spend the loud and faint lessons
+  (`hints_and_captions` teaches them only in `Flow::Playing`; the title's
+  faint whistle used to mark "so he is NEAR" as taught before any night).
+- Line endings enter the fingerprint (`include_str!` hashes raw bytes):
+  a CRLF checkout on Windows pairs with test.1-windows, an LF Linux build
+  does not. Strip `\r` in `fingerprint()` in M1b (it changes the
+  fingerprint). Do not bump the crate version for test.2: `Cargo.lock` is
+  a fingerprint input; tag the release instead.
+- Open for the user's eye: middling and faint captions are both pale blue
+  italics and may read alike; the calibration card can cover the hat
+  labels below about 690 logical px of window height.
+
+## Earlier handoff — 2026-09-29 (roadmap v3; M1 starting)
 
 Research and design only so far; no gameplay code has changed except the
 clippy fix below. A multi-agent pass read the code behind every playtest
@@ -27,8 +96,13 @@ and a dense map of the current game in `docs/research/2026-09-29-game-map.md`.
 - User decisions (2026-09-29), from the roadmap's list: the dawn floor at
   1.5 × `night_length` (30 min on Normal) as a new `Outcome::Dawn`, yes;
   `anima_sight` on (the dead see what the friend they watch sees);
-  `bleed_after_sack` 30 s; fullscreen by default on first launch, yes
-  (the roadmap default). Local commits per item, no push until asked.
+  `bleed_after_sack` 30 s. Local commits per item, no push until asked.
+- **Fullscreen (user, overrides roadmap fix 5):** a display-mode option in
+  a Video section of Settings, not a key. No F11 or Alt+Enter: on Hyprland
+  (and Windows) a game-side fullscreen key fights the window manager. The
+  full game launches fullscreen by default; test and debug runs (the
+  `--smoke`, `--net-smoke`, `--menu-shots`, photo and trailer drivers, and
+  a `--windowed` flag for hands-on testing) stay windowed.
 - Next: M1a (fingerprint-neutral: audio mix, whistle distances, Journal
   code leak, fullscreen, brightness and contrast), then M1b.
 

@@ -507,17 +507,51 @@ pub(crate) fn downed_panel(
     }
 }
 
+/// How a whistle caption looks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CaptionLook {
+    /// Upright serif rather than the italic.
+    pub serif: bool,
+    pub size: f32,
+    pub color: Color,
+}
+
+/// The faint caption thins away over its last seconds.
+const FAINT_FADE: f32 = 1.5;
+
+/// A caption's look from the band it was heard in and the seconds it has
+/// left, never from where he is: loud (so he is far) large and warm, faint
+/// (so he is near) small and cold, fading as it ends, the middling one
+/// between. A phantom (`None`) is grey and unsure.
+pub(crate) fn caption_look(band: Option<WhistleVariant>, left: f32) -> CaptionLook {
+    let (serif, size, color) = match band {
+        Some(WhistleVariant::Loud) => (true, 24.0, Color::srgb(1.0, 0.9, 0.74)),
+        Some(WhistleVariant::Middling) => (false, 19.0, PALE_BLUE),
+        Some(WhistleVariant::Faint) => {
+            // Small, but the danger cue stays readable until its tail.
+            let fade = (left / FAINT_FADE).clamp(0.0, 1.0);
+            (false, 15.0, Color::srgba(0.64, 0.74, 0.92, 0.8 * fade))
+        }
+        None => (false, 17.0, Color::srgba(0.72, 0.7, 0.7, 0.75)),
+    };
+    CaptionLook { serif, size, color }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn hints_and_captions(
     time: Res<Time<Real>>,
     settings: Res<Settings>,
     state: Res<State<Flow>>,
     net: Res<Network>,
+    fonts: Res<Fonts>,
     mut hint: ResMut<Hint>,
     mut caption: ResMut<CaptionLine>,
     mut events: MessageReader<EncounterMsg>,
     mut phrases: MessageReader<WhistleMsg>,
-    mut q: ParamSet<(Query<&mut Text, With<HintText>>, Query<&mut Text, With<CaptionText>>)>,
+    mut q: ParamSet<(
+        Query<&mut Text, With<HintText>>,
+        Query<(&mut Text, &mut TextFont, &mut TextColor, &mut TextShadow), With<CaptionText>>,
+    )>,
 ) {
     let dt = time.delta_secs();
     let show = |hint: &mut Hint, text: &'static str, secs: f32, priority: u8| {
@@ -693,17 +727,22 @@ pub(crate) fn hints_and_captions(
             _ => {}
         }
     }
+    // Only over play: a menu (pause, outcome) has the screen to itself, and
+    // the title's own whistles must not spend the lessons before a night.
+    let playing = *state.get() == Flow::Playing;
     for WhistleMsg(p) in phrases.read() {
         if p.phantom {
             // Fear put it there: the caption cannot be sure either.
             caption.text = "A whistle…? Or only the blood in your ears.";
             caption.timer = 4.0;
+            caption.band = None;
             continue;
         }
         caption.text = p.variant.caption();
         caption.timer = 4.5;
+        caption.band = Some(p.variant);
         match p.variant {
-            WhistleVariant::Loud if !hint.taught_loud => {
+            WhistleVariant::Loud if playing && !hint.taught_loud => {
                 hint.taught_loud = true;
                 show(
                     &mut hint,
@@ -712,7 +751,7 @@ pub(crate) fn hints_and_captions(
                     3,
                 );
             }
-            WhistleVariant::Faint if !hint.taught_faint => {
+            WhistleVariant::Faint if playing && !hint.taught_faint => {
                 hint.taught_faint = true;
                 show(
                     &mut hint,
@@ -726,8 +765,6 @@ pub(crate) fn hints_and_captions(
     }
     hint.timer -= dt;
     caption.timer -= dt;
-    // Only over play: a menu (pause, outcome) has the screen to itself.
-    let playing = *state.get() == Flow::Playing;
     let hint_text = if hint.timer > 0.0 && playing { hint.text } else { "" };
     let caption_text = if caption.timer > 0.0 && settings.captions && playing {
         caption.text
@@ -737,8 +774,21 @@ pub(crate) fn hints_and_captions(
     for mut t in &mut q.p0() {
         set_text(&mut t, hint_text);
     }
-    for mut t in &mut q.p1() {
+    // The band styles the line, so it reads at a glance.
+    let look = caption_look(caption.band, caption.timer);
+    let face = font(if look.serif { &fonts.serif } else { &fonts.italic }, look.size);
+    let shade = TextShadow::default().color;
+    let shade = shade.with_alpha(shade.alpha() * look.color.alpha());
+    for (mut t, mut f, mut c, mut shadow) in &mut q.p1() {
         set_text(&mut t, caption_text);
+        if *f != face {
+            *f = face.clone();
+        }
+        set_color(&mut c, look.color);
+        // The shadow fades with the words, or it would outlast them.
+        if shadow.color != shade {
+            shadow.color = shade;
+        }
     }
 }
 
@@ -867,5 +917,46 @@ pub(crate) fn note_panel(
     }
     for (mut t, mut c) in &mut texts.p4() {
         apply(4, &mut t, &mut c);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HEARD: f32 = 4.5;
+
+    #[test]
+    fn a_whistle_caption_looks_like_the_band_it_was_heard_in() {
+        let loud = caption_look(Some(WhistleVariant::Loud), HEARD);
+        let mid = caption_look(Some(WhistleVariant::Middling), HEARD);
+        let faint = caption_look(Some(WhistleVariant::Faint), HEARD);
+        // Loud (so he is far) is the largest and the warmest; faint (so he
+        // is near) the smallest and the palest; the middling one between.
+        assert!(loud.size > mid.size && mid.size > faint.size);
+        let warmth = |l: CaptionLook| {
+            let c = l.color.to_srgba();
+            c.red - c.blue
+        };
+        assert!(warmth(loud) > warmth(mid) && warmth(mid) >= warmth(faint));
+        assert!(faint.color.alpha() < loud.color.alpha());
+    }
+
+    #[test]
+    fn only_the_faint_caption_fades_and_only_as_it_ends() {
+        for band in [WhistleVariant::Loud, WhistleVariant::Middling] {
+            assert_eq!(
+                caption_look(Some(band), HEARD),
+                caption_look(Some(band), 0.1),
+                "{band:?} holds its look to the end"
+            );
+        }
+        // The danger cue stays readable for most of the line, then thins
+        // away to nothing.
+        let faint = |left| caption_look(Some(WhistleVariant::Faint), left).color.alpha();
+        assert_eq!(faint(HEARD), faint(HEARD - 1.5));
+        assert!(faint(1.0) < faint(HEARD));
+        assert!(faint(0.3) < faint(1.0));
+        assert!(faint(0.0) < 0.01);
     }
 }

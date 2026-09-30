@@ -76,6 +76,7 @@ fn drift(
     layout: Res<LayoutRes>,
     tuning: Res<TuningRes>,
     clock: Res<StormClock>,
+    menu: Res<super::menu::Menu>,
     mut night: ResMut<TitleNight>,
     mut camera: Single<&mut Transform, With<Player>>,
     fade: Single<(&mut BackgroundColor, &mut Visibility), With<TitleFade>>,
@@ -115,6 +116,8 @@ fn drift(
     } else {
         black
     };
+    // The calibration's hats must never dim with the stops.
+    let black = if menu.calibrating(Flow::Title) { 0.0 } else { black };
     let want = Color::srgba(0.0, 0.0, 0.0, black.clamp(0.0, 1.0));
     if fade_bg.0 != want {
         fade_bg.0 = want;

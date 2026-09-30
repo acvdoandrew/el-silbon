@@ -14,11 +14,12 @@ use bevy::ecs::system::SystemParam;
 use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
-use bevy::window::{MonitorSelection, PrimaryWindow, WindowMode};
 
 use super::{AMBER, DIM, Fonts, INK, PALE_BLUE, RED, font, set_text, set_vis};
-use crate::app::{Flow, GameSet, Launch, ProfileRes, Settings, Truth, TuningRes};
+use crate::app::{DisplayMode, Flow, GameSet, Launch, ProfileRes, Settings, Truth, TuningRes, VolumePreview};
+use crate::display;
 use crate::encounter::PagesRead;
+use crate::mix::Bus;
 use crate::net::transport::Mode;
 use crate::net::{LeaveRun, NetControl, Network, StartRun, protocol::Action};
 use crate::tuning::Night;
@@ -33,7 +34,15 @@ pub(crate) enum Page {
     Join,
     Journal,
     Reading(u8),
+    /// The settings, in three groups (each its own page, so none outgrows
+    /// the pause card).
     Settings,
+    Video,
+    Audio,
+    Controls,
+    /// Brightness and contrast over three hats (`calibrate`); offered once
+    /// on the first title screen.
+    Calibrate,
     HowTo,
     Credits,
     Pause,
@@ -53,14 +62,31 @@ enum Field {
 /// A setting a row adjusts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Knob {
-    Volume,
+    Master,
+    Music,
+    Ambience,
+    Effects,
     Sensitivity,
     InvertY,
     Fov,
     Brightness,
+    Contrast,
     HeadBob,
     Captions,
-    Fullscreen,
+    DisplayMode,
+}
+
+impl Knob {
+    /// The volume slider this knob is, if it is one.
+    fn bus(self) -> Option<Bus> {
+        match self {
+            Knob::Master => Some(Bus::Master),
+            Knob::Music => Some(Bus::Music),
+            Knob::Ambience => Some(Bus::Ambience),
+            Knob::Effects => Some(Bus::Effects),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +97,8 @@ enum Act {
     Survivor,
     Edit(Field),
     Adjust(Knob),
+    /// Brightness and contrast back to the night as graded.
+    PictureDefaults,
     Solo,
     Host,
     Join,
@@ -178,6 +206,11 @@ impl Menu {
     pub(crate) fn jump(&mut self, page: Page) {
         self.reset_to(page);
     }
+    /// The calibration page is on screen. `page` outlives a closed menu, so
+    /// anything that hides the night for it asks this, never the page alone.
+    pub(crate) fn calibrating(&self, flow: Flow) -> bool {
+        menu_up(&flow) && self.page == Page::Calibrate
+    }
 }
 
 /// This machine's address on the local network, as friends would reach it
@@ -253,7 +286,7 @@ Thank you for playing.";
 
 /// Everything a menu choice may change.
 #[derive(SystemParam)]
-struct Effects<'w, 's> {
+struct Effects<'w> {
     next: ResMut<'w, NextState<Flow>>,
     starts: MessageWriter<'w, StartRun>,
     leaves: MessageWriter<'w, LeaveRun>,
@@ -262,7 +295,7 @@ struct Effects<'w, 's> {
     settings: ResMut<'w, Settings>,
     profile: ResMut<'w, ProfileRes>,
     tuning: Res<'w, TuningRes>,
-    window: Query<'w, 's, &'static mut Window, With<PrimaryWindow>>,
+    preview: MessageWriter<'w, VolumePreview>,
 }
 
 /// What the page says about the world right now.
@@ -282,6 +315,21 @@ fn rows(menu: &Menu, settings: &Settings, ctx: &Context, profile: &ProfileRes) -
         } else {
             text.to_string()
         }
+    };
+    let on = |b: bool| if b { "‹ On ›" } else { "‹ Off ›" };
+    let brightness = || {
+        Row::value(
+            "Brightness",
+            format!("‹ {:+.1} ›", settings.brightness),
+            Act::Adjust(Knob::Brightness),
+        )
+    };
+    let contrast = || {
+        Row::value(
+            "Contrast",
+            format!("‹ {:.2} ›", settings.contrast),
+            Act::Adjust(Knob::Contrast),
+        )
     };
     match menu.page {
         Page::Main => (
@@ -400,65 +448,115 @@ fn rows(menu: &Menu, settings: &Settings, ctx: &Context, profile: &ProfileRes) -
             )
         }
         Page::Reading(id) => {
+            // The kept copy has no digits: a page read on an earlier night
+            // must not tell tonight's padlock.
             let page = crate::lore::note(id);
-            let code = crate::sim::lock_code(ctx.launch.seed);
             (
                 format!("{} — {}", page.medium.label(), page.title),
                 format!(
                     "{}\n\n{}\n\n{}",
-                    crate::lore::fill(page.es, code),
+                    crate::lore::keep(page.es),
                     page.by,
-                    crate::lore::fill(page.en, code)
+                    crate::lore::keep(page.en)
                 ),
                 vec![Row::go("Back", Act::Back)],
             )
         }
-        Page::Settings => {
-            let on = |b: bool| if b { "On" } else { "Off" };
+        Page::Settings => (
+            "Settings".into(),
+            "Saved as you change them.".into(),
+            vec![
+                Row::go("Video", Act::Go(Page::Video)),
+                Row::go("Audio", Act::Go(Page::Audio)),
+                Row::go("Controls", Act::Go(Page::Controls)),
+                Row::go("Calibrate brightness", Act::Go(Page::Calibrate)),
+                Row::go("Back", Act::Back),
+            ],
+        ),
+        Page::Video => {
+            let display = if ctx.launch.windowed {
+                // `--windowed` keeps this launch in a window and leaves the
+                // saved choice alone, so the row cannot change it.
+                Row::value("Display mode", "Window (--windowed)".into(), Act::None).off()
+            } else {
+                let mode = match settings.display_mode {
+                    DisplayMode::Fullscreen => "Fullscreen",
+                    DisplayMode::Window => "Window",
+                };
+                Row::value("Display mode", format!("‹ {mode} ›"), Act::Adjust(Knob::DisplayMode))
+            };
             (
-                "Settings".into(),
+                "Video".into(),
                 "Saved as you change them.".into(),
                 vec![
-                    Row::value(
-                        "Volume",
-                        format!("‹ {:.0}% ›", settings.volume * 100.0),
-                        Act::Adjust(Knob::Volume),
-                    ),
-                    Row::value(
-                        "Mouse sensitivity",
-                        format!("‹ {:.1}× ›", settings.sensitivity),
-                        Act::Adjust(Knob::Sensitivity),
-                    ),
-                    Row::value(
-                        "Invert mouse Y",
-                        on(settings.invert_y).into(),
-                        Act::Adjust(Knob::InvertY),
-                    ),
+                    display,
                     Row::value(
                         "Field of view",
                         format!("‹ {:.0}° ›", settings.fov),
                         Act::Adjust(Knob::Fov),
                     ),
-                    Row::value(
-                        "Brightness",
-                        format!("‹ {:+.1} ›", settings.brightness),
-                        Act::Adjust(Knob::Brightness),
-                    ),
+                    brightness(),
+                    contrast(),
+                    Row::go("Calibrate brightness", Act::Go(Page::Calibrate)),
                     Row::value("Head bob", on(settings.head_bob).into(), Act::Adjust(Knob::HeadBob)),
+                    Row::go("Back", Act::Back),
+                ],
+            )
+        }
+        Page::Calibrate => (
+            "Brightness".into(),
+            format!(
+                "Raise Brightness until the middle hat is just barely visible. If the left one shows too, \
+                 raise Contrast until it is gone. The right one should be plain.{}",
+                if solo {
+                    ""
+                } else {
+                    "\nThe shared night goes on behind this page."
+                }
+            ),
+            vec![
+                brightness(),
+                contrast(),
+                Row::go("Defaults", Act::PictureDefaults),
+                Row::go("Done", Act::Back),
+            ],
+        ),
+        Page::Audio => {
+            let level = |v: f32| format!("‹ {:.0}% ›", v * 100.0);
+            (
+                "Audio".into(),
+                "Saved as you change them. His whistle follows the master volume alone.".into(),
+                vec![
+                    Row::value("Master volume", level(settings.master), Act::Adjust(Knob::Master)),
+                    Row::value("Music", level(settings.music), Act::Adjust(Knob::Music)),
+                    Row::value("Ambience", level(settings.ambience), Act::Adjust(Knob::Ambience)),
+                    Row::value("Effects", level(settings.effects), Act::Adjust(Knob::Effects)),
                     Row::value(
                         "Whistle captions",
                         on(settings.captions).into(),
                         Act::Adjust(Knob::Captions),
                     ),
-                    Row::value(
-                        "Display",
-                        if settings.fullscreen { "Fullscreen" } else { "Window" }.into(),
-                        Act::Adjust(Knob::Fullscreen),
-                    ),
                     Row::go("Back", Act::Back),
                 ],
             )
         }
+        Page::Controls => (
+            "Controls".into(),
+            "Saved as you change them.".into(),
+            vec![
+                Row::value(
+                    "Mouse sensitivity",
+                    format!("‹ {:.1}× ›", settings.sensitivity),
+                    Act::Adjust(Knob::Sensitivity),
+                ),
+                Row::value(
+                    "Invert mouse Y",
+                    on(settings.invert_y).into(),
+                    Act::Adjust(Knob::InvertY),
+                ),
+                Row::go("Back", Act::Back),
+            ],
+        ),
         Page::HowTo => ("How to play".into(), HOW_TO.into(), vec![Row::go("Back", Act::Back)]),
         Page::Credits => ("Credits".into(), CREDITS.into(), vec![Row::go("Back", Act::Back)]),
         Page::Pause => {
@@ -584,8 +682,10 @@ fn build(
     commands.entity(root).despawn_children();
     // The title screen keeps its rail; a paused night shows a card; after a
     // night the choices sit under the outcome (other pages there are cards).
-    let title_screen = flow == Flow::Title;
-    let in_run_card = flow == Flow::Paused || (flow == Flow::Outcome && menu.page != Page::Outcome);
+    // The calibration leaves the screen to its hats, anywhere.
+    let calibrating = menu.page == Page::Calibrate;
+    let title_screen = flow == Flow::Title && !calibrating;
+    let in_run_card = !calibrating && (flow == Flow::Paused || (flow == Flow::Outcome && menu.page != Page::Outcome));
     let reading = matches!(menu.page, Page::Reading(_) | Page::HowTo | Page::Credits);
     commands.entity(root).with_children(|r| {
         // Where the rows sit: a dark rail on the left of the title screen,
@@ -597,7 +697,39 @@ fn build(
         };
         let mut bg = BackgroundColor(Color::NONE);
         let mut gradient = None;
-        if title_screen {
+        if calibrating {
+            // Low, dark and out of the way: bright words beside the hats
+            // would change what black looks like.
+            column.position_type = PositionType::Absolute;
+            column.left = percent(50);
+            column.bottom = percent(4);
+            column.width = px(520);
+            column.margin = UiRect::left(px(-260));
+            column.padding = UiRect::all(px(18));
+            bg = BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.85));
+            for (i, label) in ["should vanish", "barely visible", "plainly seen"]
+                .into_iter()
+                .enumerate()
+            {
+                r.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: percent((1.0 + super::calibrate::HAT_X[i]) * 50.0),
+                        top: percent(super::calibrate::LABEL_TOP),
+                        width: px(220),
+                        margin: UiRect::left(px(-110)),
+                        justify_content: JustifyContent::Center,
+                        ..default()
+                    },
+                    children![(
+                        Text::new(label),
+                        font(&fonts.sans, 15.0),
+                        TextColor(DIM),
+                        TextLayout::justify(Justify::Center),
+                    )],
+                ));
+            }
+        } else if title_screen {
             column.position_type = PositionType::Absolute;
             column.left = px(0);
             column.top = px(0);
@@ -770,15 +902,29 @@ fn build(
 // -------------------------------------------------------------------- systems
 
 /// The menus follow the flow: the title's main page on the title screen, the
-/// pause page when paused, the choices after a night.
-fn follow_flow(state: Res<State<Flow>>, mut menu: ResMut<Menu>, mut last: Local<Option<Flow>>) {
+/// pause page when paused, the choices after a night. The first title
+/// screen a player's profile sees opens on the calibration, once (Done
+/// leads on to the main page); the debug drivers never keep a profile.
+fn follow_flow(
+    state: Res<State<Flow>>,
+    mut menu: ResMut<Menu>,
+    mut profile: ResMut<ProfileRes>,
+    mut last: Local<Option<Flow>>,
+) {
     let now = *state.get();
     if *last == Some(now) {
         return;
     }
     *last = Some(now);
     match now {
-        Flow::Title => menu.reset_to(Page::Main),
+        Flow::Title => {
+            menu.reset_to(Page::Main);
+            if profile.persist && !profile.profile.calibrated {
+                menu.open(Page::Calibrate);
+                profile.profile.calibrated = true;
+                profile.save();
+            }
+        }
         Flow::Paused => menu.reset_to(Page::Pause),
         Flow::Outcome => menu.reset_to(Page::Outcome),
         _ => {}
@@ -824,6 +970,13 @@ fn draw(
     let (heading, body, rows) = rows(&menu, &settings, &ctx, &profile);
     if menu.focus >= rows.len() {
         menu.focus = rows.len().saturating_sub(1);
+    }
+    // A page opens on its first row; one that cannot be chosen hands the
+    // focus to the first that can (Enter must never press a disabled row).
+    if rows.get(menu.focus).is_some_and(|r| !r.enabled)
+        && let Some(first) = rows.iter().position(|r| r.enabled)
+    {
+        menu.focus = first;
     }
     let shape = (menu.page, rows.len(), *state.get());
     if menu.built != Some(shape) {
@@ -913,8 +1066,7 @@ fn navigate(
     mut menu: ResMut<Menu>,
     mut fx: Effects,
 ) {
-    let driven = ctx.launch.smoke || ctx.launch.photos || ctx.launch.net_smoke || ctx.launch.menu_shots;
-    if driven || !menu_up(state.get()) {
+    if ctx.launch.driven() || !menu_up(state.get()) {
         typed.clear();
         return;
     }
@@ -1058,7 +1210,18 @@ fn activate(act: Act, dir: i32, menu: &mut Menu, ctx: &Context, fx: &mut Effects
             menu.built = None;
         }
         Act::Edit(_) => {}
-        Act::Adjust(knob) => adjust(knob, dir, &mut fx.settings, &fx.tuning, &mut fx.window),
+        Act::PictureDefaults => {
+            let fresh = Settings::default();
+            fx.settings.brightness = fresh.brightness;
+            fx.settings.contrast = fresh.contrast;
+        }
+        Act::Adjust(knob) => {
+            adjust(knob, dir, &mut fx.settings, &fx.tuning);
+            // Heard at once, even at the end of its travel.
+            if let Some(bus) = knob.bus() {
+                fx.preview.write(VolumePreview(bus));
+            }
+        }
         Act::Solo => {
             fx.starts.write(StartRun {
                 mode: Mode::Solo,
@@ -1112,42 +1275,27 @@ fn activate(act: Act, dir: i32, menu: &mut Menu, ctx: &Context, fx: &mut Effects
     }
 }
 
-fn adjust(
-    knob: Knob,
-    dir: i32,
-    s: &mut Settings,
-    tuning: &TuningRes,
-    window: &mut Query<&mut Window, With<PrimaryWindow>>,
-) {
+fn adjust(knob: Knob, dir: i32, s: &mut Settings, tuning: &TuningRes) {
     let d = dir as f32;
     let (smin, smax) = tuning.0.sensitivity_range;
     match knob {
-        Knob::Volume => s.volume = (((s.volume + 0.1 * d) * 10.0).round() / 10.0).clamp(0.0, 1.0),
+        Knob::Master => s.master = crate::mix::step(s.master, dir),
+        Knob::Music => s.music = crate::mix::step(s.music, dir),
+        Knob::Ambience => s.ambience = crate::mix::step(s.ambience, dir),
+        Knob::Effects => s.effects = crate::mix::step(s.effects, dir),
         Knob::Sensitivity => {
             s.sensitivity = (((s.sensitivity + 0.1 * d) * 10.0).round() / 10.0).clamp(smin, smax);
         }
         Knob::InvertY => s.invert_y = !s.invert_y,
         Knob::Fov => s.fov = (s.fov + 4.0 * d).clamp(56.0, 100.0),
-        Knob::Brightness => s.brightness = (((s.brightness + 0.1 * d) * 10.0).round() / 10.0).clamp(-1.0, 1.0),
+        Knob::Brightness => {
+            s.brightness = display::step(s.brightness, dir, display::BRIGHTNESS_STEP, display::BRIGHTNESS_RANGE);
+        }
+        Knob::Contrast => s.contrast = display::step(s.contrast, dir, display::CONTRAST_STEP, display::CONTRAST_RANGE),
         Knob::HeadBob => s.head_bob = !s.head_bob,
         Knob::Captions => s.captions = !s.captions,
-        Knob::Fullscreen => {
-            s.fullscreen = !s.fullscreen;
-            apply_window(s, window);
-        }
-    }
-}
-
-fn apply_window(s: &Settings, window: &mut Query<&mut Window, With<PrimaryWindow>>) {
-    for mut w in window.iter_mut() {
-        let want = if s.fullscreen {
-            WindowMode::BorderlessFullscreen(MonitorSelection::Current)
-        } else {
-            WindowMode::Windowed
-        };
-        if w.mode != want {
-            w.mode = want;
-        }
+        // The window follows in `app::apply_display`.
+        Knob::DisplayMode => s.display_mode = s.display_mode.toggled(),
     }
 }
 
@@ -1161,7 +1309,6 @@ fn remember(
     state: Res<State<Flow>>,
     truth: Res<Truth>,
     net: Res<Network>,
-    mut window: Query<&mut Window, With<PrimaryWindow>>,
     mut started: Local<bool>,
     mut last: Local<Option<Flow>>,
 ) {
@@ -1169,7 +1316,6 @@ fn remember(
         // Pages found on earlier nights are already in the journal.
         *started = true;
         read.0.extend(profile.profile.pages.iter().copied());
-        apply_window(&settings, &mut window);
     }
     let mut dirty = false;
     if settings.is_changed() && profile.profile.settings != *settings {

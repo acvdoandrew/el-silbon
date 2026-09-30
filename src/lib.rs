@@ -11,6 +11,8 @@
 //! - [`skill`]: skill checks while working a long task.
 //! - [`director`]: when the night sends one player an omen.
 //! - [`survivor`]: who each player is, and how a party shares them out.
+//! - [`mix`]: the volume sliders' decibel curve, the buses and the glide.
+//! - [`display`]: brightness and contrast as the camera's grade.
 //! - [`script`], [`photos`]: DEBUG smoke route and photo viewpoints.
 //!
 //! Bevy adapters and presentation: [`app`], [`player`], [`encounter`],
@@ -27,9 +29,11 @@ pub mod body;
 pub mod control;
 pub mod debug;
 pub mod director;
+pub mod display;
 pub mod encounter;
 pub mod geometry;
 pub mod lore;
+pub mod mix;
 pub mod net;
 pub mod noise;
 pub mod perception;

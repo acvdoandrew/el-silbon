@@ -39,8 +39,10 @@ an API — do not mix older Bevy idioms.
 ## Architecture conventions
 
 - **Pure truth, no ECS**: `tuning`, `geometry`, `sim`, `perception`, `control`,
-  `script`, `rng`, `noise`, `body`, `storm`, `skill` (skill checks) and
-  `director` (omens) stay headless and unit-tested.
+  `script`, `rng`, `noise`, `body`, `storm`, `skill` (skill checks),
+  `director` (omens), `mix` (volume curve, buses, glide) and `display`
+  (brightness and contrast as the camera's grade) stay headless and
+  unit-tested.
   ECS modules (`app`, `player`, `encounter`, `audio`, `ui`,
   `world`, `debug`) adapt them.
 - **One layout**: every coordinate (walls, openings, fences, ceiba, props,

@@ -1,5 +1,6 @@
 //! App assembly: launch options, shared resources, the run flow
-//! (briefing → playing ⇄ paused → outcome), cursor capture and focus safety.
+//! (briefing → playing ⇄ paused → outcome), the window's mode, cursor capture
+//! and focus safety.
 //! Gameplay truth lives in `sim` and `net::session`; this module only wires
 //! the presentation to it.
 
@@ -8,9 +9,13 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 use bevy::time::TimeUpdateStrategy;
-use bevy::window::{CursorGrabMode, CursorOptions, PresentMode, PrimaryWindow, WindowFocused, WindowResolution};
+use bevy::window::{
+    CursorGrabMode, CursorOptions, Monitor, MonitorSelection, OnMonitor, PresentMode, PrimaryMonitor, PrimaryWindow,
+    WindowFocused, WindowMode, WindowPosition, WindowResolution,
+};
 
 use crate::geometry::Layout;
+use crate::mix::Bus;
 use crate::net::transport::Mode;
 use crate::perception::WhistlePhrase;
 use crate::sim::{Encounter, Event};
@@ -32,11 +37,24 @@ pub struct Truth {
 }
 
 /// Player-adjustable settings (pause menu).
+///
+/// The volume sliders are positions (0..1) on the curve in `mix`. The
+/// master replaced an older linear `volume`, which is ignored on load, so
+/// a stale saved level starts again from the default. `display_mode`
+/// likewise replaced a `fullscreen` flag that every earlier build saved as
+/// off without the player ever choosing it: that key is ignored too, so an
+/// old profile opens fullscreen once and keeps whatever is chosen after.
 #[derive(Resource, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Master volume, 0..1.
-    pub volume: f32,
+    /// Master volume: every sound, and the only one his whistle follows.
+    pub master: f32,
+    /// The title theme, the dread and the omens' stingers.
+    pub music: f32,
+    /// The night itself: insects, rain, thunder, frogs, the windmill.
+    pub ambience: f32,
+    /// Footsteps, machines, the dog and everything handled.
+    pub effects: f32,
     /// Mouse sensitivity multiplier.
     pub sensitivity: f32,
     /// Show whistle captions (perceived impression only).
@@ -45,26 +63,70 @@ pub struct Settings {
     pub invert_y: bool,
     /// Vertical field of view, degrees.
     pub fov: f32,
-    /// Brightness offset (−1 darker .. +1 brighter), in exposure stops/2.
+    /// A shadow gamma (see `display`): −1 darker .. +1 lifts the darks by
+    /// some 2.5 stops; white holds.
     pub brightness: f32,
+    /// Log-contrast about the night's fog level (see `display`): 1 is the
+    /// night as graded.
+    pub contrast: f32,
     /// The head rises and falls as you walk.
     pub head_bob: bool,
-    /// Borderless fullscreen rather than a window.
-    pub fullscreen: bool,
+    /// Over the whole screen or in a window (see [`display_mode`] for what
+    /// it means on a given launch).
+    pub display_mode: DisplayMode,
+}
+
+/// How the player wants the game shown.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DisplayMode {
+    /// Borderless over the whole screen (a new player's choice).
+    #[default]
+    Fullscreen,
+    /// A window of the launch size.
+    Window,
+}
+
+impl DisplayMode {
+    /// The other one.
+    pub fn toggled(self) -> Self {
+        match self {
+            DisplayMode::Fullscreen => DisplayMode::Window,
+            DisplayMode::Window => DisplayMode::Fullscreen,
+        }
+    }
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            volume: 0.8,
+            master: crate::mix::DEFAULT_MASTER,
+            music: 1.0,
+            ambience: 1.0,
+            effects: 1.0,
             sensitivity: 1.0,
             captions: true,
             invert_y: false,
             fov: 68.0,
             brightness: 0.0,
+            contrast: 1.0,
             head_bob: true,
-            fullscreen: false,
+            display_mode: DisplayMode::Fullscreen,
         }
+    }
+}
+
+impl Settings {
+    /// The linear gain of a sound on `bus`: headroom, the master, then the
+    /// bus's own slider (the master bus has none).
+    pub fn gain(&self, bus: Bus) -> f32 {
+        let own = match bus {
+            Bus::Master => 1.0,
+            Bus::Music => self.music,
+            Bus::Ambience => self.ambience,
+            Bus::Effects => self.effects,
+        };
+        crate::mix::gain(self.master, own)
     }
 }
 
@@ -97,6 +159,25 @@ pub struct Launch {
     pub trailer: bool,
     /// `--survivor`: who to ask to be; otherwise the profile's choice.
     pub survivor: Option<crate::survivor::Survivor>,
+    /// `--windowed`: stay in a window this launch, whatever the settings
+    /// say (hands-on testing). The saved choice is left alone: the menu
+    /// shows the row but will not change it.
+    pub windowed: bool,
+}
+
+impl Launch {
+    /// One of the debug drivers (`--smoke`, `--tour`, `--photos`,
+    /// `--trailer`, `--menu-shots`, `--net-smoke`) runs this launch: a
+    /// window of the given size, the desktop's pointer left alone, the
+    /// profile never written.
+    pub fn driven(&self) -> bool {
+        self.smoke || self.net_smoke || self.photos || self.menu_shots
+    }
+
+    /// This launch keeps a window whatever the settings say.
+    pub fn forces_window(&self) -> bool {
+        self.windowed || self.driven()
+    }
 }
 
 impl Default for Launch {
@@ -116,6 +197,7 @@ impl Default for Launch {
             menu_shots: false,
             trailer: false,
             survivor: None,
+            windowed: false,
         }
     }
 }
@@ -131,6 +213,9 @@ USAGE: el_silbon [--seed N] [--size WxH] [--shots DIR] [--smoke]
   --night N     gentle, normal (default) or hard (every peer must agree)
   --play        skip the title screen and go straight into a solo night
   --size WxH    window size (default 1600x900)
+  --windowed    play in a window this time, keeping the saved choice (the game
+                follows Settings > Video > Display mode, fullscreen at first;
+                the debug routes always use a window)
   --shots DIR   screenshot folder for F12 and the debug routes (default ./screenshots)
   --tour        DEBUG: walk to every place, then play the scripted full run
   --smoke       DEBUG: play the deterministic scripted full run (win, restart,
@@ -167,6 +252,7 @@ impl Launch {
                     launch.photos = true;
                 }
                 "--play" => play = true,
+                "--windowed" => launch.windowed = true,
                 "--host" | "--join" => {
                     if launch.network != Mode::Solo {
                         return Err("Choose either --host or --join, not both.".into());
@@ -263,6 +349,11 @@ pub struct EncounterMsg(pub Event);
 #[derive(Message, Clone, Copy, Debug)]
 pub struct WhistleMsg(pub WhistlePhrase);
 
+/// A volume slider moved: let the player hear that bus now (never a
+/// whistle; a menu must not cue him).
+#[derive(Message, Clone, Copy, Debug)]
+pub struct VolumePreview(pub Bus);
+
 /// What the game remembers between launches, and whether it may write it
 /// (never during the automated routes).
 #[derive(Resource)]
@@ -358,13 +449,16 @@ pub fn build_app(launch: Launch) -> App {
     let launch_trailer = launch.trailer;
     // A player's settings and journal come back each launch; the automated
     // routes run on the defaults and never write the profile.
-    let persist = !automated && !launch.net_smoke && !launch.menu_shots;
+    let persist = !launch.driven();
     let profile = if persist {
         crate::profile::load()
     } else {
         crate::profile::Profile::default()
     };
     let menu = launch.menu;
+    // Made in the saved mode, so a fullscreen player never sees a window
+    // first (`Primary`: a window being made has no current monitor yet).
+    let mode = display_mode(&profile.settings, &launch, MonitorSelection::Primary);
 
     let mut app = App::new();
     let present_mode = if automated {
@@ -378,6 +472,7 @@ pub fn build_app(launch: Launch) -> App {
                 primary_window: Some(Window {
                     title: "El Silbón — The Return".to_string(),
                     resolution: WindowResolution::new(launch.size.0, launch.size.1),
+                    mode,
                     present_mode,
                     ..default()
                 }),
@@ -419,6 +514,7 @@ pub fn build_app(launch: Launch) -> App {
         .insert_state(if menu { Flow::Title } else { Flow::Briefing })
         .add_message::<EncounterMsg>()
         .add_message::<WhistleMsg>()
+        .add_message::<VolumePreview>()
         .add_message::<RunReset>()
         .init_resource::<StormClock>()
         .add_systems(Update, advance_storm.in_set(GameSet::Weather))
@@ -450,8 +546,72 @@ pub fn build_app(launch: Launch) -> App {
         .add_systems(
             Update,
             (pause_keys, pause_on_focus_loss).chain().in_set(GameSet::Control),
-        );
+        )
+        .add_systems(Update, apply_display.in_set(GameSet::Present));
     app
+}
+
+/// How the window shows: borderless over the whole screen when the player
+/// wants it, except for the debug drivers and `--windowed`, which keep a
+/// window of the launch size. `Settings.display_mode` is the only choice;
+/// this decides what it means for this launch. `monitor` is `Primary` at
+/// creation (a window being made has no current monitor yet).
+pub fn display_mode(settings: &Settings, launch: &Launch, monitor: MonitorSelection) -> WindowMode {
+    match settings.display_mode {
+        DisplayMode::Fullscreen if !launch.forces_window() => WindowMode::BorderlessFullscreen(monitor),
+        _ => WindowMode::Windowed,
+    }
+}
+
+/// The share of the screen a restored window may take, leaving room for
+/// its title bar and the taskbar.
+const WINDOW_ROOM: f32 = 0.85;
+
+/// The logical size of a window of the launch `size` on a screen of
+/// `screen` logical pixels: never larger than asked, shrunk with its shape
+/// kept to fit well inside the screen (1600×900 is larger than a 1080p
+/// laptop at 125 % scaling). An unknown screen leaves the size alone.
+pub fn fit_window(size: (u32, u32), screen: Option<Vec2>) -> Vec2 {
+    let size = Vec2::new(size.0 as f32, size.1 as f32);
+    let Some(screen) = screen.filter(|s| s.is_finite() && s.min_element() > 0.0) else {
+        return size;
+    };
+    let scale = (WINDOW_ROOM * screen / size).min_element().min(1.0);
+    (size * scale).round()
+}
+
+/// The window follows the settings (it was made in their mode already).
+/// Leaving fullscreen brings back a centred window of the launch size,
+/// fitted to the screen it was on: one made fullscreen has no size or
+/// place of its own to return to.
+fn apply_display(
+    settings: Res<Settings>,
+    launch: Res<Launch>,
+    window: Single<(&mut Window, Option<&OnMonitor>), With<PrimaryWindow>>,
+    monitors: Query<(&Monitor, Has<PrimaryMonitor>)>,
+) {
+    if !settings.is_changed() {
+        return;
+    }
+    let (mut window, on) = window.into_inner();
+    let want = display_mode(&settings, &launch, MonitorSelection::Current);
+    // Only fullscreen or not counts: it was made on the primary monitor.
+    let windowed = matches!(want, WindowMode::Windowed);
+    if matches!(window.mode, WindowMode::Windowed) == windowed {
+        return;
+    }
+    window.mode = want;
+    if windowed {
+        // The screen it is leaving, else the main one (a window learns its
+        // monitor a moment after it is made).
+        let screen = on
+            .and_then(|m| monitors.get(m.0).ok())
+            .or_else(|| monitors.iter().find(|&(_, primary)| primary))
+            .map(|(m, _)| m.physical_size().as_vec2() / m.scale_factor as f32);
+        let size = fit_window(launch.size, screen);
+        window.resolution.set(size.x, size.y);
+        window.position = WindowPosition::Centered(MonitorSelection::Current);
+    }
 }
 
 /// The sky follows the run clock while a run is on, and simply keeps moving
@@ -478,7 +638,7 @@ pub(crate) fn advance_storm(
 }
 
 fn capture_cursor(launch: Res<Launch>, mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>) {
-    if launch.smoke || launch.net_smoke || launch.photos || launch.menu_shots {
+    if launch.driven() {
         return; // never grab the desktop's pointer during automation
     }
     cursor.visible = false;
@@ -529,13 +689,7 @@ fn pause_on_focus_loss(
     mut next: ResMut<NextState<Flow>>,
 ) {
     let lost = focus.read().any(|f| !f.focused);
-    if lost
-        && !launch.smoke
-        && !launch.net_smoke
-        && !launch.photos
-        && !launch.menu_shots
-        && *state.get() == Flow::Playing
-    {
+    if lost && !launch.driven() && *state.get() == Flow::Playing {
         next.set(Flow::Paused);
     }
 }
@@ -586,5 +740,145 @@ mod tests {
         assert!(args("--host 127.0.0.1:5000 --join 127.0.0.1:5000").is_err());
         assert!(args("--host 127.0.0.1:5000 --smoke").is_err());
         assert!(matches!(args("--host 127.0.0.1:5000").unwrap().network, Mode::Host(_)));
+        assert!(args("--windowed").unwrap().windowed);
+    }
+
+    #[test]
+    fn a_new_player_starts_fullscreen_and_the_debug_drivers_never_do() {
+        let fresh = Settings::default();
+        let full = |settings: &Settings, line: &str| {
+            let launch = args(line).unwrap();
+            !matches!(
+                display_mode(settings, &launch, MonitorSelection::Primary),
+                WindowMode::Windowed
+            )
+        };
+        for line in ["", "--play", "--seed 7 --night hard", "--host 127.0.0.1:5000"] {
+            assert!(full(&fresh, line), "a new profile fills the screen: {line:?}");
+        }
+        for line in [
+            "--windowed",
+            "--play --windowed",
+            "--smoke",
+            "--tour",
+            "--photos",
+            "--trailer",
+            "--menu-shots",
+            "--host 127.0.0.1:5000 --net-smoke",
+        ] {
+            assert!(!full(&fresh, line), "{line:?} keeps its window");
+        }
+        let chosen = Settings {
+            display_mode: DisplayMode::Window,
+            ..Settings::default()
+        };
+        assert!(!full(&chosen, ""), "a player who chose a window keeps it");
+        assert_eq!(DisplayMode::Window.toggled().toggled(), DisplayMode::Window);
+    }
+
+    #[test]
+    fn a_restored_window_fits_the_screen_it_is_on() {
+        let asked = (1600, 900);
+        // A 1080p screen at 100 %: room enough, the window is as asked.
+        assert_eq!(
+            fit_window(asked, Some(Vec2::new(1920.0, 1080.0))),
+            Vec2::new(1600.0, 900.0)
+        );
+        // At 125 % (1536×864 logical) and 150 %: smaller, same shape, inside.
+        for screen in [
+            Vec2::new(1536.0, 864.0),
+            Vec2::new(1280.0, 720.0),
+            Vec2::new(900.0, 1600.0),
+        ] {
+            let got = fit_window(asked, Some(screen));
+            assert!(got.x < screen.x && got.y < screen.y, "{got} inside {screen}");
+            assert!((got.x / got.y - 16.0 / 9.0).abs() < 0.01, "{got} keeps its shape");
+        }
+        // An unknown or nonsense screen leaves the asked size.
+        assert_eq!(fit_window(asked, None), Vec2::new(1600.0, 900.0));
+        assert_eq!(fit_window(asked, Some(Vec2::ZERO)), Vec2::new(1600.0, 900.0));
+    }
+
+    /// The primary window after one pass of `apply_display`: it starts in
+    /// `mode` on a 1080p screen at 125 % scaling, and the player wants
+    /// `choice` on a launch from `line`.
+    fn displayed(mode: WindowMode, choice: DisplayMode, line: &str) -> Window {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        let screen = world
+            .spawn((
+                Monitor {
+                    name: None,
+                    physical_height: 1080,
+                    physical_width: 1920,
+                    physical_position: IVec2::ZERO,
+                    refresh_rate_millihertz: None,
+                    scale_factor: 1.25,
+                    video_modes: Vec::new(),
+                },
+                PrimaryMonitor,
+            ))
+            .id();
+        let mut window = Window { mode, ..default() };
+        window.resolution.set_scale_factor(1.25);
+        window.resolution.set_physical_resolution(1920, 1080);
+        let id = world.spawn((window, PrimaryWindow, OnMonitor(screen))).id();
+        world.insert_resource(Settings {
+            display_mode: choice,
+            ..Settings::default()
+        });
+        world.insert_resource(args(line).unwrap());
+        world.run_system_once(apply_display).expect("one primary window");
+        world.get::<Window>(id).expect("still there").clone()
+    }
+
+    #[test]
+    fn the_window_follows_the_display_choice() {
+        let full = WindowMode::BorderlessFullscreen(MonitorSelection::Primary);
+        // Made fullscreen and still wanted so: untouched (not moved from the
+        // primary screen to the current one, not resized).
+        let kept = displayed(full, DisplayMode::Fullscreen, "");
+        assert_eq!(kept.mode, full);
+        assert_eq!(kept.position, WindowPosition::Automatic);
+        assert_eq!(kept.resolution.physical_size(), UVec2::new(1920, 1080));
+        // Leaving it: a centred window of the launch size, fitted to the
+        // 1536×864 logical screen it was on.
+        let left = displayed(full, DisplayMode::Window, "");
+        assert_eq!(left.mode, WindowMode::Windowed);
+        assert_eq!(left.position, WindowPosition::Centered(MonitorSelection::Current));
+        let want = fit_window((1600, 900), Some(Vec2::new(1536.0, 864.0)));
+        assert!(
+            (left.resolution.size() - want).abs().max_element() <= 1.0,
+            "{}",
+            left.resolution.size()
+        );
+        assert!(left.resolution.width() < 1536.0 && left.resolution.height() < 864.0);
+        // A window asked back to fullscreen goes where it is now.
+        let entered = displayed(WindowMode::Windowed, DisplayMode::Fullscreen, "");
+        assert_eq!(
+            entered.mode,
+            WindowMode::BorderlessFullscreen(MonitorSelection::Current)
+        );
+        // `--windowed` and the debug drivers keep their window whatever is saved.
+        for line in ["--windowed", "--menu-shots", "--smoke"] {
+            let held = displayed(WindowMode::Windowed, DisplayMode::Fullscreen, line);
+            assert_eq!(held.mode, WindowMode::Windowed, "{line}");
+            assert_eq!(held.resolution.physical_size(), UVec2::new(1920, 1080), "{line}");
+        }
+    }
+
+    #[test]
+    fn no_sub_slider_quiets_the_master_bus() {
+        let subs = [Bus::Music, Bus::Ambience, Bus::Effects];
+        let mut s = Settings::default();
+        let master = s.gain(Bus::Master);
+        let db = 20.0 * master.log10();
+        assert!((-14.0..=-10.0).contains(&db), "default {db:.1} dB");
+        assert!(subs.iter().all(|&b| s.gain(b) <= master));
+        (s.music, s.ambience, s.effects) = (0.0, 0.0, 0.0);
+        assert_eq!(s.gain(Bus::Master), master, "the master bus follows the master alone");
+        assert!(subs.iter().all(|&b| s.gain(b) == 0.0), "a bus at 0% is silent");
+        s.master = 0.0;
+        assert_eq!(s.gain(Bus::Master), 0.0, "0% master is silence");
     }
 }

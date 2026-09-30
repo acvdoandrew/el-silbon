@@ -29,6 +29,10 @@ use crate::world::omen::{Catch, Fright, LUNGE_GAP};
 pub const FPS: f32 = 30.0;
 pub const WIDTH: u32 = 1920;
 pub const HEIGHT: u32 = 1080;
+/// Exposure added over the night's grade: a touch brighter than play, for
+/// video. The +0.55 the old exposure brightness gave it (0.7 stops a unit),
+/// so its look is unchanged; the player's brightness is a gamma now.
+pub const EXPOSURE_LIFT: f32 = 0.7 * 0.55;
 /// Frames written but not yet on disk before the clock waits for them.
 const IN_FLIGHT: usize = 4;
 
@@ -771,8 +775,6 @@ pub(crate) fn drive(
         p.fov = shot.fov.to_radians();
     }
     settings.head_bob = shot.pov;
-    // A touch brighter than play, for video.
-    settings.brightness = 0.55;
     hand.0 = shot.pov;
     torch.on = shot.torch;
     light_on.0 = shot.torch;
