@@ -402,6 +402,11 @@ impl Progress {
     pub fn delivered(&self) -> usize {
         self.relics.iter().filter(|r| matches!(r, Relic::Delivered)).count()
     }
+    /// La Rabia's stage: the bundles laid to rest (0..=5). Public as the
+    /// bones line; only a laying raises it, never a fall.
+    pub fn rage(&self) -> u8 {
+        self.delivered().min(usize::from(crate::tuning::MAX_RAGE)) as u8
+    }
     pub fn carried_by(&self, id: PlayerId) -> usize {
         self.relics.iter().filter(|r| **r == Relic::Carried(id)).count()
     }
@@ -891,7 +896,7 @@ impl Encounter {
         dt: f32,
         events: &mut Vec<Event>,
     ) {
-        let mut scaled = base.at_pressure(self.pressure);
+        let mut scaled = base.at_rage(self.progress.rage()).at_pressure(self.pressure);
         let pace = Variant::of(base.seed).pace();
         scaled.stalk_speed *= pace;
         scaled.creep_speed *= pace;
@@ -1740,27 +1745,101 @@ mod tests {
     }
 
     #[test]
-    fn pressure_rises_with_the_night_the_load_and_every_bundle_laid_to_rest() {
-        let (_, t, mut enc, mut ev) = setup();
-        enc.tick_world(&t, 0.016);
-        let early = enc.pressure;
-        enc.elapsed = t.night_length * 0.8;
-        enc.tick_world(&t, 0.016);
-        let late = enc.pressure;
-        assert!(late > early);
-        enc.take_relic(0, 1, &mut ev);
-        enc.take_relic(1, 1, &mut ev);
-        enc.tick_world(&t, 0.016);
-        let burdened = enc.pressure;
-        assert!(burdened > late);
-        enc.deliver_relic(1, &mut ev);
-        enc.deliver_relic(1, &mut ev);
-        enc.tick_world(&t, 0.016);
-        assert!(
-            enc.pressure > burdened,
-            "every bundle laid to rest is one less in his sack: he feels it"
-        );
-        assert!(enc.pressure <= t.pressure_max);
+    fn every_bundle_laid_is_a_step_up_on_every_night_and_variant() {
+        let l = Layout::new();
+        // The first seed of each of his three returns.
+        let mut returns: Vec<(Variant, u64)> = Vec::new();
+        for seed in 0..60 {
+            let v = Variant::of(seed);
+            if !returns.iter().any(|&(w, _)| w == v) {
+                returns.push((v, seed));
+            }
+        }
+        assert_eq!(returns.len(), 3);
+        for night in [
+            crate::tuning::Night::Gentle,
+            crate::tuning::Night::Normal,
+            crate::tuning::Night::Hard,
+        ] {
+            for &(variant, seed) in &returns {
+                let t = Tuning::with_seed(seed).with_night(night);
+                let at = format!("{night:?} {variant:?}");
+                let mut enc = Encounter::new(&l);
+                let mut ev = Vec::new();
+                // The night and the load still weigh on him.
+                enc.tick_world(&t, 0.0);
+                let early = enc.pressure;
+                enc.elapsed = t.night_length * 0.8;
+                enc.tick_world(&t, 0.0);
+                assert!(enc.pressure > early, "{at}: the night");
+                let late = enc.pressure;
+                assert!(enc.take_relic(0, 1, &mut ev));
+                enc.tick_world(&t, 0.0);
+                assert!(enc.pressure > late, "{at}: the load");
+                // A fall never angers him: the fallen's bundle goes back to the grass.
+                enc.release_all(1, Vec3::new(4.0, 0.0, 4.0));
+                assert_eq!(enc.progress.rage(), 0, "{at}: nothing unlocks because a player fell");
+                // Every bundle laid, from dusk: a step up in pressure and in rage.
+                let mut enc = Encounter::new(&l);
+                enc.tick_world(&t, 0.0);
+                for i in 0..enc.progress.relics.len() {
+                    let (before, stage) = (enc.pressure, enc.progress.rage());
+                    assert!(enc.take_relic(i, 1, &mut ev));
+                    enc.tick_world(&t, 0.0);
+                    let carried = enc.pressure;
+                    assert!(enc.deliver_relic(1, &mut ev));
+                    enc.tick_world(&t, 0.0);
+                    assert!(
+                        enc.pressure > before,
+                        "{at}: bundle {i} laid, {before} -> {}",
+                        enc.pressure
+                    );
+                    assert!(
+                        enc.pressure > carried || enc.pressure == t.pressure_max,
+                        "{at}: laying bundle {i} lowered pressure ({carried} -> {})",
+                        enc.pressure
+                    );
+                    assert!(enc.pressure <= t.pressure_max);
+                    assert_eq!(enc.progress.rage(), (stage + 1).min(crate::tuning::MAX_RAGE), "{at}");
+                }
+                assert_eq!(enc.progress.rage(), crate::tuning::MAX_RAGE);
+            }
+        }
+    }
+
+    #[test]
+    fn a_crouched_player_seven_metres_off_in_grass_is_found_only_once_he_is_angry() {
+        let (l, t, _, mut ev) = setup();
+        let him = YARD + Vec2::new(7.0, 0.0);
+        assert!(l.line_of_sight(him, YARD));
+        let crouched = Prey {
+            pos: YARD,
+            sight: t.sight_crouch,
+            concealed: true,
+        };
+        for stage in 0..=crate::tuning::MAX_RAGE {
+            let mut enc = Encounter::new(&l);
+            for r in enc.progress.relics.iter_mut().take(stage as usize) {
+                *r = Relic::Delivered;
+            }
+            assert_eq!(enc.progress.rage(), stage);
+            place_threat(&mut enc, &l, him);
+            enc.threat.cooldown = 99.0;
+            enc.tick_world(&t, 1.0 / 60.0);
+            enc.update_threat(&l, &t, Some(crouched), &[YARD], 1.0 / 60.0, &mut ev);
+            assert_eq!(
+                enc.threat.has_sight,
+                stage >= 3,
+                "stage {stage}: crouched in the grass 7 m from him"
+            );
+        }
+        // Standing in the open he sees them at any stage.
+        let mut enc = Encounter::new(&l);
+        place_threat(&mut enc, &l, him);
+        enc.threat.cooldown = 99.0;
+        enc.tick_world(&t, 1.0 / 60.0);
+        enc.update_threat(&l, &t, Some(Prey::plain(YARD)), &[YARD], 1.0 / 60.0, &mut ev);
+        assert!(enc.threat.has_sight);
     }
 
     #[test]

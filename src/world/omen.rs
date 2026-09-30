@@ -82,6 +82,59 @@ pub enum Sting {
     Step(Vec3),
     /// A mark's tick where nobody marked.
     Mark(Vec3),
+    /// La Rabia: a bundle laid to rest and the llano answers (unplaced).
+    Rage,
+}
+
+/// Seconds every lamp on the llano stutters when a laying angers him, and
+/// how close together layings are heard as one.
+const RAGE_STUTTER: f32 = 1.2;
+const RAGE_MERGE: f32 = 8.0;
+
+/// La Rabia's telegraph on this client. Players lay in bursts, so layings
+/// within `RAGE_MERGE` seconds of each other are one telegraph: one stinger,
+/// one stutter of the lamps. The anger pips show the true stage anyway.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RageTelegraph {
+    /// Seconds since the last laying.
+    quiet: f32,
+    /// Seconds into the lamps' stutter.
+    stutter: Option<f32>,
+}
+
+impl Default for RageTelegraph {
+    fn default() -> Self {
+        Self {
+            quiet: f32::INFINITY,
+            stutter: None,
+        }
+    }
+}
+
+impl RageTelegraph {
+    /// A bundle was laid: true when it telegraphs, false when it merges
+    /// into the laying just before it.
+    pub fn laid(&mut self) -> bool {
+        let fresh = self.quiet >= RAGE_MERGE;
+        self.quiet = 0.0;
+        if fresh {
+            self.stutter = Some(0.0);
+        }
+        fresh
+    }
+
+    pub fn tick(&mut self, dt: f32) {
+        self.quiet += dt;
+        self.stutter = self.stutter.map(|s| s + dt).filter(|&s| s < RAGE_STUTTER);
+    }
+
+    /// Multiplier for every lamp and lantern, near or far.
+    pub fn lamp_level(&self, t: f32) -> f32 {
+        match self.stutter {
+            Some(_) if (t * 31.0).sin() * (t * 12.3).sin() < 0.0 => 0.2,
+            _ => 1.0,
+        }
+    }
 }
 
 /// Footsteps behind you that are nobody's: where the next falls, the way
@@ -123,6 +176,8 @@ pub struct Fright {
     steps: Option<PhantomSteps>,
     /// Shown by `dynamic::pings` while it lasts.
     pub false_mark: Option<FalseMark>,
+    /// La Rabia's telegraph.
+    pub rage: RageTelegraph,
 }
 
 impl Fright {
@@ -490,6 +545,11 @@ pub fn frights(
                 fright.lamps = Some(0.0);
                 stings.write(Sting::Lamps);
             }
+            Event::RelicDelivered => {
+                if fright.rage.laid() {
+                    stings.write(Sting::Rage);
+                }
+            }
             Event::OmenSilence => fright.silence = Some(0.0),
             Event::OmenBones => {
                 let behind = spot(layout, eye, -fwd, (5.0, 9.0), (0.0, 0.9), turn).map(ground);
@@ -572,6 +632,7 @@ pub fn frights(
     }
 
     // Timers.
+    fright.rage.tick(dt);
     if let Some(s) = &mut fright.lamps {
         *s += dt;
         if *s >= LAMPS_DARK {
@@ -723,5 +784,31 @@ pub fn frights(
         if st.left <= 0.0 || at.distance(eye) < 16.0 {
             **st_vis = Visibility::Hidden;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layings_in_a_burst_telegraph_once_and_the_lamps_stutter_briefly() {
+        let mut rage = RageTelegraph::default();
+        assert_eq!(rage.lamp_level(0.3), 1.0, "calm lamps before any laying");
+        // A burst of 1, 2 and 2: each laying a few seconds after the last.
+        let mut heard = Vec::new();
+        for gap in [0.0, 3.5, 3.5, 20.0, 3.5, 30.0] {
+            rage.tick(gap);
+            heard.push(rage.laid());
+        }
+        assert_eq!(heard, [true, false, false, true, false, true]);
+        // The stutter lasts about a second, then every lamp is itself again.
+        let dark = (0..120).filter(|i| rage.lamp_level(*i as f32 * 0.01) < 1.0).count();
+        assert!(dark > 0, "the lamps stutter");
+        rage.tick(RAGE_STUTTER + 0.05);
+        assert!((0..200).all(|i| rage.lamp_level(i as f32 * 0.01) == 1.0));
+        // Laying again after a long quiet telegraphs again.
+        rage.tick(RAGE_MERGE);
+        assert!(rage.laid());
     }
 }

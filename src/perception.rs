@@ -162,10 +162,14 @@ impl CueDirector {
     /// Seconds until the next phrase while he stalks: no steady rhythm to
     /// settle into. Usually a while; sometimes he answers himself almost at
     /// once; sometimes the llano goes quiet for a long time. The more of his
-    /// bones are taken, the sooner (up to a third) — except an answer.
-    fn stalk_gap(&mut self, tuning: &Tuning, pressure: f32) -> f32 {
+    /// bones are taken, the sooner (up to a fifth) — except an answer. Each
+    /// bundle laid to rest crowds him further (`Tuning::at_rage`): sooner,
+    /// answered more, and the long silences grow rare.
+    fn stalk_gap(&mut self, tuning: &Tuning, pressure: f32, rage: u8) -> f32 {
+        let raged = tuning.at_rage(rage);
+        let tuning = &raged;
         let roll = self.rng.f32();
-        let sooner = 1.0 - 0.35 * pressure.clamp(0.0, 1.0);
+        let sooner = 1.0 - 0.2 * pressure.clamp(0.0, 1.0);
         if roll < tuning.stalk_answer_chance {
             self.rng.range(tuning.stalk_answer.0, tuning.stalk_answer.1)
         } else if roll < tuning.stalk_answer_chance + tuning.stalk_silence_chance {
@@ -269,7 +273,7 @@ impl CueDirector {
         self.countdown = match th.state {
             ThreatState::Warning => jitter(self, tuning.warn_phrase_interval),
             ThreatState::Hunting => jitter(self, tuning.hunt_phrase_interval),
-            _ => self.stalk_gap(tuning, enc.pressure),
+            _ => self.stalk_gap(tuning, enc.pressure, enc.progress.rage()),
         };
         let seeming = seeming_closeness(th.pos.distance(listener), tuning);
         let variant = variant_for(seeming, tuning);
@@ -437,5 +441,47 @@ mod tests {
         assert!(hi - lo > 0.08, "speeds {lo}..{hi}");
         // None of it tells where he is: the same distance, the same variant.
         assert!(heard.iter().all(|(_, p)| p.variant == heard[0].1.variant));
+    }
+
+    #[test]
+    fn his_anger_crowds_the_stalking_whistle_but_keeps_no_steady_rhythm() {
+        let layout = Layout::new();
+        let t = Tuning::default();
+        let dt = 1.0 / 60.0;
+        let gaps = |stage: usize| {
+            let mut enc = Encounter::new(&layout);
+            for r in enc.progress.relics.iter_mut().take(stage) {
+                *r = crate::sim::Relic::Delivered;
+            }
+            enc.threat.state = ThreatState::Stalking;
+            enc.threat.presence = Presence::Present;
+            enc.threat.pos = Vec2::new(0.0, -20.0);
+            let mut cue = CueDirector::new(5);
+            let (mut last, mut gaps) = (None, Vec::new());
+            for i in 0..(30 * 60 * 60) {
+                if cue.tick(dt, &enc, Vec2::ZERO, &t).is_some() {
+                    let now = i as f32 * dt;
+                    if let Some(before) = last {
+                        gaps.push(now - before);
+                    }
+                    last = Some(now);
+                }
+            }
+            gaps
+        };
+        let mean = |g: &[f32]| g.iter().sum::<f32>() / g.len() as f32;
+        let (calm, angry) = (gaps(0), gaps(5));
+        assert!(
+            mean(&angry) < mean(&calm) * 0.9,
+            "every bundle laid crowds him: {:.1} s against {:.1} s",
+            mean(&angry),
+            mean(&calm)
+        );
+        // Still no rhythm to settle into: quick answers and long gaps both.
+        let (lo, hi) = angry
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(lo, hi), &g| (lo.min(g), hi.max(g)));
+        assert!(lo < t.stalk_answer.1 + 0.1, "no quick answers: {lo}");
+        assert!(hi > lo * 2.5, "a steady rhythm: {lo}..{hi}");
     }
 }

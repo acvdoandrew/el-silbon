@@ -4,7 +4,7 @@
 //! night fills the silence with an omen: the lamps around them die for a
 //! moment, the llano falls silent, bones clatter somewhere, drag marks from
 //! a sack cross the mud, a hat lies on the trail. Shaken badly enough, they
-//! glimpse him where he is not; late in the night, a torch moves far off
+//! glimpse him where he is not; once his anger grows, a torch moves far off
 //! that belongs to nobody.
 //!
 //! Headless and deterministic (a per-player [`Rng`] stream). The director
@@ -30,7 +30,7 @@ pub enum Omen {
     Hat,
     /// A glimpse of him where he is not (fear only).
     Phantom,
-    /// A torch far off that is nobody's (late in the night only).
+    /// A torch far off that is nobody's (from the second bundle laid only).
     StolenLight,
     /// Footsteps in the grass behind you, coming closer; nobody's (fear
     /// only).
@@ -53,6 +53,8 @@ pub struct Mood {
     pub pressure: f32,
     /// Others share the night (a mark can seem to be theirs).
     pub company: bool,
+    /// La Rabia: bundles laid to rest (0..=5), public as the bones line.
+    pub rage: u8,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -93,7 +95,8 @@ impl Director {
         }
         self.quiet = 0.0;
         let p = mood.pressure.clamp(0.0, 1.0);
-        let (lo, hi) = tuning.omen_quiet;
+        // Every bundle laid to rest crowds the quiet further.
+        let (lo, hi) = tuning.at_rage(mood.rage).omen_quiet;
         // Before he wakes the night only whispers; later it crowds you.
         self.due = if mood.awake {
             self.rng.range(lo, hi) * (1.0 - 0.4 * p)
@@ -109,7 +112,7 @@ impl Director {
                     pool.push((Omen::FalseMark, 1.0));
                 }
             }
-            if p >= tuning.stolen_light_pressure {
+            if mood.rage >= tuning.stolen_light_rage {
                 pool.push((Omen::StolenLight, 1.2));
             }
         }
@@ -133,7 +136,7 @@ impl Director {
 mod tests {
     use super::*;
 
-    fn mood(awake: bool, fear: f32, pressure: f32) -> Mood {
+    fn mood(awake: bool, fear: f32, pressure: f32, rage: u8) -> Mood {
         Mood {
             awake,
             pursued: false,
@@ -141,6 +144,7 @@ mod tests {
             fear,
             pressure,
             company: false,
+            rage,
         }
     }
 
@@ -152,13 +156,13 @@ mod tests {
     fn omens_need_quiet_are_spaced_and_never_repeat_back_to_back() {
         let t = Tuning::default();
         let mut d = Director::new(11);
-        let seen = omens(&mut d, mood(true, 0.2, 0.3), &t, 900.0);
+        let seen = omens(&mut d, mood(true, 0.2, 0.3, 0), &t, 900.0);
         assert!(seen.len() >= 8, "a quiet quarter hour brings omens: {seen:?}");
         assert!(seen.len() <= 30, "but not a flood: {}", seen.len());
         assert!(seen.windows(2).all(|w| w[0] != w[1]));
         // Pursuit keeps resetting the quiet: nothing comes while he is on you.
         let mut chased = Director::new(11);
-        let mut m = mood(true, 0.2, 0.3);
+        let mut m = mood(true, 0.2, 0.3, 0);
         m.pursued = true;
         assert!(omens(&mut chased, m, &t, 600.0).is_empty());
         // The downed and the dead are left alone.
@@ -170,14 +174,14 @@ mod tests {
     #[test]
     fn phantoms_need_fear_stolen_lights_need_the_late_night_and_he_must_be_awake() {
         let t = Tuning::default();
-        let calm: Vec<Omen> = omens(&mut Director::new(3), mood(true, 0.1, 0.1), &t, 3000.0);
+        let calm: Vec<Omen> = omens(&mut Director::new(3), mood(true, 0.1, 0.1, 0), &t, 3000.0);
         assert!(!calm.contains(&Omen::Phantom) && !calm.contains(&Omen::StolenLight));
         assert!(!calm.contains(&Omen::Footsteps) && !calm.contains(&Omen::FalseMark));
-        let late: Vec<Omen> = omens(&mut Director::new(3), mood(true, 0.9, 0.9), &t, 3000.0);
+        let late: Vec<Omen> = omens(&mut Director::new(3), mood(true, 0.9, 0.9, 5), &t, 3000.0);
         assert!(late.contains(&Omen::Phantom) && late.contains(&Omen::StolenLight));
         assert!(late.contains(&Omen::Footsteps), "fear hears steps behind it");
         assert!(!late.contains(&Omen::FalseMark), "alone, nobody else marks anything");
-        let mut together = mood(true, 0.9, 0.9);
+        let mut together = mood(true, 0.9, 0.9, 5);
         together.company = true;
         let shared: Vec<Omen> = omens(&mut Director::new(3), together, &t, 3000.0);
         assert!(
@@ -185,7 +189,7 @@ mod tests {
             "in company a mark can seem to be a friend's"
         );
         assert!(shared.windows(2).all(|w| w[0] != w[1]));
-        let asleep: Vec<Omen> = omens(&mut Director::new(3), mood(false, 0.9, 0.9), &t, 3000.0);
+        let asleep: Vec<Omen> = omens(&mut Director::new(3), mood(false, 0.9, 0.9, 5), &t, 3000.0);
         assert!(!asleep.is_empty(), "the night whispers before he wakes");
         assert!(
             asleep.iter().all(|o| matches!(o, Omen::Silence | Omen::Bones)),
@@ -193,8 +197,36 @@ mod tests {
         );
         // Same seed, same night.
         assert_eq!(
-            omens(&mut Director::new(5), mood(true, 0.5, 0.5), &t, 1200.0),
-            omens(&mut Director::new(5), mood(true, 0.5, 0.5), &t, 1200.0)
+            omens(&mut Director::new(5), mood(true, 0.5, 0.5, 2), &t, 1200.0),
+            omens(&mut Director::new(5), mood(true, 0.5, 0.5, 2), &t, 1200.0)
+        );
+    }
+
+    #[test]
+    fn the_stolen_torch_waits_for_his_anger_and_every_laying_crowds_the_quiet() {
+        let t = Tuning::default();
+        // However late and frightened, no stolen torch before the second laying.
+        for stage in 0..t.stolen_light_rage {
+            let early = omens(&mut Director::new(3), mood(true, 0.9, 0.9, stage), &t, 3000.0);
+            assert!(!early.contains(&Omen::StolenLight), "stage {stage}: {early:?}");
+        }
+        let angry = omens(
+            &mut Director::new(3),
+            mood(true, 0.1, 0.1, t.stolen_light_rage),
+            &t,
+            3000.0,
+        );
+        assert!(angry.contains(&Omen::StolenLight), "{angry:?}");
+        // Each stage brings the omens sooner.
+        let mut before = 0;
+        for stage in 0..=crate::tuning::MAX_RAGE {
+            let seen = omens(&mut Director::new(9), mood(true, 0.2, 0.3, stage), &t, 3000.0).len();
+            assert!(seen >= before, "stage {stage}: {seen} omens, {before} a stage calmer");
+            before = seen;
+        }
+        assert!(
+            before > omens(&mut Director::new(9), mood(true, 0.2, 0.3, 0), &t, 3000.0).len(),
+            "the last stage is more crowded than the first"
         );
     }
 }

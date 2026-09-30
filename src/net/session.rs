@@ -1180,12 +1180,14 @@ impl Session {
             return;
         }
         let at = th.pos;
+        // His anger draws him to a beam from farther (La Rabia).
+        let range = tuning.at_rage(self.encounter.progress.rage()).light_lure_range;
         for p in self.players.values_mut() {
             if !p.status.is_active() || !p.light || p.pulse[4] > 0.0 {
                 continue;
             }
             let dist = p.pose.pos.distance(at);
-            if dist > tuning.light_lure_range || !layout.line_of_sight(p.pose.pos, at) {
+            if dist > range || !layout.line_of_sight(p.pose.pos, at) {
                 continue;
             }
             p.pulse[4] = tuning.light_lure_pulse;
@@ -1443,6 +1445,7 @@ impl Session {
             .then_some(self.target)
             .flatten();
         let pressure = self.encounter.pressure;
+        let rage = self.encounter.progress.rage();
         let company = self.players.len() > 1;
         let mut sent = Vec::new();
         for (&id, p) in &mut self.players {
@@ -1453,6 +1456,7 @@ impl Session {
                 fear: p.body.fear,
                 pressure,
                 company,
+                rage,
             };
             if let Some(omen) = p.director.tick(mood, tuning, dt) {
                 sent.push((

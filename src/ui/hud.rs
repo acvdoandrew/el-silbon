@@ -53,6 +53,14 @@ pub(crate) fn objectives(
             w.total
         )
     };
+    // La Rabia: every bundle laid to rest angers him a stage (the bundled
+    // font has no squares, so bullets stand for them).
+    let stage = usize::from(w.delivered.min(crate::tuning::MAX_RAGE));
+    let bones = format!(
+        "{bones}   his anger {}{}",
+        "•".repeat(stage),
+        "·".repeat(usize::from(crate::tuning::MAX_RAGE) - stage)
+    );
     let power = if power_on {
         let names = ["hacienda", "corral", "bridge"];
         let lines: Vec<&str> = (0..3)

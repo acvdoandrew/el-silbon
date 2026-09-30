@@ -1277,7 +1277,7 @@ pub fn lamp_lights(
             fright.lamp_level(t)
         } else {
             1.0
-        };
+        } * fright.rage.lamp_level(t);
         light.intensity = base * slot.level * omen * if powered { 1.0 } else { flick };
         tf.translation = pos - Vec3::Y * if powered { 0.1 } else { 0.0 };
     }

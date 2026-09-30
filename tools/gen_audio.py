@@ -1969,6 +1969,42 @@ def make_call_help(rng):
     return normalize(fade(out, 0.005, 0.4), 0.7)
 
 
+def make_sting_rage(rng):
+    """La Rabia: a bundle laid to rest and the llano answers. A gust through
+    the grass, the ceiba's roots groaning under the ground, far thunder.
+    Never a whistle, and never placed."""
+    n = int(4.2 * SR)
+    out = [0.0] * n
+    # The gust: wide noise that swells and falls, its colour moving.
+    air = noise(rng, n)
+    low = one_pole_lowpass(air, 900.0)
+    high = one_pole_highpass(one_pole_lowpass(air, 4200.0), 700.0)
+    for i in range(n):
+        t = i / SR
+        swell = math.sin(math.pi * min(1.0, t / 2.6)) ** 2 if t < 2.6 else 0.0
+        out[i] += (low[i] * 0.55 + high[i] * 0.35 * swell) * swell
+    # The roots: a low creak whose pitch bends, rubbed rather than struck.
+    ph = 0.0
+    grain = biquad_bandpass(noise(rng, n), 240.0, 2.0)
+    for i in range(n):
+        t = i / SR
+        env = min(1.0, max(0.0, t - 0.35) / 0.4) * math.exp(-max(0.0, t - 1.6) / 0.5)
+        f = 58.0 + 14.0 * math.sin(TAU * 0.55 * t) + 6.0 * math.sin(TAU * 3.1 * t)
+        ph += TAU * f / SR
+        rub = 0.55 + 0.45 * math.sin(TAU * 17.0 * t + 2.0 * math.sin(TAU * 1.3 * t))
+        creak = sum(math.sin(k * ph) / k for k in range(1, 7))
+        out[i] += (creak * 0.22 + grain[i] * 0.9) * rub * env
+    # Far thunder: a dull roll under it all.
+    roll = one_pole_lowpass(one_pole_lowpass(noise(rng, n), 160.0), 220.0)
+    for i in range(n):
+        t = i / SR
+        env = min(1.0, max(0.0, t - 0.8) / 0.9) * math.exp(-max(0.0, t - 1.9) / 1.0)
+        out[i] += roll[i] * env * (2.4 + 0.8 * math.sin(TAU * 2.3 * t))
+    room = reverb(out, size=1.5, damp=0.6, feedback=0.8)
+    out = [d * 0.75 + r * 0.35 for d, r in zip(out + silence(0.6), room + silence(0.6))]
+    return normalize(fade(out, 0.01, 0.8), 0.75)
+
+
 def make_horror():
     """Sounds added after the first two streams, each on its own seed so
     adding or changing one never changes another."""
@@ -2003,6 +2039,8 @@ def make_horror():
         "downed_groan_1.wav": make_groan(random.Random(SEED + 128)),
         "downed_groan_2.wav": make_groan(random.Random(SEED + 129)),
         "call_help.wav": make_call_help(random.Random(SEED + 130)),
+        # La Rabia's telegraph (seed range 9200-9299).
+        "sting_rage.wav": make_sting_rage(random.Random(9200)),
     }
 
 
