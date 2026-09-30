@@ -81,6 +81,7 @@ struct Sounds {
     sting_hunt: Handle<AudioSource>,
     omen_bones: Handle<AudioSource>,
     omen_lamps: Handle<AudioSource>,
+    sting_rage: Handle<AudioSource>,
     omen_swell: Handle<AudioSource>,
     dread: Handle<AudioSource>,
     lock_rattle: Handle<AudioSource>,
@@ -320,6 +321,7 @@ fn load_sounds(
         sting_hunt: a("sting_hunt"),
         omen_bones: a("omen_bones"),
         omen_lamps: a("omen_lamps"),
+        sting_rage: a("sting_rage"),
         omen_swell: a("omen_swell"),
         dread: a("dread_drone"),
         lock_rattle: a("lock_rattle"),
@@ -634,11 +636,13 @@ fn play_stings(
             }
             // A mark's tick, carried like a real one.
             Sting::Mark(at) => (&sounds.ping, g * 0.7, 1.0, Some(at)),
+            // La Rabia: the llano answers a laying. Never placed.
+            Sting::Rage => (&sounds.sting_rage, g * 0.9, 1.0, None),
         };
         // The stingers are music; what sounds like a thing of the llano (a
         // clatter, a false mark) is heard as one.
         let kind = match sting {
-            Sting::Reveal | Sting::Phantom | Sting::Lamps | Sting::Swell => VoiceKind::Sting,
+            Sting::Reveal | Sting::Phantom | Sting::Lamps | Sting::Swell | Sting::Rage => VoiceKind::Sting,
             _ => VoiceKind::Effect,
         };
         let lift = at.map_or(1.0, |at| {
@@ -1126,11 +1130,11 @@ fn mix(
     };
     let engine_on = world.truck >= 1.0 && !over;
     let crank_on = me.hold_kind == 3;
-    // Dread swells with the night, with every bundle taken from him, and
-    // when he is on you.
+    // Dread swells with the night, steps up with his anger (every bundle
+    // laid to rest, La Rabia), and when he is on you.
     let dread = snap.map_or(0.0, |s| {
         let rite = if s.world.total > 0 {
-            s.world.delivered as f32 / s.world.total as f32
+            f32::from(s.world.delivered.min(crate::tuning::MAX_RAGE)) / f32::from(crate::tuning::MAX_RAGE)
         } else {
             0.0
         };

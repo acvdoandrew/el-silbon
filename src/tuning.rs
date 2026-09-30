@@ -9,6 +9,9 @@
 /// same unless `--seed` is passed.
 pub const DEFAULT_SEED: u64 = 1997;
 
+/// La Rabia's last stage: every bundle laid to rest.
+pub const MAX_RAGE: u8 = 5;
+
 /// How hard the night is. Normal is the tuned game; the others scale it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Night {
@@ -373,10 +376,11 @@ pub struct Tuning {
     /// Quiet seconds (min, max) before the night sends a player an omen
     /// (shorter as pressure rises, longer before he wakes).
     pub omen_quiet: (f32, f32),
-    /// Fear at which a player may glimpse him where he is not, and pressure
-    /// from which a torch may move far off that is nobody's.
+    /// Fear at which a player may glimpse him where he is not, and the rage
+    /// stage (bones laid) from which a torch may move far off that is
+    /// nobody's.
     pub phantom_fear: f32,
-    pub stolen_light_pressure: f32,
+    pub stolen_light_rage: u8,
     /// Fear at which a player may hear a whistle that is not there, and the
     /// mean seconds between such whistles.
     pub phantom_whistle_fear: f32,
@@ -453,7 +457,7 @@ impl Default for Tuning {
             reach_slack: 0.35,
             deliver_hold: 3.0,
             pray_hold: 5.0,
-            pump_hold: 10.0,
+            pump_hold: 12.0,
             truck_hold: 6.0,
             truck_warmup: 26.0,
             beacon_hold: 2.0,
@@ -557,11 +561,11 @@ impl Default for Tuning {
             cattle_alarm: 5.0,
             cattle_cooldown: 20.0,
 
-            night_length: 840.0,
-            pressure_base: 0.12,
-            pressure_night: 0.5,
-            pressure_carry: 0.07,
-            pressure_rite: 0.08,
+            night_length: 1200.0,
+            pressure_base: 0.10,
+            pressure_night: 0.2,
+            pressure_carry: 0.04,
+            pressure_rite: 0.12,
             pressure_max: 0.9,
 
             fear_dark: 0.008,
@@ -582,7 +586,7 @@ impl Default for Tuning {
             cue_far_distance: 42.0,
             cue_loud_above: 0.62,
             cue_mid_above: 0.3,
-            stalk_phrase_interval: (5.0, 11.0),
+            stalk_phrase_interval: (6.0, 13.0),
             stalk_answer_chance: 0.15,
             stalk_answer: (1.8, 3.4),
             stalk_silence_chance: 0.2,
@@ -593,9 +597,9 @@ impl Default for Tuning {
             whistle_speed: (0.92, 1.06),
             first_phrase_delay: 1.2,
             prologue_phrase_interval: (28.0, 46.0),
-            omen_quiet: (35.0, 70.0),
+            omen_quiet: (45.0, 85.0),
             phantom_fear: 0.55,
-            stolen_light_pressure: 0.45,
+            stolen_light_rage: 2,
             phantom_whistle_fear: 0.7,
             phantom_whistle_every: 25.0,
             gain_loud: 1.0,
@@ -642,6 +646,8 @@ impl Tuning {
             warn_distance: scale(self.warn_distance, 1.12, 0.85),
             exposure_time: scale(self.exposure_time, 0.85, 1.3),
             battery_life: scale(self.battery_life, 0.7, 1.5),
+            // Carry and rite by one factor: a laying never lowers pressure.
+            pressure_carry: scale(self.pressure_carry, 1.3, 0.5),
             pressure_rite: scale(self.pressure_rite, 1.3, 0.5),
             light_lure_range: scale(self.light_lure_range, 1.2, 0.8),
             omen_quiet: (scale(self.omen_quiet.0, 0.7, 1.4), scale(self.omen_quiet.1, 0.7, 1.4)),
@@ -670,6 +676,29 @@ impl Tuning {
             recover_cooldown: lerp(self.recover_cooldown, self.recover_cooldown * 0.5),
             warn_recover_cooldown: lerp(self.warn_recover_cooldown, self.warn_recover_cooldown * 0.5),
             patience: lerp(self.patience, self.patience * 0.5),
+            ..self.clone()
+        }
+    }
+
+    /// La Rabia: his numbers once `stage` bundles are laid to rest (0..=5,
+    /// public as the bones line). Each stage only crowds the night: denser
+    /// whistles that fill the silence, sooner omens, a torch that draws him
+    /// from farther, and tall grass that hides you only closer. None of it
+    /// touches his speeds or his warning, and nothing here moves because a
+    /// player fell.
+    pub fn at_rage(&self, stage: u8) -> Self {
+        let s = f32::from(stage.min(MAX_RAGE));
+        let (lo, hi) = self.stalk_phrase_interval;
+        let (qlo, qhi) = self.omen_quiet;
+        let denser = 1.0 - 0.05 * s;
+        let crowded = 1.0 - 0.08 * s;
+        Self {
+            stalk_phrase_interval: (lo * denser, hi * denser),
+            stalk_silence_chance: (self.stalk_silence_chance - 0.04 * s).max(0.0),
+            stalk_answer_chance: self.stalk_answer_chance + 0.03 * s,
+            omen_quiet: (qlo * crowded, qhi * crowded),
+            grass_sight: self.grass_sight + 0.8 * s,
+            light_lure_range: self.light_lure_range + 4.0 * s,
             ..self.clone()
         }
     }
@@ -779,5 +808,60 @@ mod tests {
         assert!(worst.hunt_speed > calm.hunt_speed);
         assert!(worst.exposure_time < calm.exposure_time);
         assert!(worst.recover_cooldown < calm.recover_cooldown);
+    }
+
+    #[test]
+    fn rage_only_tightens_and_never_outruns_a_walker() {
+        for night in [Night::Gentle, Night::Normal, Night::Hard] {
+            let t = Tuning::default().with_night(night);
+            for i in 0..=20 {
+                let p = i as f32 / 20.0;
+                let calm = t.at_rage(0).at_pressure(p);
+                let mut before = calm.clone();
+                for stage in 0..=MAX_RAGE {
+                    let r = t.at_rage(stage).at_pressure(p);
+                    // Never faster, never a shorter warning: the stage is not a speed.
+                    assert!(
+                        r.hunt_speed < t.walk_speed && r.stalk_speed < t.walk_speed,
+                        "{night:?} {stage} {p}"
+                    );
+                    assert!(r.warn_time > 1.5, "{night:?} {stage} {p}: warning must stay readable");
+                    assert_eq!(
+                        (r.hunt_speed, r.stalk_speed, r.creep_speed, r.warn_time, r.warn_distance),
+                        (
+                            calm.hunt_speed,
+                            calm.stalk_speed,
+                            calm.creep_speed,
+                            calm.warn_time,
+                            calm.warn_distance
+                        ),
+                        "rage leaves his pace and his warning alone"
+                    );
+                    // Each stage only crowds the night.
+                    assert!(r.stalk_phrase_interval.0 <= before.stalk_phrase_interval.0);
+                    assert!(r.stalk_phrase_interval.1 <= before.stalk_phrase_interval.1);
+                    assert!(r.stalk_phrase_interval.0 > 0.0 && r.stalk_phrase_interval.0 < r.stalk_phrase_interval.1);
+                    assert!(r.stalk_silence_chance <= before.stalk_silence_chance && r.stalk_silence_chance >= 0.0);
+                    assert!(r.stalk_answer_chance >= before.stalk_answer_chance);
+                    assert!(
+                        r.stalk_silence_chance + r.stalk_answer_chance < 1.0,
+                        "the usual gap stays usual"
+                    );
+                    assert!(r.omen_quiet.0 <= before.omen_quiet.0 && r.omen_quiet.1 <= before.omen_quiet.1);
+                    assert!(r.omen_quiet.0 > 0.0);
+                    assert!(r.grass_sight >= before.grass_sight && r.grass_sight < r.warn_distance * r.sight_crouch);
+                    assert!(r.light_lure_range >= before.light_lure_range);
+                    before = r;
+                }
+                assert!(before.light_lure_range > calm.light_lure_range && before.grass_sight > calm.grass_sight);
+            }
+            // Past the last bundle there is no more anger to find.
+            assert_eq!(t.at_rage(MAX_RAGE + 3), t.at_rage(MAX_RAGE));
+            assert_eq!(t.at_rage(0), t);
+        }
+        // The roadmap's marks on a Normal night.
+        let t = Tuning::default();
+        assert!((t.at_rage(2).light_lure_range - 53.0).abs() < 1e-4);
+        assert!((t.at_rage(3).grass_sight - 7.4).abs() < 1e-4);
     }
 }

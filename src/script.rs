@@ -987,7 +987,9 @@ impl Reflex {
     }
 
     fn tick(&mut self, obs: &Observation, snap: &Snapshot, leash: Option<(Vec2, f32)>, out: &mut ScriptFrame) -> Turn {
-        let (layout, tuning, dt) = (obs.layout, obs.tuning, obs.dt);
+        // Judge the grass by his anger: the bones line says how angry he is.
+        let raged = obs.tuning.at_rage(snap.world.delivered);
+        let (layout, tuning, dt) = (obs.layout, &raged, obs.dt);
         let pos = obs.pose.pos;
         self.aji_wait = (self.aji_wait - dt).max(0.0);
         let alarm = matches!(snap.danger, 1..=3);

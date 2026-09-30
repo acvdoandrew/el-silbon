@@ -436,9 +436,9 @@ fn flicker_lights(
         let w = (t * 7.3 + f.phase).sin() * 0.04
             + (t * 13.1 + f.phase * 2.0).sin() * 0.025
             + (t * 1.7 + f.phase).sin() * 0.03;
-        // An omen puts out the lanterns near you.
+        // An omen puts out the lanterns near you; his anger stutters them all.
         let near = at.translation().distance(camera.translation) < 35.0;
-        let target = f.base * (1.0 + w) * if near { omen } else { 1.0 };
+        let target = f.base * (1.0 + w) * if near { omen } else { 1.0 } * fright.rage.lamp_level(t);
         if (light.intensity - target).abs() > f.base * 0.002 {
             light.intensity = target;
         }
