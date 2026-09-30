@@ -350,7 +350,7 @@ fn every_bundle_pepper_note_and_site_can_actually_be_reached_and_seen() {
     for id in ids {
         let page = el_silbon::lore::note(id);
         assert!(
-            !page.es.is_empty() && !page.en.is_empty() && !page.title.is_empty(),
+            !page.es.is_empty() && !page.en.is_empty() && !page.title.es.is_empty() && !page.title.en.is_empty(),
             "page {id}"
         );
     }

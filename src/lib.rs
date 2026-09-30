@@ -15,6 +15,8 @@
 //! - [`radio`]: the shelf radio's dial and the numbers hour.
 //! - [`mix`]: the volume sliders' decibel curve, the buses and the glide.
 //! - [`display`]: brightness and contrast as the camera's grade.
+//! - [`lang`]: the words on screen in English or Spanish (a local choice,
+//!   never on the wire).
 //! - [`script`], [`photos`]: DEBUG smoke route and photo viewpoints.
 //!
 //! Bevy adapters and presentation: [`app`], [`icon`], [`player`],
@@ -35,6 +37,7 @@ pub mod display;
 pub mod encounter;
 pub mod geometry;
 pub mod icon;
+pub mod lang;
 pub mod lore;
 pub mod mix;
 pub mod net;

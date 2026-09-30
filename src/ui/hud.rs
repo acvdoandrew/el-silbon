@@ -7,6 +7,7 @@ use super::*;
 use crate::app::{EncounterMsg, WhistleMsg};
 use crate::control::{Blocked, Target, TargetKind};
 use crate::encounter::{CurrentTarget, NoteOpen};
+use crate::lang::{hint as th, hud as hd};
 use crate::perception::WhistleVariant;
 use crate::sim::{Event, ThreatState};
 
@@ -22,9 +23,11 @@ fn set_color(c: &mut TextColor, color: Color) {
 
 pub(crate) fn objectives(
     net: Res<Network>,
+    settings: Res<Settings>,
     mut lines: Query<(&ObjectiveLine, &mut Text, &mut TextColor)>,
     mut hint: Query<&mut Text, (With<ObjectiveHint>, Without<ObjectiveLine>)>,
 ) {
+    let l = settings.lang;
     let Some(s) = net.snapshot() else {
         for (_, mut t, _) in &mut lines {
             set_text(&mut t, "");
@@ -38,56 +41,56 @@ pub(crate) fn objectives(
     let running = w.truck >= 1.0;
     let ready = running && w.warm >= 1.0;
 
-    let bones = if carrying > 0 {
-        format!(
-            "{} Lay the bones at the ceiba: {}/{}  (you carry {carrying})",
-            tick(bones_home),
-            w.delivered,
-            w.total
-        )
-    } else {
-        format!(
-            "{} Lay the bones at the ceiba: {}/{}",
-            tick(bones_home),
-            w.delivered,
-            w.total
-        )
+    let (done_mark, laid) = (tick(bones_home), format!("{}/{}", w.delivered, w.total));
+    let bones = match l {
+        Lang::En if carrying > 0 => format!("{done_mark} Lay the bones at the ceiba: {laid}  (you carry {carrying})"),
+        Lang::En => format!("{done_mark} Lay the bones at the ceiba: {laid}"),
+        Lang::Es if carrying > 0 => format!("{done_mark} Pon los huesos en la ceiba: {laid}  (cargas {carrying})"),
+        Lang::Es => format!("{done_mark} Pon los huesos en la ceiba: {laid}"),
     };
     // La Rabia: every bundle laid to rest angers him a stage (the bundled
     // font has no squares, so bullets stand for them).
     let stage = usize::from(w.delivered.min(crate::tuning::MAX_RAGE));
     let bones = format!(
-        "{bones}   his anger {}{}",
+        "{bones}   {} {}{}",
+        l.pick("his anger", "su rabia"),
         "•".repeat(stage),
         "·".repeat(usize::from(crate::tuning::MAX_RAGE) - stage)
     );
     let power = if power_on {
-        let names = ["hacienda", "corral", "bridge"];
         let lines: Vec<&str> = (0..3)
             .filter(|i| w.circuits & (1 << i) != 0)
-            .map(|i| names[i])
+            .map(|i| l.say(hd::LINES[i]))
             .collect();
-        format!(
-            "{} Power restored — lamps on the {} (switch lines at the windmill panel)",
-            tick(true),
-            lines.join(" and ")
-        )
+        let lines = lines.join(l.say(hd::AND));
+        match l {
+            Lang::En => format!(
+                "{} Power restored — lamps on the {lines} (switch lines at the windmill panel)",
+                tick(true)
+            ),
+            Lang::Es => format!(
+                "{} Luz restaurada — faroles en {lines} (cambia las líneas en el tablero del molino)",
+                tick(true)
+            ),
+        }
     } else if w.power > 0.0 {
-        format!("{} Restore power at the windmill: {:.0}%", tick(false), w.power * 100.0)
+        format!("{} {}: {:.0}%", tick(false), l.say(hd::RESTORE_POWER), w.power * 100.0)
     } else {
-        format!("{} Restore power at the windmill", tick(false))
+        format!("{} {}", tick(false), l.say(hd::RESTORE_POWER))
     };
     let truck = if ready {
-        format!("{} The truck is warm — everyone aboard!", tick(false))
+        format!("{} {}", tick(false), l.say(hd::TRUCK_WARM))
     } else if running {
-        format!("{} Engine warming: {:.0}%", tick(false), w.warm * 100.0)
-    } else if bones_home && power_on && !w.key {
         format!(
-            "{} Open the key box at the windmill (three numbers, read out by the house radio)",
-            tick(false)
+            "{} {}: {:.0}%",
+            tick(false),
+            l.pick("Engine warming", "Calentando el motor"),
+            w.warm * 100.0
         )
+    } else if bones_home && power_on && !w.key {
+        format!("{} {}", tick(false), l.say(hd::OPEN_KEY_BOX))
     } else {
-        format!("{} Start the truck at the bridge", tick(false))
+        format!("{} {}", tick(false), l.say(hd::START_TRUCK))
     };
     let done = [bones_home, power_on, running];
     for (line, mut t, mut c) in &mut lines {
@@ -100,24 +103,23 @@ pub(crate) fn objectives(
         set_color(&mut c, if done[line.0.min(2)] { GREEN } else { INK });
     }
 
-    let guidance = if !s.started {
-        "Waiting for the host to begin (Enter)."
+    let guidance = l.say(if !s.started {
+        hd::GUIDE_LOBBY
     } else if !bones_home {
-        "Bundles of bones lie in the landmarks — the ranch, the corral, the fields, the caño, the tower — and the ceiba is where they belong."
+        hd::GUIDE_BONES
     } else if !power_on {
-        "The bones are home. Now the windmill: hold E at the pump to bring the lights back. It is loud. \
-         Or, if you know which of him walks tonight, name him at the ceiba (N)."
+        hd::GUIDE_POWER
     } else if !w.key {
-        "The truck key is padlocked in a box on the crates by the windmill. A tag on it names a frequency: the shelf radio in the house reads the numbers out, in pips."
+        hd::GUIDE_KEY
     } else if !running {
-        "Hold E at the truck's ignition. The engine will roar, and he will come."
+        hd::GUIDE_IGNITION
     } else if !ready {
-        "Survive. Keep watch while the engine warms."
+        hd::GUIDE_WARM
     } else if net.is_shared() {
-        "Everyone standing: get into the truck zone! Or, aboard, press X to drive off without the others."
+        hd::GUIDE_ABOARD_SHARED
     } else {
-        "Everyone standing: get into the truck zone!"
-    };
+        hd::GUIDE_ABOARD
+    });
     for mut t in &mut hint {
         set_text(&mut t, guidance);
     }
@@ -126,29 +128,34 @@ pub(crate) fn objectives(
 pub(crate) fn status_text(
     net: Res<Network>,
     state: Res<State<Flow>>,
+    settings: Res<Settings>,
     mut panel: Query<(&mut Visibility, &Children), With<StatusPanel>>,
     mut texts: Query<(&mut Text, &mut TextColor)>,
 ) {
+    let l = settings.lang;
+    let es = l == Lang::Es;
+    let say = |w: Words| l.say(w).to_string();
     // Watching a friend, the danger in the snapshot is theirs.
     let friend = net
         .watched()
         .map(|p| crate::survivor::Survivor::from_code(p.survivor).name());
     let status: Option<(String, Color)> = match net.snapshot() {
         Some(s) if *state.get() == Flow::Playing && !s.outcome().is_over() => match (s.danger, friend) {
+            (1, Some(who)) if es => Some((format!("Vio a {who}"), AMBER)),
             (1, Some(who)) => Some((format!("He has seen {who}"), AMBER)),
+            (2, Some(who)) if es => Some((format!("¡Viene por {who}!"), RED)),
             (2, Some(who)) => Some((format!("He is coming for {who}!"), RED)),
+            (3, Some(who)) if es => Some((format!("{who} salió de su vista… por ahora"), PALE_BLUE)),
             (3, Some(who)) => Some((format!("{who} is out of his sight… for now"), PALE_BLUE)),
-            (4, Some(_)) => Some(("He kneels to count his bones".into(), PALE_BLUE)),
-            (1, None) => Some(("He has seen you — break his line of sight".into(), AMBER)),
-            (2, None) => Some(("He is coming — get behind solid walls!".into(), RED)),
-            (3, None) => Some(("Out of his sight… stay hidden".into(), PALE_BLUE)),
-            (4, None) => Some(("He kneels to count his bones — slip away".into(), PALE_BLUE)),
-            _ if s.me.stun > 0.0 => Some(("Frozen with fright…".into(), RED)),
-            _ if s.world.cattle > 0.0 => Some(("The cattle are bellowing — the whole llano can hear".into(), AMBER)),
-            _ if s.world.truck >= 1.0 && s.world.warm < 1.0 => {
-                Some(("The engine roars — it carries for miles".into(), AMBER))
-            }
-            _ if s.world.beacon > 0.0 => Some(("The beacon burns — he is drawn to the light".into(), AMBER)),
+            (4, Some(_)) => Some((say(hd::COUNTING), PALE_BLUE)),
+            (1, None) => Some((say(hd::SEEN_YOU), AMBER)),
+            (2, None) => Some((say(hd::COMING), RED)),
+            (3, None) => Some((say(hd::OUT_OF_SIGHT), PALE_BLUE)),
+            (4, None) => Some((say(hd::COUNTING_SLIP), PALE_BLUE)),
+            _ if s.me.stun > 0.0 => Some((say(hd::FROZEN), RED)),
+            _ if s.world.cattle > 0.0 => Some((say(hd::CATTLE), AMBER)),
+            _ if s.world.truck >= 1.0 && s.world.warm < 1.0 => Some((say(hd::ENGINE), AMBER)),
+            _ if s.world.beacon > 0.0 => Some((say(hd::BEACON), AMBER)),
             _ => None,
         },
         _ => None,
@@ -170,8 +177,10 @@ pub(crate) fn status_text(
 pub(crate) fn roster(
     net: Res<Network>,
     state: Res<State<Flow>>,
+    settings: Res<Settings>,
     mut lines: Query<(&RosterLine, &mut Text, &mut TextColor)>,
 ) {
+    let l = settings.lang;
     // Only a shared night has a party to list (hosting can begin at runtime).
     let playing = matches!(*state.get(), Flow::Playing | Flow::Paused) && net.is_shared();
     let me = net.id();
@@ -181,28 +190,33 @@ pub(crate) fn roster(
             set_text(&mut t, "");
             continue;
         };
-        let you = if Some(p.id) == me { " (you)" } else { "" };
+        let you = if Some(p.id) == me { l.say(hd::YOU_SUFFIX) } else { "" };
         let who = crate::survivor::Survivor::from_code(p.survivor).name();
         // How far a friend lies, never where the one in his sack is.
         let far = here
             .filter(|_| p.findable() && Some(p.id) != me)
             .map(|h| h.distance(Vec2::from_array(p.position)));
+        let (sack, down, lost, watching, carrying) = match l {
+            Lang::En => ("IN HIS SACK", "DOWN", "lost", "watching", "carrying"),
+            Lang::Es => ("EN SU SACO", "CAÍDO", "perdido", "mira a", "carga"),
+        };
+        let (slot, bleed) = (line.0 + 1, p.bleed.max(0.0));
         let text = match p.status {
-            1 if p.hauled => format!("P{} {who}{you}  IN HIS SACK {:.0}s", line.0 + 1, p.bleed.max(0.0)),
+            1 if p.hauled => format!("P{slot} {who}{you}  {sack} {bleed:.0}s"),
             1 => match far {
-                Some(d) => format!("P{} {who}{you}  DOWN {:.0}s · {d:.0} m", line.0 + 1, p.bleed.max(0.0)),
-                None => format!("P{} {who}{you}  DOWN {:.0}s", line.0 + 1, p.bleed.max(0.0)),
+                Some(d) => format!("P{slot} {who}{you}  {down} {bleed:.0}s · {d:.0} m"),
+                None => format!("P{slot} {who}{you}  {down} {bleed:.0}s"),
             },
             // Gone for the night, and whose night they now watch.
             2 => match net
                 .snapshot()
                 .and_then(|s| s.players.iter().position(|q| p.watching != 0 && q.id == p.watching))
             {
-                Some(slot) => format!("P{} {who}{you}  lost · watching P{}", line.0 + 1, slot + 1),
-                None => format!("P{} {who}{you}  lost", line.0 + 1),
+                Some(friend) => format!("P{slot} {who}{you}  {lost} · {watching} P{}", friend + 1),
+                None => format!("P{slot} {who}{you}  {lost}"),
             },
-            _ if p.carrying > 0 => format!("P{} {who}{you}  carrying {}", line.0 + 1, p.carrying),
-            _ => format!("P{} {who}{you}", line.0 + 1),
+            _ if p.carrying > 0 => format!("P{slot} {who}{you}  {carrying} {}", p.carrying),
+            _ => format!("P{slot} {who}{you}"),
         };
         set_text(&mut t, &text);
         set_color(&mut c, if p.status == 0 { player_color(line.0) } else { RED });
@@ -294,6 +308,7 @@ pub(crate) fn downed_markers(
 pub(crate) fn vitals(
     net: Res<Network>,
     state: Res<State<Flow>>,
+    settings: Res<Settings>,
     mut bars: ParamSet<(
         Query<&mut Visibility, With<FearOuter>>,
         Query<&mut Node, With<FearFill>>,
@@ -332,17 +347,23 @@ pub(crate) fn vitals(
             n.width = w;
         }
     }
+    let l = settings.lang;
     let mut parts = Vec::new();
     if aji > 0 {
         parts.push(format!("Ají x{aji}  [Q]"));
     }
     if net.carrying() > 0 {
-        parts.push(format!("Bones x{}  [G] drop", net.carrying()));
+        parts.push(format!(
+            "{} x{}  [G] {}",
+            l.pick("Bones", "Huesos"),
+            net.carrying(),
+            l.pick("drop", "soltar")
+        ));
     }
     if battery <= 0.0 {
-        parts.push("Torch: dead".to_string());
+        parts.push(l.say(hd::TORCH_DEAD).to_string());
     } else if battery < 0.5 {
-        parts.push(format!("Torch {:.0}%", battery * 100.0));
+        parts.push(format!("{} {:.0}%", l.pick("Torch", "Linterna"), battery * 100.0));
     }
     let line = parts.join("   ·   ");
     for mut t in &mut text {
@@ -350,61 +371,55 @@ pub(crate) fn vitals(
     }
 }
 
-fn hold_label(kind: u8) -> &'static str {
+fn hold_label(kind: u8, l: Lang) -> &'static str {
     match kind {
-        1 => "Laying the bones down…",
-        2 => "Praying at the roots…",
-        3 => "Cranking the pump…",
-        4 => "Turning the key…",
-        5 => "Lighting the beacon…",
-        6 => "Helping them up…",
-        7 => "Untying Tureco…",
+        1..=7 => l.say(hd::HOLD[usize::from(kind) - 1]),
         _ => "",
     }
 }
 
 /// The hands thrown off by a missed check, at the task in hand.
-fn stall_label(kind: u8) -> Option<&'static str> {
+fn stall_label(kind: u8, l: Lang) -> Option<&'static str> {
     match kind {
-        1 => Some("The bones slip from your hands…"),
-        3 => Some("The crank kicks back…"),
-        4 => Some("The engine floods…"),
+        1 => Some(l.say(hd::STALL_BONES)),
+        3 => Some(l.say(hd::STALL_CRANK)),
+        4 => Some(l.say(hd::STALL_ENGINE)),
         _ => None,
     }
 }
 
-fn prompt_for(t: &Target, note_open: bool, carrying: usize, bones_home: bool) -> String {
+fn prompt_for(t: &Target, note_open: bool, carrying: usize, bones_home: bool, l: Lang) -> String {
     let close = !t.ready();
-    let text = match t.kind {
-        TargetKind::Relic(_) => "[E] Take the bones — heavy, and they rattle",
-        TargetKind::Aji(_) => "[E] Take the peppers",
-        TargetKind::Batteries(_) => "[E] Take the spare batteries",
-        TargetKind::Note(_) if note_open => "[E] Put the note down",
-        TargetKind::Note(_) => "[E] Read the note",
-        TargetKind::Altar if carrying > 0 => "[Hold E] Lay the bones down",
-        TargetKind::Altar if bones_home => "[Hold E] Pray   ·   [N] Name which of him walks tonight",
-        TargetKind::Altar => "[Hold E] Pray at the roots — it steadies you, but the ceiba hears",
-        TargetKind::Pump => "[Hold E] Crank the pump — loud!",
+    let text = l.say(match t.kind {
+        TargetKind::Relic(_) => hd::TAKE_BONES,
+        TargetKind::Aji(_) => hd::TAKE_PEPPERS,
+        TargetKind::Batteries(_) => hd::TAKE_BATTERIES,
+        TargetKind::Note(_) if note_open => hd::PUT_NOTE_DOWN,
+        TargetKind::Note(_) => hd::READ_NOTE,
+        TargetKind::Altar if carrying > 0 => hd::LAY_BONES,
+        TargetKind::Altar if bones_home => hd::PRAY_OR_NAME,
+        TargetKind::Altar => hd::PRAY,
+        TargetKind::Pump => hd::CRANK,
         TargetKind::Ignition => match t.blocked {
-            Some(Blocked::NeedBones) => "The engine will not turn while the bones are unrested",
-            Some(Blocked::NeedPower) => "Nothing turns over — the power is out",
-            Some(Blocked::NeedKey) => "No key in the ignition — it is padlocked in the box at the windmill",
-            None => "[Hold E] Start the truck — the roar will carry",
+            Some(Blocked::NeedBones) => hd::NEED_BONES,
+            Some(Blocked::NeedPower) => hd::NEED_POWER,
+            Some(Blocked::NeedKey) => hd::NEED_KEY,
+            None => hd::START,
         },
-        TargetKind::Beacon => "[Hold E] Light the beacon — he will come to the light",
-        TargetKind::Lockbox => "[E] The key box — a three-number padlock",
-        TargetKind::Dog => "[Hold E] Untie Tureco — he fears nothing, and HE fears dogs",
-        TargetKind::Panel => "[E] Switch the lamp lines — the old dynamo carries only two",
-        TargetKind::Body(_) => "[Hold E] Help them up",
-        TargetKind::Radio => "[E] Turn the radio's dial — it squeals",
-    };
+        TargetKind::Beacon => hd::LIGHT_BEACON,
+        TargetKind::Lockbox => hd::KEY_BOX,
+        TargetKind::Dog => hd::UNTIE_DOG,
+        TargetKind::Panel => hd::PANEL,
+        TargetKind::Body(_) => hd::HELP_UP,
+        TargetKind::Radio => hd::RADIO,
+    });
     if close && !matches!(t.kind, TargetKind::Ignition if t.blocked.is_some()) {
         let name = text.split_once(']').map_or(text, |(_, rest)| rest.trim_start());
         match t.kind {
-            TargetKind::Relic(_) => "Bones — move closer".into(),
-            TargetKind::Aji(_) => "Peppers — move closer".into(),
-            TargetKind::Batteries(_) => "Batteries — move closer".into(),
-            _ => format!("{name} — move closer"),
+            TargetKind::Relic(_) => l.say(hd::BONES_CLOSER).into(),
+            TargetKind::Aji(_) => l.say(hd::PEPPERS_CLOSER).into(),
+            TargetKind::Batteries(_) => l.say(hd::BATTERIES_CLOSER).into(),
+            _ => format!("{name} — {}", l.say(hd::MOVE_CLOSER)),
         }
     } else {
         text.to_string()
@@ -417,6 +432,7 @@ pub(crate) fn prompt(
     note: Res<NoteOpen>,
     state: Res<State<Flow>>,
     tuning: Res<TuningRes>,
+    settings: Res<Settings>,
     mut q: ParamSet<(
         Query<&mut Text, With<PromptText>>,
         Query<&mut Text, With<ProgressLabel>>,
@@ -424,6 +440,7 @@ pub(crate) fn prompt(
         Query<&mut Node, With<ProgressFill>>,
     )>,
 ) {
+    let l = settings.lang;
     let playing = *state.get() == Flow::Playing;
     let me = net.snapshot().map(|s| s.me);
     let (kind, hold, stall) = me.map_or((0, 0.0, 0.0), |m| (m.hold_kind, m.hold, m.stall));
@@ -438,6 +455,7 @@ pub(crate) fn prompt(
                 net.carrying(),
                 net.snapshot()
                     .is_some_and(|s| s.world.total > 0 && s.world.delivered >= s.world.total),
+                l,
             ),
             None => String::new(),
         }
@@ -449,12 +467,15 @@ pub(crate) fn prompt(
             let dial = net.snapshot().map_or(0, |s| s.world.radio);
             match crate::radio::frequency(dial) {
                 Some(kc) => format!("{text}   ·   {kc} kc"),
-                None => format!("{text}   ·   off"),
+                None => format!("{text}   ·   {}", l.say(hd::RADIO_OFF)),
             }
         }
         Some(TargetKind::Lockbox) if !text.is_empty() => {
             let kc = crate::radio::STOPS[crate::radio::numbers_stop(tuning.0.seed)];
-            format!("{text}   ·   a tag on it reads «{kc} kc»")
+            match l {
+                Lang::En => format!("{text}   ·   a tag on it reads «{kc} kc»"),
+                Lang::Es => format!("{text}   ·   una etiqueta dice «{kc} kc»"),
+            }
         }
         _ => text,
     };
@@ -464,9 +485,9 @@ pub(crate) fn prompt(
     let label = if !holding {
         ""
     } else if stall > 0.0 {
-        stall_label(kind).unwrap_or(hold_label(kind))
+        stall_label(kind, l).unwrap_or(hold_label(kind, l))
     } else {
-        hold_label(kind)
+        hold_label(kind, l)
     };
     for mut t in &mut q.p1() {
         set_text(&mut t, label);
@@ -600,6 +621,7 @@ pub(crate) fn downed_panel(
     net: Res<Network>,
     state: Res<State<Flow>>,
     time: Res<Time<Real>>,
+    settings: Res<Settings>,
     mut panel: Query<&mut Visibility, With<DownedPanel>>,
     mut text: Query<&mut Text, With<DownedText>>,
     mut help: Query<&mut Text, (With<DownedHelp>, Without<DownedText>)>,
@@ -617,9 +639,10 @@ pub(crate) fn downed_panel(
         0.0
     };
     let shared = net.is_shared();
+    let l = settings.lang;
     // Down where friends can find you: what you can still do about it.
     let can = if shared && status == 1 && me.is_some_and(|p| p.findable()) {
-        "Crawl (WASD) toward your friends   ·   V  cry for help (he may hear it too)   ·   F  your torch shows where you lie"
+        l.say(hd::DOWN_HELP)
     } else {
         ""
     };
@@ -627,28 +650,24 @@ pub(crate) fn downed_panel(
         set_text(&mut t, can);
     }
     let (label, want, rgb) = match (status, me) {
-        (1, Some(p)) if p.hauled => (
-            "IN HIS SACK\nThe bones press on you in the dark. Only ají in his path will make him drop you.".to_string(),
-            0.72,
-            [0.08, 0.04, 0.02],
-        ),
-        (1, Some(p)) => (
-            if shared {
-                format!("YOU ARE DOWN\nA friend can help you up — {:.0}s left", p.bleed.max(0.0))
-            } else {
-                format!("YOU ARE DOWN\n{:.0}s left", p.bleed.max(0.0))
-            },
-            0.38,
-            [0.28, 0.02, 0.02],
-        ),
+        (1, Some(p)) if p.hauled => (l.say(hd::IN_SACK).to_string(), 0.72, [0.08, 0.04, 0.02]),
+        (1, Some(p)) => {
+            let left = p.bleed.max(0.0);
+            (
+                match (l, shared) {
+                    (Lang::En, true) => format!("YOU ARE DOWN\nA friend can help you up — {left:.0}s left"),
+                    (Lang::En, false) => format!("YOU ARE DOWN\n{left:.0}s left"),
+                    (Lang::Es, true) => format!("ESTÁS CAÍDO\nUn amigo puede levantarte — quedan {left:.0}s"),
+                    (Lang::Es, false) => format!("ESTÁS CAÍDO\nQuedan {left:.0}s"),
+                },
+                0.38,
+                [0.28, 0.02, 0.02],
+            )
+        }
         // Then the night again, faintly cold, through a friend's eyes.
         (2, _) if net.spectating() && *gone > DIED_HOLD => (String::new(), 0.14, [0.03, 0.05, 0.09]),
         (2, _) => (
-            if shared {
-                "YOU DIED\nWatch over your friends".to_string()
-            } else {
-                "YOU DIED".to_string()
-            },
+            l.say(if shared { hd::DIED_SHARED } else { hd::DIED }).to_string(),
             0.5,
             [0.02, 0.02, 0.03],
         ),
@@ -682,23 +701,21 @@ pub(crate) fn downed_panel(
 /// Seconds "YOU DIED" holds the screen before the fallen watch a friend.
 const DIED_HOLD: f32 = 3.0;
 
-/// The controls reminder while watching a friend: only the switch keys.
-const CONTROLS_WATCHING: &str = "A / D or ← / →  watch another friend · M map · Esc";
-
 /// Gone for the night: whom they watch, and the keys to watch another. The
 /// crosshair goes (there is nothing to aim at from a friend's shoulder) and
-/// the controls reminder names the switch keys.
+/// the controls reminder names the switch keys; otherwise it names them all,
+/// in the chosen language.
 pub(crate) fn watch_line(
     net: Res<Network>,
     state: Res<State<Flow>>,
+    settings: Res<Settings>,
     mut line: Query<(&mut Visibility, &Children), With<WatchLine>>,
     mut crosshair: Query<&mut Visibility, (With<Crosshair>, Without<WatchLine>)>,
     controls: Query<&Children, With<ControlsLine>>,
     mut texts: Query<&mut Text>,
-    // The reminder as spawned, kept while it names the switch keys.
-    mut usual: Local<Option<String>>,
 ) {
-    let label = net.watch_label().filter(|_| *state.get() == Flow::Playing);
+    let l = settings.lang;
+    let label = net.watch_label(l).filter(|_| *state.get() == Flow::Playing);
     for (mut vis, kids) in &mut line {
         set_vis(&mut vis, label.is_some());
         if let Some(label) = &label {
@@ -714,17 +731,12 @@ pub(crate) fn watch_line(
     for mut vis in &mut crosshair {
         set_vis(&mut vis, !watching);
     }
+    let reminder = l.say(if watching { hd::CONTROLS_WATCHING } else { hd::CONTROLS });
     for kids in &controls {
         let kids: &[Entity] = kids;
         for &kid in kids {
-            let Ok(mut t) = texts.get_mut(kid) else {
-                continue;
-            };
-            if watching {
-                usual.get_or_insert_with(|| t.0.clone());
-                set_text(&mut t, CONTROLS_WATCHING);
-            } else if let Some(back) = usual.take() {
-                set_text(&mut t, &back);
+            if let Ok(mut t) = texts.get_mut(kid) {
+                set_text(&mut t, reminder);
             }
         }
     }
@@ -778,189 +790,90 @@ pub(crate) fn hints_and_captions(
     mut heard: Local<std::collections::BTreeMap<u64, f32>>,
 ) {
     let dt = time.delta_secs();
-    let show = |hint: &mut Hint, text: &'static str, secs: f32, priority: u8| {
+    let l = settings.lang;
+    let show = |hint: &mut Hint, text: Words, secs: f32, priority: u8| {
         if hint.timer <= 0.0 || priority >= hint.priority {
-            hint.text = text;
+            hint.text = l.say(text);
             hint.timer = secs;
             hint.priority = priority;
         }
     };
     for EncounterMsg(e) in events.read() {
         match e {
-            Event::RelicTaken => show(
-                &mut hint,
-                "The bundle is heavy, and it rattles. Something out on the llano knows.",
-                6.0,
-                1,
-            ),
-            Event::RelicDropped => show(&mut hint, "You set the bones down. Gently.", 4.0, 1),
+            Event::RelicTaken => show(&mut hint, th::RELIC_TAKEN, 6.0, 1),
+            Event::RelicDropped => show(&mut hint, th::RELIC_DROPPED, 4.0, 1),
             Event::SkillCheck => {
                 if !hint.taught_skill {
                     hint.taught_skill = true;
-                    show(
-                        &mut hint,
-                        "Keep the rhythm: press Space as the needle crosses the marked zone. Miss, and it screeches and the work slips back.",
-                        7.0,
-                        3,
-                    );
+                    show(&mut hint, th::SKILL, 7.0, 3);
                 }
             }
-            Event::OmenSilence => show(&mut hint, "Even the frogs have stopped.", 5.0, 1),
-            Event::Weeping => show(&mut hint, "Across the llano, a grown man is weeping.", 6.0, 2),
-            Event::DogFreed => show(&mut hint, "Tureco shakes himself and falls in at your heels.", 6.0, 2),
-            Event::DogGrowl => show(
-                &mut hint,
-                "Tureco growls low at the dark. He is near — whatever the whistle says.",
-                6.0,
-                2,
-            ),
+            Event::OmenSilence => show(&mut hint, th::SILENCE, 5.0, 1),
+            Event::Weeping => show(&mut hint, th::WEEPING, 6.0, 2),
+            Event::DogFreed => show(&mut hint, th::DOG_FREED, 6.0, 2),
+            Event::DogGrowl => show(&mut hint, th::DOG_GROWL, 6.0, 2),
             // Under a dropped sack's hint in the same moment, never over it.
-            Event::DogBark => show(
-                &mut hint,
-                "Tureco barks — and out in the dark, something flinches away.",
-                6.0,
-                2,
-            ),
+            Event::DogBark => show(&mut hint, th::DOG_BARK, 6.0, 2),
             Event::Hauled => {
                 if net.status() == 0 {
-                    show(
-                        &mut hint,
-                        "He stuffed them into his sack and walks off! Get ají in his path before he is gone.",
-                        8.0,
-                        3,
-                    );
+                    show(&mut hint, th::HAULED, 8.0, 3);
                 }
             }
-            Event::SackDropped if net.status() == 2 => show(&mut hint, "The sack falls!", 7.0, 3),
-            Event::SackDropped => show(
-                &mut hint,
-                "The sack falls! Follow their groans, their torch and the red mark — then hold E beside them.",
-                7.0,
-                3,
-            ),
-            Event::Taken => show(&mut hint, "He is gone into the grass. And so are they.", 7.0, 3),
-            Event::WhipCrack => show(&mut hint, "A whip cracks somewhere out in the dark.", 5.0, 1),
-            Event::BottleClink => show(&mut hint, "Glass knocks against glass, out in the grass.", 5.0, 1),
-            Event::NameWrong => show(
-                &mut hint,
-                "Wrong name. The ceiba shudders — and he comes, furious.",
-                6.0,
-                3,
-            ),
-            Event::KeyFound => show(&mut hint, "The padlock gives. The truck key is ours.", 6.0, 3),
-            Event::LinesSwitched => show(
-                &mut hint,
-                "The dynamo groans as the lines change. Somewhere, lamps die; somewhere else, they wake.",
-                5.0,
-                2,
-            ),
-            Event::LockRattle => show(
-                &mut hint,
-                "Wrong numbers. The padlock rattles, loud in the quiet.",
-                4.0,
-                2,
-            ),
-            Event::OmenDrag => show(
-                &mut hint,
-                "Something heavy was dragged through the mud here. Recently.",
-                5.0,
-                1,
-            ),
-            Event::SkillMissed => show(&mut hint, "It screeches across the llano. He heard that.", 5.0, 2),
-            Event::BatteriesTaken => show(
-                &mut hint,
-                "Spare batteries. The beam steadies — and it is the brightest thing on the llano.",
-                5.0,
-                1,
-            ),
+            Event::SackDropped if net.status() == 2 => show(&mut hint, th::SACK_FALLS, 7.0, 3),
+            Event::SackDropped => show(&mut hint, th::SACK_FALLS_HELP, 7.0, 3),
+            Event::Taken => show(&mut hint, th::TAKEN, 7.0, 3),
+            Event::WhipCrack => show(&mut hint, th::WHIP, 5.0, 1),
+            Event::BottleClink => show(&mut hint, th::BOTTLES, 5.0, 1),
+            Event::NameWrong => show(&mut hint, th::NAME_WRONG, 6.0, 3),
+            Event::KeyFound => show(&mut hint, th::KEY_FOUND, 6.0, 3),
+            Event::LinesSwitched => show(&mut hint, th::LINES_SWITCHED, 5.0, 2),
+            Event::LockRattle => show(&mut hint, th::LOCK_RATTLE, 4.0, 2),
+            Event::OmenDrag => show(&mut hint, th::DRAG, 5.0, 1),
+            Event::SkillMissed => show(&mut hint, th::MISSED, 5.0, 2),
+            Event::BatteriesTaken => show(&mut hint, th::BATTERIES, 5.0, 1),
             // A laying has one strip: the Madrina's chapter (`madrina_strip`),
             // whose last line is the hint for the stage of anger it brings
             // (La Rabia). Its stinger and the lamps' stutter are the
             // telegraph (`world::omen::RageTelegraph`); the pips are on the
             // bones line. So no hint of its own here.
-            Event::AllBonesHome => show(
-                &mut hint,
-                "The bones are home. Bring the power back, then start the truck.",
-                8.0,
-                3,
-            ),
-            Event::PowerRestored => show(
-                &mut hint,
-                "The lamps hum back to life. Light steadies the nerves — stay near it.",
-                7.0,
-                3,
-            ),
-            Event::TruckStarted => show(
-                &mut hint,
-                "The engine roars — he heard it. Hold out until it warms up.",
-                8.0,
-                3,
-            ),
+            Event::AllBonesHome => show(&mut hint, th::ALL_HOME, 8.0, 3),
+            Event::PowerRestored => show(&mut hint, th::POWER, 7.0, 3),
+            Event::TruckStarted => show(&mut hint, th::TRUCK, 8.0, 3),
             Event::ThreatManifested => {
                 if !hint.taught_crouch {
                     hint.taught_crouch = true;
-                    show(
-                        &mut hint,
-                        "Something moved out on the llano. Crouch (Ctrl) to move quietly; running is loud.",
-                        8.0,
-                        2,
-                    );
+                    show(&mut hint, th::CROUCH, 8.0, 2);
                 }
             }
             // Watching a friend, their night: he has seen them, not you.
-            Event::WarningBegan if net.status() == 2 => show(&mut hint, "He has seen your friend.", 6.0, 2),
-            Event::HuntBegan if net.status() == 2 => show(&mut hint, "He is coming for your friend!", 4.0, 2),
-            Event::Susto if net.status() == 2 => show(&mut hint, "Susto — fright freezes your friend.", 6.0, 2),
-            Event::WarningBegan => show(
-                &mut hint,
-                "He has seen you. Get solid walls between you before he comes.",
-                6.0,
-                2,
-            ),
-            Event::HuntBegan => show(&mut hint, "He is coming. Break his line of sight!", 4.0, 2),
-            Event::WarningAverted => show(&mut hint, "He lost sight of you.", 4.0, 2),
-            Event::LostTrack => show(
-                &mut hint,
-                "He lost your trail and sinks into the grass. He will rise somewhere else.",
-                6.0,
-                2,
-            ),
+            Event::WarningBegan if net.status() == 2 => show(&mut hint, th::FRIEND_SEEN, 6.0, 2),
+            Event::HuntBegan if net.status() == 2 => show(&mut hint, th::FRIEND_HUNTED, 4.0, 2),
+            Event::Susto if net.status() == 2 => show(&mut hint, th::FRIEND_SUSTO, 6.0, 2),
+            Event::WarningBegan => show(&mut hint, th::SEEN, 6.0, 2),
+            Event::HuntBegan => show(&mut hint, th::HUNT, 4.0, 2),
+            Event::WarningAverted => show(&mut hint, th::AVERTED, 4.0, 2),
+            Event::LostTrack => show(&mut hint, th::LOST_TRACK, 6.0, 2),
             Event::Downed => {
                 if net.status() == 1 && net.is_solo() {
-                    show(&mut hint, "He has you.", 6.0, 3);
+                    show(&mut hint, th::HAS_YOU, 6.0, 3);
                 } else if net.status() == 1 {
-                    show(&mut hint, "You are down. Hold on — someone may reach you.", 6.0, 3);
+                    show(&mut hint, th::YOU_DOWN, 6.0, 3);
                 } else if net.status() == 2 {
-                    show(&mut hint, "A friend is down.", 6.0, 3);
+                    show(&mut hint, th::FRIEND_DOWN_WATCHING, 6.0, 3);
                 } else {
-                    show(
-                        &mut hint,
-                        "A friend is down! Hold E beside them to help them up.",
-                        7.0,
-                        3,
-                    );
+                    show(&mut hint, th::FRIEND_DOWN, 7.0, 3);
                 }
             }
-            Event::Revived => show(&mut hint, "Back on your feet. Keep moving.", 4.0, 2),
-            Event::Died => show(&mut hint, "Someone did not make it.", 6.0, 3),
-            Event::AjiTaken => show(
-                &mut hint,
-                "Hot peppers. Press Q to scatter them — he stops to count his bones.",
-                7.0,
-                2,
-            ),
-            Event::CountingBegan => show(&mut hint, "He kneels to count his bones. Slip away, quietly.", 5.0, 2),
-            Event::CountingEnded => show(&mut hint, "He has finished counting.", 3.0, 1),
-            Event::Susto => show(
-                &mut hint,
-                "Susto — fright freezes you. Stay in the light and close to your friends.",
-                6.0,
-                2,
-            ),
-            Event::CattleSpooked => show(&mut hint, "The cattle bellow. Everything heard that.", 5.0, 2),
-            Event::BeaconLit => show(&mut hint, "The beacon flares. He turns toward the light.", 5.0, 2),
-            Event::Prayed => show(&mut hint, "The fear eases.", 3.0, 1),
-            Event::Dawn => show(&mut hint, "A rooster crows. Dawn: he sinks into the grass.", 6.0, 3),
+            Event::Revived => show(&mut hint, th::REVIVED, 4.0, 2),
+            Event::Died => show(&mut hint, th::DIED, 6.0, 3),
+            Event::AjiTaken => show(&mut hint, th::AJI, 7.0, 2),
+            Event::CountingBegan => show(&mut hint, th::COUNTING, 5.0, 2),
+            Event::CountingEnded => show(&mut hint, th::COUNTED, 3.0, 1),
+            Event::Susto => show(&mut hint, th::SUSTO, 6.0, 2),
+            Event::CattleSpooked => show(&mut hint, th::CATTLE, 5.0, 2),
+            Event::BeaconLit => show(&mut hint, th::BEACON, 5.0, 2),
+            Event::Prayed => show(&mut hint, th::PRAYED, 3.0, 1),
+            Event::Dawn => show(&mut hint, th::DAWN, 6.0, 3),
             _ => {}
         }
     }
@@ -971,12 +884,7 @@ pub(crate) fn hints_and_captions(
         let fresh = heard.get(&c.by).is_none_or(|left| c.left > *left);
         heard.insert(c.by, c.left);
         if fresh && Some(c.by) != net.id() {
-            show(
-                &mut hint,
-                "¡Auxilio! A friend cries out from the grass — follow the voice and the red mark.",
-                6.0,
-                2,
-            );
+            show(&mut hint, th::CALL, 6.0, 2);
         }
     }
     // Only over play: a menu (pause, outcome) has the screen to itself, and
@@ -985,32 +893,28 @@ pub(crate) fn hints_and_captions(
     for WhistleMsg(p) in phrases.read() {
         if p.phantom {
             // Fear put it there: the caption cannot be sure either.
-            caption.text = "A whistle…? Or only the blood in your ears.";
+            caption.text = l.say(hd::CAPTION_PHANTOM);
             caption.timer = 4.0;
             caption.band = None;
             continue;
         }
-        caption.text = p.variant.caption();
+        // The impression, in the reader's words (`perception` keeps the
+        // English one for itself).
+        caption.text = l.say(match p.variant {
+            WhistleVariant::Loud => hd::CAPTION_LOUD,
+            WhistleVariant::Middling => hd::CAPTION_MIDDLING,
+            WhistleVariant::Faint => hd::CAPTION_FAINT,
+        });
         caption.timer = 4.5;
         caption.band = Some(p.variant);
         match p.variant {
             WhistleVariant::Loud if playing && !hint.taught_loud => {
                 hint.taught_loud = true;
-                show(
-                    &mut hint,
-                    "A loud whistle, as if right beside you. The old rule: when he sounds near, he is far.",
-                    8.0,
-                    3,
-                );
+                show(&mut hint, th::LOUD_LESSON, 8.0, 3);
             }
             WhistleVariant::Faint if playing && !hint.taught_faint => {
                 hint.taught_faint = true;
-                show(
-                    &mut hint,
-                    "A thin whistle, far, far away… so he is NEAR. Get solid walls between you.",
-                    8.0,
-                    3,
-                );
+                show(&mut hint, th::FAINT_LESSON, 8.0, 3);
             }
             _ => {}
         }
@@ -1081,12 +985,14 @@ pub(crate) fn radio_dots(
 const CHAPTER_SECS: f32 = 14.0;
 
 /// Each bundle laid at the ceiba, the Madrina tells the next chapter in her
-/// own strip, Spanish over English, apart from the hints. The count is the
-/// shared one, so everyone reads the same chapter at the same moment.
+/// own strip, apart from the hints, in the reader's language (its first
+/// line; the second stays empty). The count is the shared one, so everyone
+/// reads the same chapter at the same moment, each in their own language.
 pub(crate) fn madrina_strip(
     time: Res<Time<Real>>,
     state: Res<State<Flow>>,
     net: Res<Network>,
+    settings: Res<Settings>,
     mut shown: Local<(u64, u8, f32)>,
     mut q: ParamSet<(
         Query<&mut Visibility, With<super::MadrinaStrip>>,
@@ -1120,18 +1026,19 @@ pub(crate) fn madrina_strip(
     for mut v in &mut q.p0() {
         set_vis(&mut v, chapter.is_some());
     }
-    let (es, en) = chapter.map_or(("", ""), |c| (c.es, c.en));
+    let told = chapter.map_or("", |c| c.text(settings.lang));
     for mut t in &mut q.p1() {
-        set_text(&mut t, es);
+        set_text(&mut t, told);
     }
     for mut t in &mut q.p2() {
-        set_text(&mut t, en);
+        set_text(&mut t, "");
     }
 }
 
 pub(crate) fn name_panel(
     state: Res<State<Flow>>,
     naming: Res<crate::encounter::NamePanel>,
+    settings: Res<Settings>,
     mut panel: Query<&mut Visibility, With<NamePanelUi>>,
     mut choices: Query<&mut Text, With<NameChoices>>,
 ) {
@@ -1142,11 +1049,7 @@ pub(crate) fn name_panel(
     if !open {
         return;
     }
-    let names = [
-        "1  El Borracho — the drunkard's return",
-        "2  El Hijo — the son himself",
-        "3  El Arriero — the drover",
-    ];
+    let names = hd::NAMES.map(|n| settings.lang.say(n));
     let text = names
         .iter()
         .enumerate()
@@ -1187,6 +1090,7 @@ pub(crate) fn note_panel(
     state: Res<State<Flow>>,
     note: Res<NoteOpen>,
     read: Res<crate::encounter::PagesRead>,
+    settings: Res<Settings>,
     mut panel: Query<&mut Visibility, With<NotePanel>>,
     mut paper: Query<&mut BackgroundColor, With<NotePaper>>,
     mut texts: ParamSet<(
@@ -1204,8 +1108,11 @@ pub(crate) fn note_panel(
     let Some(id) = open else {
         return;
     };
+    let l = settings.lang;
     let page = crate::lore::note(id);
-    let (es, en) = (page.es, page.en);
+    // The page in the reader's language alone; the second body line stays
+    // empty.
+    let (words, by) = (page.text(l), l.say(page.by));
     let [r, g, b] = page.medium.paper();
     for mut bg in &mut paper {
         let want = Color::srgba(r, g, b, 0.97);
@@ -1225,13 +1132,15 @@ pub(crate) fn note_panel(
     } else {
         Color::srgb(0.25, 0.2, 0.16)
     };
-    let title = format!("{}\n{}", page.medium.label(), page.title);
+    let title = format!("{}\n{}", page.medium.label(l), l.say(page.title));
     let count = format!(
-        "[E] put the page down   ·   pages found {}/{}",
+        "{}   ·   {} {}/{}",
+        l.say(crate::lang::panel::PUT_PAGE_DOWN),
+        l.pick("pages found", "páginas encontradas"),
         read.0.len(),
         crate::lore::PAGES
     );
-    let lines: [(&str, Color); 5] = [(es, ink), (en, soft), (page.by, ink), (&title, soft), (&count, soft)];
+    let lines: [(&str, Color); 5] = [(words, ink), ("", soft), (by, ink), (&title, soft), (&count, soft)];
     let apply = |i: usize, t: &mut Text, c: &mut TextColor| {
         set_text(t, lines[i].0);
         if c.0 != lines[i].1 {

@@ -74,6 +74,10 @@ pub struct Settings {
     /// Over the whole screen or in a window (see [`display_mode`] for what
     /// it means on a given launch).
     pub display_mode: DisplayMode,
+    /// The words on screen, English or Spanish. This player's alone: never
+    /// sent to a friend, never part of the gameplay fingerprint.
+    #[serde(default)]
+    pub lang: crate::lang::Lang,
 }
 
 /// How the player wants the game shown.
@@ -112,6 +116,7 @@ impl Default for Settings {
             contrast: 1.0,
             head_bob: true,
             display_mode: DisplayMode::Fullscreen,
+            lang: crate::lang::Lang::En,
         }
     }
 }

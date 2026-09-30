@@ -142,6 +142,7 @@ mod tests {
         p.settings.display_mode = Settings::default().display_mode.toggled();
         p.settings.brightness = 0.4;
         p.settings.contrast = 1.15;
+        p.settings.lang = crate::lang::Lang::Es;
         p.calibrated = true;
         p.pages.extend([0, 3, 19]);
         p.tally.record(Ending::Escaped { seconds: 500.0 });
@@ -206,6 +207,8 @@ mod tests {
         );
         assert_eq!(s.display_mode, fresh.display_mode);
         assert_eq!(s.contrast, fresh.contrast);
+        // It never chose a language: it reads English until it does.
+        assert_eq!(s.lang, crate::lang::Lang::En);
         assert!(!p.calibrated);
         // Saved again, it carries none of the old keys.
         let again = p.to_json();

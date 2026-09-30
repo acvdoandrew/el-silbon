@@ -18,7 +18,13 @@ Linux:    unzip, then run ./el_silbon (chmod +x el_silbon if needed).
 
 The game opens fullscreen. For a window instead: Settings > Video >
 Display mode (from the main menu, or Esc during a night). The choice is
-remembered.
+remembered. In the menus, click ‹ or › beside a setting (or press the
+Left / Right arrow keys) to lower or raise it.
+
+English or Spanish: Settings > Language / Idioma (on the main menu's
+Settings, or Esc during a night). Every menu, hint, caption, page of the
+tale and La Madrina's chapters then read in that language only. It is
+your own choice: friends in the same night can each play in their own.
 
 The first launch opens on a brightness page with three hats: set it so
 the middle one is just barely visible. If the night looks all black

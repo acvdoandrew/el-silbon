@@ -58,13 +58,16 @@ impl Survivor {
         }
     }
 
-    pub fn role(self) -> &'static str {
-        match self {
-            Survivor::Llanero => "Ranch hand",
-            Survivor::Coplera => "Song keeper",
-            Survivor::Encargado => "Ranch caretaker",
-            Survivor::Muchacho => "Young local",
-        }
+    /// What they are to the hato, in the reader's language (the name above
+    /// is the same in both).
+    pub fn role(self, lang: crate::lang::Lang) -> &'static str {
+        use crate::lang::menu as m;
+        lang.say(match self {
+            Survivor::Llanero => m::ROLE_LLANERO,
+            Survivor::Coplera => m::ROLE_COPLERA,
+            Survivor::Encargado => m::ROLE_ENCARGADO,
+            Survivor::Muchacho => m::ROLE_MUCHACHO,
+        })
     }
 
     /// Their voice, as a playback speed for the groans and cries of the
