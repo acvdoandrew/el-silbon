@@ -216,7 +216,7 @@ pub fn spawn(ctx: &mut SpawnCtx, materials: &mut Assets<StandardMaterial>) {
     for (i, c) in herd.into_iter().enumerate() {
         let mesh = ctx.meshes.add(cow_mesh(ctx.seed as u32, i).build());
         let yaw = rng.range(0.0, std::f32::consts::TAU);
-        let rest = Vec3::new(c.x, 0.0, c.y);
+        let rest = Vec3::new(c.x, ctx.layout.surface_height(c), c.y);
         ctx.commands.spawn((
             Name::new("cow"),
             Cow {

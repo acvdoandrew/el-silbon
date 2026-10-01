@@ -2085,6 +2085,129 @@ def make_radio_numbers():
     }
 
 
+def make_catch_breath(rng):
+    """In the silence before the catch, something breathes beside your ear:
+    one long rattling inhale and a wet, growling exhale, dry and close."""
+    n = int(1.0 * SR)
+    out = [0.0] * n
+    air = biquad_bandpass(noise(rng, n), 1100.0, 0.7)
+    hiss = biquad_bandpass(noise(rng, n), 2600.0, 1.2)
+    for i in range(n):
+        t = i / SR
+        # Inhale (rising, 0..0.45 s), a catch in the throat, exhale (0.52..1.0).
+        if t < 0.45:
+            env = math.sin(0.5 * math.pi * t / 0.45) ** 1.5 * 0.55
+        elif t < 0.52:
+            env = 0.0
+        else:
+            u = (t - 0.52) / 0.48
+            env = math.sin(math.pi * min(1.0, u * 1.6)) ** 0.7 * (1.0 - u) ** 0.4
+        rattle = 0.55 + 0.45 * math.sin(TAU * 31.0 * t + 1.5 * math.sin(TAU * 4.0 * t))
+        growl = math.sin(TAU * 68.0 * t + 0.6 * math.sin(TAU * 34.0 * t)) * 0.35 if t > 0.52 else 0.0
+        out[i] = (air[i] * 0.8 + hiss[i] * 0.35) * env * rattle + growl * env
+    # A wet click as the throat opens.
+    for k in range(int(0.012 * SR)):
+        i = int(0.505 * SR) + k
+        out[i] += math.sin(TAU * 1900.0 * k / SR) * math.exp(-k / SR / 0.002) * 0.6
+    return normalize(fade(out, 0.01, 0.08), 0.9)
+
+
+def make_catch_hit(rng, k):
+    """Each time the torch strobes back on him: a hard crack, a body blow
+    and a struck-iron ring, heavier and lower each time (k = 0..3)."""
+    n = int(0.9 * SR)
+    out = [0.0] * n
+    weight = 0.6 + 0.4 * k / 3.0
+    low = 1.0 - 0.12 * k
+    crack = one_pole_highpass(noise(rng, n), 1800.0)
+    for i in range(int(0.03 * SR)):
+        out[i] += crack[i] * math.exp(-(i / SR) / 0.006) * 1.2
+    damped(out, 0.0, 52.0 * low, 0.16 + 0.05 * k, 1.1 * weight)
+    damped(out, 0.0, 104.0 * low, 0.09, 0.5 * weight)
+    for f, g in ((311.0, 0.22), (467.0, 0.18), (733.0, 0.14), (1187.0, 0.1), (1871.0, 0.07)):
+        damped(out, 0.0, f * low * rng.uniform(0.98, 1.02), 0.18 + 0.04 * k, g * weight,
+               phase=rng.uniform(0, TAU))
+    grit = biquad_bandpass(noise(rng, n), 700.0, 1.0)
+    for i in range(n):
+        t = i / SR
+        out[i] += grit[i] * math.exp(-t / 0.12) * 0.35 * weight
+        # Overdrive: the hits get dirtier as he comes.
+        out[i] = math.tanh(out[i] * (1.2 + 0.5 * k)) / math.tanh(1.2 + 0.5 * k)
+    room = reverb(out, size=0.8, damp=0.45, feedback=0.7)
+    out = [d * 0.9 + r * 0.2 for d, r in zip(out, room)]
+    return normalize(fade(out, 0.0003, 0.2), 0.95)
+
+
+def make_catch_shriek(rng):
+    """As he bends over you: his own whistle torn into a shriek, sped up and
+    dragged upward through a growling, distorted throat, swelling until the
+    black cuts it dead (1.13 s, the catch's last flash to its cut)."""
+    n = int(1.13 * SR)
+    out = [0.0] * n
+    take = source_take(0)
+    if take is not None:
+        src = take[0]
+        # Read the recording ever faster: the phrase rises an octave and more.
+        pos = int(0.25 * SR)
+        for i in range(n):
+            t = i / n
+            rate = 1.5 + 1.6 * t * t
+            j = int(pos)
+            if j + 1 >= len(src):
+                pos = int(0.25 * SR)
+                j = pos
+            frac = pos - j
+            out[i] = (src[j] * (1 - frac) + src[j + 1] * frac) * 2.2
+            pos += rate
+    # A choir of detuned voices climbing under it, and the throat's growl.
+    phs = [rng.uniform(0, TAU) for _ in range(5)]
+    rough = biquad_bandpass(noise(rng, n), 1500.0, 0.6)
+    for i in range(n):
+        t = i / SR
+        u = t / 1.13
+        s = 0.0
+        for k in range(5):
+            f = (720.0 + 1900.0 * u ** 1.6) * (1.0 + 0.017 * (k - 2)) * (1.0 + 0.03 * math.sin(TAU * (9.0 + 1.7 * k) * t))
+            phs[k] += TAU * f / SR
+            s += 2.0 * ((phs[k] / TAU) % 1.0) - 1.0
+        growl = 0.5 + 0.5 * math.sin(TAU * 43.0 * t)
+        env = min(1.0, t / 0.08) * (0.35 + 0.65 * u)
+        out[i] = (out[i] + s / 5.0 * 0.6 + rough[i] * growl * 0.9) * env
+        out[i] = math.tanh(out[i] * 2.4)
+    return normalize(fade(out, 0.004, 0.004), 0.95)
+
+
+def make_catch_slam(rng):
+    """The black falls: a sub-bass drop that shakes the room, a burst, and a
+    long dark tail under the bones and the ringing."""
+    n = int(2.6 * SR)
+    out = [0.0] * n
+    ph = 0.0
+    burst = one_pole_lowpass(noise(rng, n), 1800.0)
+    for i in range(n):
+        t = i / SR
+        f = 28.0 + 50.0 * math.exp(-t / 0.25)
+        ph += TAU * f / SR
+        out[i] = math.sin(ph) * math.exp(-t / 0.9) * 1.1
+        out[i] += burst[i] * math.exp(-t / 0.07) * 0.9
+    out = [math.tanh(v * 1.6) for v in out]
+    room = reverb(out, size=1.3, damp=0.6, feedback=0.8)
+    out = [d * 0.85 + r * 0.3 for d, r in zip(out, room)]
+    return normalize(fade(out, 0.0005, 0.8), 0.95)
+
+
+def make_catch():
+    """The catch, made heavier (seed range 9300-9399)."""
+    files = {
+        "catch_breath.wav": make_catch_breath(random.Random(9300)),
+        "catch_shriek.wav": make_catch_shriek(random.Random(9305)),
+        "catch_slam.wav": make_catch_slam(random.Random(9306)),
+    }
+    for k in range(4):
+        files[f"catch_hit_{k}.wav"] = make_catch_hit(random.Random(9301 + k), k)
+    return files
+
+
 def make_horror():
     """Sounds added after the first two streams, each on its own seed so
     adding or changing one never changes another."""
@@ -2129,6 +2252,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", default=os.path.join(here, "..", "assets", "audio"))
     parser.add_argument("--only-whistles", action="store_true", help="regenerate only the whistle takes")
+    parser.add_argument("--only-catch", action="store_true", help="regenerate only the catch's sounds")
     parser.add_argument("--synth", action="store_true",
                         help="build the whistles from the synthesized fallback, as if the recording were "
                              "absent (needs --out: never overwrites the shipped whistles)")
@@ -2141,6 +2265,9 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     if args.only_whistles:
         write_all(args.out, make_whistles())
+        return
+    if args.only_catch:
+        write_all(args.out, make_catch())
         return
 
     rng = random.Random(SEED)
@@ -2156,6 +2283,7 @@ def main():
     files.update(make_mechanics(random.Random(SEED + 1)))
     files.update(make_horror())
     files.update(make_radio_numbers())
+    files.update(make_catch())
 
     write_all(args.out, files)
 

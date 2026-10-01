@@ -1,5 +1,146 @@
 # Progress
 
+## Current handoff — 2026-10-01 (trailer 3: the Madrina)
+
+Uncommitted. The user asked for a scarier catch (done, below) and then a
+new, dramatic trailer with a female narrator telling the tale, in both
+languages, no mention of AI.
+
+- **Output** (`~/Videos/`): `el_silbon_trailer3_en.mp4`,
+  `el_silbon_trailer3_es.mp4` (111.8 s, 1080p30, -14.0 LUFS, true peak
+  -1.7/-1.8 dBFS), `*_1080p_share.mp4` (~120 MB, ~9 Mbps) and
+  `*_preview_720p.mp4`; the catch alone: `el_silbon_catch_preview.mp4`.
+- **The cut** (`trailer/script_v3.md`, `trailer/edit3.py --lang en|es`):
+  the Madrina (the tale's teller in `lore.rs`) to the children: cold open
+  in the dark, the legend card, the murder, the post and the dog, the curse
+  over a push in on his face, his walk; the game (bones, La Rabia, his
+  counting, the truck, dawn, the caño, four friends, a friend down); the
+  rule; the new catch; the title.
+- **New shots** in `src/trailer.rs`: `22_face`, `23_caiman`, `24_sack`,
+  `25_count` (with `Shot::bones_home`); every shot re-rendered with the
+  Tripo models.
+- **The far whistle** (opening, end) is trailer 1's clean take from
+  `f75473b`: the user heard the game's current wind-torn far whistle as
+  broken audio in the cold open. Remixed both cuts and their copies.
+- **After the user's review** (2026-10-01, stills from the cut):
+  - Cattle, horse, capybara, egret: the legs below the belly line now
+    belong to the body (`legs()` force boxes in `tools/models/tripo.py`);
+    they had followed the neck and tail bones and swung as the head
+    grazed. The herd now stands on the surface height, not y = 0.
+  - Tureco stands at his post (the old sit sank and tilted the root and
+    buried a standing model's hind legs), wears a collar, and the rope
+    sags in eight lengths from the post to the collar's side.
+  - El Silbón's arms hang plumb (shoulders undo the torso's lean); the
+    count and the hunt reach forward, not backward. The catch is untouched.
+  - Survivors: arms brought in from the model's A-pose, a bigger arm swing
+    and stride (the foot test still holds). Trailer walks lengthened to a
+    walking pace (a short path sized the stride to a shuffle).
+  - Shots: Tureco seen across his rope, the sack followed from his
+    shoulder (not from the ground), the hide pass reversed so the sack
+    rides away from the camera, the party three-quarters on.
+  - Sound: no synthesized groan or cry over the downed friend; the loud
+    whistle ends before the whispered rule, the next one moves into the
+    hide, the music ducks 9 dB under the rule and the whisper is +4 dB.
+- **Verified:** both transcripts match the script; frames sampled across
+  the English cut; gate green (old `icon.rs` lint aside).
+- **Unverified:** nobody has watched or listened yet — the harp score, the
+  narration over it, and the catch's mix in the edit are judged by numbers
+  only.
+
+## Current handoff — 2026-10-01 (Tripo models, wildlife, a heavier catch)
+
+Uncommitted. The user generated 14 models in Tripo and asked for them in
+the game, then for the jump scare to be scarier (sound and camera).
+
+- **Models** (`assets/models/*.glb`, recorded in `assets/SOURCES.md`):
+  El Silbón, the four survivors, Tureco, cow/bull/calf (the "goat" export
+  is a zebu calf), horse, capybara, caiman, egret, truck. Prepared by
+  `tools/models/tripo.py` (`-- NAME`, `--measure` for the grid renders):
+  turn, real size, decimate, 2K JPEG texture, and skin to the game's joint
+  names with identity rest rotations. Heat weighting fails on Tripo meshes
+  (20–100 overlapping pieces), so weights are geometric per piece: arm
+  bones only for pieces that reach the upper-arm tube, a soft inner side
+  for loose sleeves, a tight tube for El Silbón's bare arms through his
+  coat, `zones` for his sack, `force` boxes for Tureco's jaw. Every model
+  was checked in a test pose render.
+- **El Silbón's proportions:** hips at the code's 1.66 m (2.59 m with the
+  hat). The catch now aims at his face from the loaded body's own Head
+  joint (`Fright::head`, set by `models.rs`; the stand-in's
+  `STAND_IN_HEAD` otherwise); the catch test runs both bodies.
+- **Wildlife:** `District::fauna` (scenery only: no blockers, sight or
+  sound), `world::fauna` (the herd's idle poses scaled per animal), a
+  horse and an egret with the herd, three chigüires on the caño's north
+  bank, a baba in the channel, an egret in the shallows.
+- **Truck:** faces +X like the old one; lamp-lens discs carry the
+  `truck_lamp_*` materials the engine lights.
+- **Bevy `jpeg` feature** enabled (the Tripo textures are JPEG); one small
+  decoder crate added to `Cargo.lock`.
+- **The catch, heavier:** new WAVs (`catch_breath`, `catch_hit_0..3`,
+  `catch_shriek`, `catch_slam`; 89 in all) on new stings (`Breath`,
+  `Flash(k)`, `Shriek`; the slam with the bones and the ringing at the
+  cut), cued at `omen::BREATH_AT`/`FLASH_AT` (the one source of the flash
+  times). The view: a growing tremble in the silence, a flinch at each
+  flash (snap up and aside, knocked back), shake nearly doubled, the lens
+  narrowing in the silence, punching harder at the flashes and bulging
+  wide as he bends over you. Preview: `~/Videos/el_silbon_catch_preview.mp4`
+  (its mix is hand-set, not the game's).
+- **Photos:** new `64_model_horse`, `65_model_capybara`, `66_model_caiman`.
+- **Verified:** gate (fmt, clippy `-D warnings` except the old
+  `src/icon.rs:80` lint, test: lib 135, district 9, session 66 + 3
+  ignored); the full `--photos` set at 2560×1440 (`screenshots/photos/`);
+  the catch frames in-engine.
+- **Unverified:** the in-game catch mix by ear (gains `0.9`, `0.75–1.2`,
+  `0.55`, `1.3` of sfx); the horse seen only from behind; the truck's tail
+  lenses; play with the new survivors in two windows. The gameplay
+  fingerprint moved (`district.rs`, `Cargo.lock`): this build won't pair
+  with test.5.
+
+## Current handoff — 2026-10-01 (trailer 2, EN / ES)
+
+Uncommitted. The user asked for a new trailer showing the new features, in
+English and Spanish, with no mention of the tools it was made with (it
+may go on a Steam page; not decided, so no store call to action).
+
+- **Output** (`~/Videos/`): `el_silbon_trailer2_en.mp4` and
+  `el_silbon_trailer2_es.mp4` (masters, 1080p30, 113.4 s, about 350 MB),
+  `*_1080p_share.mp4` (about 56 MB) and `*_preview_720p.mp4`.
+- **Script:** `trailer/script.md` (timeline, both narrations, cards). One
+  llanero narrator; lines from the Madrina's chapters and the whistle rule.
+- **New shots** in `src/trailer.rs` (presentation only, as before):
+  `17_lay` (the last bundle laid beside the other four, the lamps'
+  rage stutter via `RelicDelivered`), `18_radio`, `19_cano` (two survivors
+  wading past the boat, from the bridge), `20_downed` (crawling, torch
+  dropped, a friend creeping in), `21_velo` (he stares over the grass and
+  is gone at 2.6 s). New staging hooks: `Him::vanish_at`, `Shot::lay`.
+  No dawn sky (the game has none: a card and `dawn.wav`); no spectator
+  shot (no distinct view to film).
+- **Edit:** `trailer/edit.py --lang en|es` (`--plan` prints the timeline
+  and narration overlaps; `--keep DIR --sound-only` remixes without
+  re-rendering the picture). The v1 `tools/trailer/edit.py` is untouched.
+  Drops v1's "made with" and "generated in code" cards. Two-pass linear
+  loudnorm plus a limiter (the single-pass one overshot to +1.5 dBTP).
+- **Sound:** narration, score and hits all from the user's new Creator
+  ElevenLabs account (flow `Eaqc16H3Dz4RT01b0ayL`), details in
+  `trailer/SOURCES.md`. Narrator: Jose Rea (`sqYpTimImojg8h2yjzQz`,
+  Venezuelan) in both languages. The game's whistles stay the
+  YouTube-derived ones by the user's choice (not cleared for release).
+- **Verified:** every shot rendered and the new ones reviewed on contact
+  sheets; both cuts' frames sampled (cards, subtitles with accents, title,
+  end card); narration transcribed back with Scribe, word for word in
+  both languages; -14.4 LUFS, true peak -1.0 (EN) / -1.4 (ES) dBFS; the
+  catch's silence measures -91 dB; video and sound timelines agree
+  (113.4 s; a frame-count guard now stops a cut that asks a shot for more
+  frames than were rendered). `cargo fmt --check` and `cargo test` green
+  (lib 135, district 9, session 66 + 3 ignored). **Clippy fails on this
+  machine only in `src/icon.rs:80`** (`chunks_exact_to_as_chunks`, new in
+  Rust 1.98; not touched here); the trailer code is clippy-clean.
+- **Unverified:** nobody has listened yet. The music, the hits and the
+  narration-over-music balance were judged only by loudness numbers, and
+  the narrator's Venezuelan-accented English was judged only by the
+  transcript.
+- **Next:** the user's watch; then nudge gains or offsets in
+  `trailer/edit.py` and remix with `--sound-only`.
+
 ## Start here — 2026-09-30 (end of day: test.5 on main)
 
 - **State:** `main` = `v0.1.0-test.5` (fingerprint `0x8e42d8fa763d35cc`), published as a GitHub pre-release. Everything from the M1b batch (sections below) and test.5 (harder Silbón, El Velo, menu arrows, Language / Idioma, Journal columns) is merged. No other branch holds unmerged work; the temporary lane worktrees are gone.

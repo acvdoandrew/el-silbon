@@ -808,17 +808,15 @@ pub fn spawn(ctx: &mut SpawnCtx) {
                                 .with_children(|c| {
                                     c.spawn(m(&coat, &parts.cloth));
                                 });
-                            t.spawn(joint(JointKind::Head, Vec3::new(0.0, CHEST + 0.16, -0.01)))
-                                .with_children(|h| {
-                                    h.spawn(m(&head, &parts.skin));
-                                    // The hat sits low and a little forward, hiding the face.
-                                    h.spawn((
-                                        Mesh3d(hat.clone()),
-                                        MeshMaterial3d(parts.hat.clone()),
-                                        Transform::from_xyz(0.0, 0.2, -0.02)
-                                            .with_rotation(Quat::from_rotation_x(-0.11)),
-                                    ));
-                                });
+                            t.spawn(joint(JointKind::Head, STAND_IN_HEAD)).with_children(|h| {
+                                h.spawn(m(&head, &parts.skin));
+                                // The hat sits low and a little forward, hiding the face.
+                                h.spawn((
+                                    Mesh3d(hat.clone()),
+                                    MeshMaterial3d(parts.hat.clone()),
+                                    Transform::from_xyz(0.0, 0.2, -0.02).with_rotation(Quat::from_rotation_x(-0.11)),
+                                ));
+                            });
                             for (sh, el, x, fore) in [
                                 (JointKind::ShoulderL, JointKind::ElbowL, -0.21, &forearm_l),
                                 (JointKind::ShoulderR, JointKind::ElbowR, 0.21, &forearm),
@@ -878,18 +876,22 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
     k * k * (3.0 - 2.0 * k)
 }
 
-/// Between his eyes, from the head joint (the model's `Silbon_Eyes`).
+/// Between his eyes, from the head joint.
 const FACE: Vec3 = Vec3::new(0.0, 0.109, -0.063);
+
+/// The stand-in's Head joint above its Torso joint (a model brings its own,
+/// `Fright::head`).
+pub const STAND_IN_HEAD: Vec3 = Vec3::new(0.0, CHEST + 0.16, -0.01);
 
 /// The torch strobes back four times; each time he is closer: start and end
 /// of each flash, and how far out he stands (metres from the caught eye).
 const FLASHES: [(f32, f32, f32); 4] = [
-    (0.0, 0.07, 5.0),
-    (0.2, 0.27, 3.0),
-    (0.4, 0.48, 1.7),
-    (0.62, CUT_AT, 0.85),
+    (FLASH_AT[0], 0.07, 5.0),
+    (FLASH_AT[1], 0.27, 3.0),
+    (FLASH_AT[2], 0.48, 1.7),
+    (FLASH_AT[3], CUT_AT, 0.85),
 ];
-use super::omen::{CUT_AT, Catch, LUNGE, LUNGE_GAP};
+use super::omen::{CUT_AT, Catch, FLASH_AT, LUNGE, LUNGE_GAP};
 
 /// The black: falls at the cut, lifts at the end.
 pub fn lunge_black(s: f32) -> f32 {
@@ -904,10 +906,11 @@ pub fn lunge_black(s: f32) -> f32 {
 /// light and his body all read while it plays. He stands on the ground (a
 /// channel's bed too); the caught eye falls to where the body will lie,
 /// afloat in deep water rather than under it.
-pub fn catch_frame(s: f32, c: &Catch, layout: &Layout, tuning: &Tuning) -> LungeFrame {
+pub fn catch_frame(s: f32, c: &Catch, head: Option<Vec3>, layout: &Layout, tuning: &Tuning) -> LungeFrame {
     lunge_frame(
         s,
         c,
+        head.unwrap_or(STAND_IN_HEAD),
         tuning.eye_height - tuning.downed_lower,
         &|p| layout.surface_height(p),
         &|p| layout.rest_height(p),
@@ -919,6 +922,7 @@ pub fn catch_frame(s: f32, c: &Catch, layout: &Layout, tuning: &Tuning) -> Lunge
 pub fn lunge_frame(
     s: f32,
     c: &Catch,
+    head: Vec3,
     downed_eye: f32,
     ground: &dyn Fn(Vec2) -> f32,
     rest: &dyn Fn(Vec2) -> f32,
@@ -969,7 +973,7 @@ pub fn lunge_frame(
     // eye's view however his body is bent (the neck twists to do it), and
     // tips back a little so the brim lifts off the face; it snaps from side
     // to side like a bird's.
-    let head_at = root + body * (Vec3::new(0.0, HIP_Y, 0.0) + torso_q * Vec3::new(0.0, CHEST + 0.16, -0.01));
+    let head_at = root + body * (Vec3::new(0.0, HIP_Y, 0.0) + torso_q * head);
     let ahead = eye + Vec3::new(c.forward.x, 0.0, c.forward.y) * 5.0;
     let find = smooth(0.0, 0.12, s);
     let k = (s / 0.11).floor() as u32;
@@ -1048,7 +1052,7 @@ pub fn animate_silbon(
     // Caught: the catch owns him until its black falls, whatever the
     // snapshot says. In the silence before, he is nowhere at all.
     if let (Some(s), Some(c)) = (fright.lunge, fright.catch) {
-        let f = catch_frame(s, &c, &layout.0, &tuning.0);
+        let f = catch_frame(s, &c, fright.head, &layout.0, &tuning.0);
         let want = if f.visible {
             Visibility::Visible
         } else {
@@ -1116,6 +1120,24 @@ pub fn animate_silbon(
     let hunting = th.state == ThreatState::Hunting;
     let counting = th.state == ThreatState::Counting;
     let breathe = (t * 0.9).sin();
+    let lean = if counting {
+        -0.55
+    } else if hunting {
+        -0.24
+    } else {
+        -0.13
+    };
+    // The arms hang from the leaning torso: undo the lean so they fall
+    // plumb, then reach ahead — down to the bones when he counts, up and
+    // out in front of him on a hunt.
+    let reach = -lean
+        + if hunting {
+            0.75
+        } else if counting {
+            0.35
+        } else {
+            0.0
+        };
 
     if let Ok(mut body) = bodies.single_mut() {
         // Counting his bones, he stoops right down.
@@ -1134,13 +1156,6 @@ pub fn animate_silbon(
                 Quat::from_rotation_x(-0.72 * (p + 1.1 + std::f32::consts::PI).sin().max(0.0) * w - 0.05)
             }
             JointKind::Torso => {
-                let lean = if counting {
-                    -0.55
-                } else if hunting {
-                    -0.24
-                } else {
-                    -0.13
-                };
                 Quat::from_rotation_x(lean + 0.02 * breathe) * Quat::from_rotation_y(-0.06 * p.sin() * w)
             }
             JointKind::Head => {
@@ -1157,24 +1172,10 @@ pub fn animate_silbon(
             // The long arms hang and swing against the legs, hands reaching
             // for the bones when he counts; a hunt lifts them, fingers spread.
             JointKind::ShoulderL => {
-                let reach = if hunting {
-                    -0.55
-                } else if counting {
-                    -0.3
-                } else {
-                    0.0
-                };
-                Quat::from_rotation_x(-0.35 * p.sin() * w + 0.03 * breathe + reach) * Quat::from_rotation_z(-0.09)
+                Quat::from_rotation_x(-0.24 * p.sin() * w + 0.03 * breathe + reach) * Quat::from_rotation_z(-0.05)
             }
             JointKind::ShoulderR => {
-                let reach = if hunting {
-                    -0.55
-                } else if counting {
-                    -0.3
-                } else {
-                    0.0
-                };
-                Quat::from_rotation_x(0.35 * p.sin() * w + 0.03 * breathe + reach) * Quat::from_rotation_z(0.09)
+                Quat::from_rotation_x(0.24 * p.sin() * w + 0.03 * breathe + reach) * Quat::from_rotation_z(0.05)
             }
             JointKind::ElbowL => Quat::from_rotation_x(0.14 + 0.1 * p.sin() * w),
             JointKind::ElbowR => Quat::from_rotation_x(0.14 - 0.1 * p.sin() * w),
@@ -1202,7 +1203,9 @@ mod tests {
     fn the_catch_stands_on_the_ground_and_shows_his_face_to_the_caught() {
         let ground = |p: Vec2| 0.35 * (p.x * 0.23).sin() + 0.2 * (p.y * 0.31).cos();
         let downed_eye = 1.62 - 1.28;
-        for variation in 0..CATCH_WAYS {
+        // The stand-in's head and the Tripo model's (tools/models/tripo.py).
+        for (variation, head) in (0..CATCH_WAYS).flat_map(|v| [(v, STAND_IN_HEAD), (v, Vec3::new(0.0, 0.636, -0.091))])
+        {
             for (k, forward) in [Vec2::NEG_Y, Vec2::X, Vec2::new(0.6, 0.8)].into_iter().enumerate() {
                 let at = Vec2::new(3.0 * k as f32, -2.0);
                 let side = [0.0, 0.9, -0.9][variation as usize];
@@ -1216,7 +1219,7 @@ mod tests {
                 let mut shown = 0;
                 for step in 0..=((CUT_AT + 1.0) / 0.01) as i32 {
                     let s = step as f32 * 0.01 - 1.0;
-                    let f = lunge_frame(s, &c, downed_eye, &ground, &ground);
+                    let f = lunge_frame(s, &c, head, downed_eye, &ground, &ground);
                     let feet = Vec2::new(f.root.x, f.root.z);
                     let foot_y = f.root.y + HIP_Y - (THIGH + SHIN) * f.thigh.cos();
                     assert!(
@@ -1267,7 +1270,7 @@ mod tests {
             };
             for step in 0..=((CUT_AT + 1.0) / 0.01) as i32 {
                 let s = step as f32 * 0.01 - 1.0;
-                let f = catch_frame(s, &c, &l, &t);
+                let f = catch_frame(s, &c, None, &l, &t);
                 assert!(
                     f.eye.y > WATER_LEVEL + 0.1,
                     "s {s}: the caught eye sinks to {} (the water at {WATER_LEVEL})",

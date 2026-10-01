@@ -78,10 +78,13 @@ an API — do not mix older Bevy idioms.
   wording or wiring.
 - Debug features stay clearly labelled (`--smoke`, F12) and never set the
   outcome directly.
-- Meshes, textures and audio are original; bundled Noto fonts are third-party OFL.
-  (This governs what ships in the game, not trailer media — see **Trailer**.)
-  Audio: regenerate with `python3 tools/gen_audio.py` (deterministic).
-  Textures and meshes are generated in Rust at startup.
+- Audio is original (except the whistle recording, see `assets/SOURCES.md`);
+  bundled Noto fonts are third-party OFL. The characters, animals and truck
+  are Tripo-generated models the user made (2026-10-01), prepared by
+  `tools/models/tripo.py`; the world's other meshes and textures are
+  generated in Rust at startup. (This governs what ships in the game, not
+  trailer media — see **Trailer**.) Audio: regenerate with
+  `python3 tools/gen_audio.py` (deterministic).
 
 ## Trailer (standing permission, granted 2026-09-29)
 

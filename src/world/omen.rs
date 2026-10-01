@@ -43,6 +43,11 @@ const STOLEN_LIFE: f32 = 28.0;
 /// `CUT_AT`), the world coming back.
 pub const LUNGE_GAP: f32 = 1.07;
 pub const EAR_AT: f32 = -0.62;
+/// The breath beside your ear, early in the silence.
+pub const BREATH_AT: f32 = -0.98;
+/// When the torch strobes back on him (each of `silbon.rs`'s flashes starts
+/// here; the sounds and the view's flinch keep time with them).
+pub const FLASH_AT: [f32; 4] = [0.0, 0.2, 0.4, 0.62];
 pub const CUT_AT: f32 = 1.75;
 pub const LUNGE: f32 = 3.1;
 /// How many ways he comes (the side he comes from, the hand that leads).
@@ -119,6 +124,12 @@ pub enum Sting {
     Phantom,
     /// The whistle right in your ear, as he has you.
     EarWhistle,
+    /// In the silence before it: something breathing beside your ear.
+    Breath,
+    /// The torch strobes back on him (0..3, each heavier).
+    Flash(u8),
+    /// He bends over you: his whistle torn into a shriek, cut by the black.
+    Shriek,
     /// The black: the bones in his sack and your ears ringing.
     Cut,
     /// Bones in the dark, from a spot behind the listener when there is one
@@ -230,6 +241,10 @@ pub struct Fright {
     pub rage: RageTelegraph,
     /// He appears out of nowhere.
     materialize: Materialize,
+    /// His Head joint's rest above his Torso joint, from whichever body is
+    /// loaded (`models.rs` sets it for the model); None: the stand-in's.
+    /// The catch aims the caught eye at his face from it.
+    pub head: Option<Vec3>,
 }
 
 impl Fright {
@@ -597,7 +612,11 @@ pub fn frights(
     let ground = |p: Vec2| Vec3::new(p.x, layout.surface_height(p), p.y);
 
     if resets.read().count() > 0 {
-        *fright = Fright::default();
+        let head = fright.head;
+        *fright = Fright {
+            head,
+            ..Fright::default()
+        };
         *drag.2 = Visibility::Hidden;
         *hat.2 = Visibility::Hidden;
         *phantom.2 = Visibility::Hidden;
@@ -749,8 +768,19 @@ pub fn frights(
         let before = *s;
         *s += dt;
         let crossed = |at: f32| before < at && *s >= at;
+        if crossed(BREATH_AT) {
+            stings.write(Sting::Breath);
+        }
         if crossed(EAR_AT) {
             stings.write(Sting::EarWhistle);
+        }
+        for (k, at) in FLASH_AT.iter().enumerate() {
+            if crossed(*at) {
+                stings.write(Sting::Flash(k as u8));
+            }
+        }
+        if crossed(FLASH_AT[3]) {
+            stings.write(Sting::Shriek);
         }
         if crossed(0.0) {
             stings.write(Sting::Caught);
@@ -791,7 +821,7 @@ pub fn frights(
     // face and the caught eye, only while the torch is lit.
     let (mut light, mut light_tf) = lunge_light.into_inner();
     let frame = match (fright.lunge, fright.catch) {
-        (Some(s), Some(c)) if s >= 0.0 => Some(super::silbon::catch_frame(s, &c, layout, &tuning.0)),
+        (Some(s), Some(c)) if s >= 0.0 => Some(super::silbon::catch_frame(s, &c, fright.head, layout, &tuning.0)),
         _ => None,
     };
     let want = frame.map_or(0.0, |f| 14_000.0 * f.face_light);

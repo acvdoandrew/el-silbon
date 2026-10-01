@@ -557,13 +557,19 @@ fn view_settings(
     let (fov_add, exposure_add) = lunge.map_or((0.0, 0.0), |s| {
         use crate::world::omen::{CUT_AT, LUNGE_GAP};
         if s < 0.0 {
-            (0.0, -0.9 * ((s + LUNGE_GAP) / 0.3).clamp(0.0, 1.0))
+            // The silence closes in: the view narrows as it darkens.
+            let held = ((s + LUNGE_GAP) / LUNGE_GAP).clamp(0.0, 1.0);
+            (-5.0 * held, -0.9 * ((s + LUNGE_GAP) / 0.3).clamp(0.0, 1.0))
         } else if s < CUT_AT {
-            let flare = [0.0, 0.2, 0.4, 0.62]
+            let flare = crate::world::omen::FLASH_AT
                 .iter()
                 .map(|&at| if s >= at { (-(s - at) * 22.0).exp() } else { 0.0 })
                 .fold(0.0, f32::max);
-            (-12.0 * flare, 1.1 * flare)
+            // Punched in at each flash; then, bent over you, he fills the
+            // view and it bulges wide.
+            let k = ((s - 1.0) / 0.7).clamp(0.0, 1.0);
+            let over = k * k * (3.0 - 2.0 * k);
+            (-16.0 * flare + 16.0 * over, 1.35 * flare)
         } else {
             (0.0, 0.0)
         }
@@ -644,7 +650,7 @@ fn torch_light(
     let level = match (fright.lunge, fright.catch) {
         (Some(s), Some(c)) => {
             // Whatever it had left, it has now.
-            crate::world::silbon::catch_frame(s, &c, &layout.0, &tuning.0).torch
+            crate::world::silbon::catch_frame(s, &c, fright.head, &layout.0, &tuning.0).torch
         }
         _ => level,
     };
@@ -721,11 +727,34 @@ fn head_bob(
     if let (Some(s), Some(c)) = (fright.lunge, fright.catch)
         && s < crate::world::omen::CUT_AT
     {
-        let f = crate::world::silbon::catch_frame(s, &c, &layout.0, &tuning.0);
+        use crate::world::omen::{FLASH_AT, LUNGE_GAP};
+        let f = crate::world::silbon::catch_frame(s, &c, fright.head, &layout.0, &tuning.0);
         let jitter = |k: f32| (s * k).sin() * (s * k * 0.37 + 1.3).sin();
-        let shake = Vec3::new(jitter(71.0), jitter(59.0), 0.0) * 0.025 * f.shake;
-        tf = Transform::from_translation(f.eye + shake).looking_at(f.look, Vec3::Y);
-        tf.rotation *= Quat::from_rotation_z(0.18 * f.shake * jitter(23.0) + 0.12 * (s / 0.5).clamp(0.0, 1.0));
+        // Each time the torch strobes back on him the eye flinches: it
+        // snaps up and aside, away from one side then the other, and is
+        // knocked back a hand's breadth before it settles.
+        let (mut snap, mut side) = (0.0_f32, 1.0_f32);
+        for (k, at) in FLASH_AT.iter().enumerate() {
+            let d = if s >= *at { (-(s - at) * 16.0).exp() } else { 0.0 };
+            if d > snap {
+                snap = d;
+                side = if k % 2 == 0 { 1.0 } else { -1.0 };
+            }
+        }
+        // In the silence before, a held breath: a fine tremble that grows.
+        let dread = if s < 0.0 {
+            ((s + LUNGE_GAP) / LUNGE_GAP).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let shake = Vec3::new(jitter(71.0), jitter(59.0), 0.5 * jitter(47.0)) * (0.045 * f.shake + 0.006 * dread);
+        let recoil = (f.eye - f.look).normalize_or_zero() * 0.07 * snap;
+        tf = Transform::from_translation(f.eye + shake + recoil).looking_at(f.look, Vec3::Y);
+        tf.rotation *= Quat::from_rotation_x(0.09 * snap)
+            * Quat::from_rotation_y(0.07 * snap * side)
+            * Quat::from_rotation_z(
+                0.28 * f.shake * jitter(23.0) + 0.12 * (s / 0.5).clamp(0.0, 1.0) + 0.1 * snap * side,
+            );
     }
     **camera = tf;
     *placed = Some((base, tf));

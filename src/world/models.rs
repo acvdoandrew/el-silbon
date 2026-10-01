@@ -16,9 +16,11 @@ use super::CarriedSatchel;
 use super::avatar::{AvatarBag, AvatarJoint, AvatarTorch, Bone, Rigged};
 use super::dog::{DogHead, DogJaw, DogLeg, DogPaw, DogRoot, DogTail};
 use super::dynamic::{BundleView, RadioSpot};
+use super::fauna::Fauna;
 use super::herd::Cow;
 use super::silbon::{Joint, JointKind, SilbonBody, SilbonRoot};
 use super::vehicles::{TruckAssets, TruckRoot};
+use crate::geometry::district::FaunaKind;
 
 /// Which model a scene child carries.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +33,8 @@ pub enum Model {
     Truck,
     /// A teammate: which one is the index (`Survivor` code).
     Survivor,
+    /// One of the scenery's animals (`world::fauna`).
+    Fauna(FaunaKind),
 }
 
 impl Model {
@@ -47,6 +51,12 @@ impl Model {
             Model::Bundle => "models/bone_bundle.glb",
             Model::Radio => "models/radio.glb",
             Model::Truck => "models/truck.glb",
+            Model::Fauna(kind) => match kind {
+                FaunaKind::Horse => "models/horse.glb",
+                FaunaKind::Capybara => "models/capybara.glb",
+                FaunaKind::Caiman => "models/caiman.glb",
+                FaunaKind::Egret => "models/egret.glb",
+            },
             Model::Survivor => match index {
                 1 => "models/survivor_coplera.glb",
                 2 => "models/survivor_encargado.glb",
@@ -65,7 +75,7 @@ impl Model {
             Model::Cattle | Model::Radio => Transform::from_rotation(quarter),
             Model::Truck => Transform::from_scale(Vec3::splat(TRUCK_SCALE)),
             Model::Bundle => Transform::from_scale(Vec3::splat(BUNDLE_SCALE)),
-            Model::Silbon | Model::Tureco | Model::Survivor => Transform::IDENTITY,
+            Model::Silbon | Model::Tureco | Model::Survivor | Model::Fauna(_) => Transform::IDENTITY,
         }
     }
 }
@@ -101,6 +111,7 @@ pub fn attach(
     bundles: Query<Entity, Or<(With<BundleView>, With<CarriedSatchel>)>>,
     radios: Query<(Entity, &RadioSpot)>,
     trucks: Query<Entity, With<TruckRoot>>,
+    fauna: Query<(Entity, &Fauna)>,
 ) {
     let mut add = |owner: Entity, model: Model, index: usize, placement: Option<Transform>| {
         let handle: Handle<WorldAsset> = assets.load(GltfAssetLabel::Scene(0).from_asset(model.path(index)));
@@ -133,6 +144,9 @@ pub fn attach(
     }
     for e in &trucks {
         add(e, Model::Truck, 0, None);
+    }
+    for (e, f) in &fauna {
+        add(e, Model::Fauna(f.kind), 0, None);
     }
 }
 
@@ -179,6 +193,7 @@ pub fn ready(
     carried: Query<(&Transform, Has<AvatarBag>, Has<AvatarTorch>), Or<(With<AvatarBag>, With<AvatarTorch>)>>,
     truck: Option<Res<TruckAssets>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut fright: ResMut<super::omen::Fright>,
 ) {
     let scene = event.entity;
     pending.0.retain(|(e, _)| *e != scene);
@@ -229,6 +244,10 @@ pub fn ready(
                         kind,
                         rest: tf.translation,
                     });
+                    // The catch finds his face from this body's own head.
+                    if kind == JointKind::Head {
+                        fright.head = Some(tf.translation);
+                    }
                 }
             }
         }
@@ -307,7 +326,7 @@ pub fn ready(
                 }
             }
         }
-        Model::Cattle => {
+        Model::Cattle | Model::Fauna(_) => {
             for (name, part) in super::herd::CowPart::ALL {
                 if let Some(e) = named(name) {
                     commands.entity(e).insert(part);

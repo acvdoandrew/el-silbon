@@ -95,6 +95,12 @@ struct Sounds {
     theme: Handle<AudioSource>,
     ear_whistle: Handle<AudioSource>,
     ringing: Handle<AudioSource>,
+    /// The catch, heavier: a breath in the silence, a blow at each flash,
+    /// his shriek as he bends over you, the slam of the black.
+    catch_breath: Handle<AudioSource>,
+    catch_hits: [Handle<AudioSource>; 4],
+    catch_shriek: Handle<AudioSource>,
+    catch_slam: Handle<AudioSource>,
     /// A fallen friend's groans, and their cry for help.
     groans: [Handle<AudioSource>; 3],
     call_help: Handle<AudioSource>,
@@ -360,6 +366,10 @@ fn load_sounds(
         theme: a("title_theme"),
         ear_whistle: a("whistle_ear"),
         ringing: a("ringing"),
+        catch_breath: a("catch_breath"),
+        catch_hits: std::array::from_fn(|k| a(&format!("catch_hit_{k}"))),
+        catch_shriek: a("catch_shriek"),
+        catch_slam: a("catch_slam"),
         groans: std::array::from_fn(|k| a(&format!("downed_groan_{k}"))),
         call_help: a("call_help"),
     };
@@ -624,14 +634,21 @@ fn play_stings(
             // The catch's own sounds go through its silence and its black.
             // Its files are mastered hot: the ear whistle lands a little
             // over the loud whistle, not far over the whole night.
-            Sting::EarWhistle | Sting::Cut | Sting::Caught => {
+            Sting::EarWhistle | Sting::Cut | Sting::Caught | Sting::Breath | Sting::Flash(_) | Sting::Shriek => {
                 let catch = |commands: &mut Commands, clip: &Handle<AudioSource>, gain: f32| {
                     one_shot(commands, clip, gain, 1.0, VoiceKind::Catch, &settings)
                 };
                 match *sting {
                     Sting::EarWhistle => catch(&mut commands, &sounds.ear_whistle, g * 0.8),
                     Sting::Caught => catch(&mut commands, &sounds.sting_caught, g * 1.2),
+                    Sting::Breath => catch(&mut commands, &sounds.catch_breath, g * 0.9),
+                    Sting::Flash(k) => {
+                        let k = (k as usize).min(3);
+                        catch(&mut commands, &sounds.catch_hits[k], g * (0.75 + 0.15 * k as f32));
+                    }
+                    Sting::Shriek => catch(&mut commands, &sounds.catch_shriek, g * 0.55),
                     _ => {
+                        catch(&mut commands, &sounds.catch_slam, g * 1.3);
                         catch(&mut commands, &sounds.bones, g * 1.4);
                         catch(&mut commands, &sounds.ringing, g * 0.9);
                     }

@@ -766,6 +766,23 @@ pub fn shots(layout: &Layout, tuning: &Tuning) -> Vec<Shot> {
         },
         false,
     );
+    // The scenery's animals, each from close by: the horse among the herd,
+    // the chigüires on the caño's bank, the baba from the bridge.
+    let animal = |kind| d.fauna.iter().find(|f| f.kind == kind).map(|f| f.at);
+    let ground = |p: Vec2, up: f32| Vec3::new(p.x, layout.surface_height(p) + up, p.y);
+    use crate::geometry::district::FaunaKind as K;
+    for (name, kind, from, up, look_up) in [
+        ("64_model_horse", K::Horse, Vec2::new(4.0, 3.0), 1.7, 1.1),
+        ("65_model_capybara", K::Capybara, Vec2::new(-3.0, 3.5), 1.3, 0.3),
+        ("66_model_caiman", K::Caiman, Vec2::new(-6.0, 3.0), 2.2, 0.0),
+    ] {
+        if let Some(at) = animal(kind) {
+            push(
+                base(name.into(), ground(at + from, up), ground(at, look_up), 45.0),
+                false,
+            );
+        }
+    }
     out
 }
 

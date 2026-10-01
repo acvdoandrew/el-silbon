@@ -59,6 +59,8 @@ pub struct Him {
     pub state: ThreatState,
     /// When he has no motion of his own, which way he faces.
     pub face: Option<Vec2>,
+    /// El Velo: from this many seconds into the shot nobody sees him.
+    pub vanish_at: Option<f32>,
 }
 
 /// A friend walking from `from` to `to` over the shot, torch lit.
@@ -125,6 +127,11 @@ pub struct Shot {
     /// A cold light that follows him (between him and the camera, above):
     /// how strong. Overrides `key_light`.
     pub him_light: f32,
+    /// La Rabia: all but one bundle already lie at the ceiba, the last is
+    /// in hand and is laid this many seconds in (and the llano answers).
+    pub lay: Option<f32>,
+    /// All five bundles lie in the ceiba's arc, nobody carrying one.
+    pub bones_home: bool,
 }
 
 impl Shot {
@@ -148,6 +155,8 @@ impl Shot {
             still: 0.5,
             hat: None,
             him_light: 0.0,
+            lay: None,
+            bones_home: false,
         }
     }
 }
@@ -268,6 +277,7 @@ pub fn shots(layout: &Layout) -> Vec<Shot> {
         keys: vec![HimKey { t: 0.0, at: far }],
         state: ThreatState::Stalking,
         face: Some((Vec2::new(fields.x - 14.0, fields.y + 8.0) - far).normalize()),
+        vanish_at: None,
     });
     s.storm = Storm::FlashAt(2.6);
     s.still = 2.66 / 4.5;
@@ -280,8 +290,9 @@ pub fn shots(layout: &Layout) -> Vec<Shot> {
         "05_tureco",
         4.0,
         vec![
-            key(0.0, p3 + Vec3::new(-3.6, 1.0, -3.2), p3 + Vec3::new(0.3, 0.6, 0.4)),
-            key(4.0, p3 + Vec3::new(-2.8, 0.8, -2.5), p3 + Vec3::new(0.2, 0.5, 0.3)),
+            // across the rope, so it reads from the post to his collar
+            key(0.0, p3 + Vec3::new(3.2, 1.0, 2.6), p3 + Vec3::new(-0.3, 0.55, 0.0)),
+            key(4.0, p3 + Vec3::new(2.5, 0.8, 2.0), p3 + Vec3::new(-0.3, 0.5, 0.0)),
         ],
     );
     s.omen = Some(Event::OmenLampsDie);
@@ -329,9 +340,17 @@ pub fn shots(layout: &Layout) -> Vec<Shot> {
         ],
     );
     s.powered = true;
+    // Friends walk in to it at a walking pace (the game's stride is sized to
+    // the speed over the ground: a short path is a shuffle).
     s.mates = vec![
-        Mate::walk(truck + Vec2::new(3.5, -3.0), truck + Vec2::new(2.5, -2.0)),
-        Mate::walk(truck + Vec2::new(-1.0, -4.5), truck + Vec2::new(0.0, -3.0)),
+        Mate {
+            steady: true,
+            ..Mate::walk(truck + Vec2::new(-1.1, -7.8), truck + Vec2::new(5.0, -1.6))
+        },
+        Mate {
+            steady: true,
+            ..Mate::walk(truck + Vec2::new(-2.3, -7.6), truck + Vec2::new(2.2, -2.1))
+        },
     ];
     out.push(s);
 
@@ -360,6 +379,7 @@ pub fn shots(layout: &Layout) -> Vec<Shot> {
         }],
         state: ThreatState::Stalking,
         face: Some(Vec2::new(-0.6, 0.8)),
+        vanish_at: None,
     });
     s.storm = Storm::FlashAt(3.6);
     out.push(s);
@@ -390,6 +410,7 @@ pub fn shots(layout: &Layout) -> Vec<Shot> {
         ],
         state: ThreatState::Stalking,
         face: None,
+        vanish_at: None,
     });
     s.key_light = Some((at(gate.x, gate.y + 8.0, 3.0), 14_000.0));
     out.push(s);
@@ -414,14 +435,15 @@ pub fn shots(layout: &Layout) -> Vec<Shot> {
     s.hat = Some(Vec2::new(trail.x - 1.2, trail.y - 7.5));
     out.push(s);
 
-    // 12. Hiding in the tall grass: he passes right in front, slowly.
+    // 12. Hiding in the tall grass: he passes right in front, slowly, his
+    //     right side to us (the sack rides on his left).
     let hide = Vec2::new(fields.x + 2.0, fields.y + 2.0);
     let mut s = Shot::new(
         "12_hide",
         4.5,
         vec![
-            key(0.0, at(hide.x, hide.y, 0.55), at(hide.x + 1.0, hide.y - 3.0, 2.0)),
-            key(4.5, at(hide.x, hide.y, 0.5), at(hide.x - 1.5, hide.y - 3.0, 2.3)),
+            key(0.0, at(hide.x, hide.y, 0.55), at(hide.x - 1.0, hide.y - 3.0, 2.0)),
+            key(4.5, at(hide.x, hide.y, 0.5), at(hide.x + 1.5, hide.y - 3.0, 2.3)),
         ],
     );
     s.fov = 62.0;
@@ -430,15 +452,16 @@ pub fn shots(layout: &Layout) -> Vec<Shot> {
         keys: vec![
             HimKey {
                 t: 0.0,
-                at: hide + Vec2::new(3.6, -1.9),
+                at: hide + Vec2::new(-3.6, -1.9),
             },
             HimKey {
                 t: 4.5,
-                at: hide + Vec2::new(-2.8, -1.7),
+                at: hide + Vec2::new(2.8, -1.7),
             },
         ],
         state: ThreatState::Stalking,
         face: None,
+        vanish_at: None,
     });
     s.him_light = 12_000.0;
     out.push(s);
@@ -471,6 +494,7 @@ pub fn shots(layout: &Layout) -> Vec<Shot> {
         ],
         state: ThreatState::Hunting,
         face: None,
+        vanish_at: None,
     });
     s.him_light = 22_000.0;
     out.push(s);
@@ -492,6 +516,7 @@ pub fn shots(layout: &Layout) -> Vec<Shot> {
         }],
         state: ThreatState::Warning,
         face: Some(Vec2::new(-0.78, 0.62)),
+        vanish_at: None,
     });
     s.storm = Storm::FlashAt(0.35);
     s.still = 0.4 / 2.2;
@@ -523,24 +548,299 @@ pub fn shots(layout: &Layout) -> Vec<Shot> {
         "16_party",
         3.5,
         vec![
-            key(0.0, from_spawn(1.6, 0.3, 1.15), from_spawn(8.0, 0.0, 1.3)),
-            key(3.5, from_spawn(0.2, -0.2, 1.1), from_spawn(8.0, 0.0, 1.35)),
+            // three-quarters on, so the stride reads
+            key(0.0, from_spawn(2.6, 3.0, 1.2), from_spawn(9.0, 0.0, 1.3)),
+            key(3.5, from_spawn(1.2, 2.7, 1.15), from_spawn(6.5, 0.0, 1.3)),
         ],
     );
     s.fov = 45.0;
     s.handheld = 0.3;
     s.key_light = Some((from_spawn(4.0, 1.5, 3.2), 26_000.0));
     s.still = 0.8;
-    s.mates = [(-1.2, 8.5), (-0.4, 9.4), (0.45, 8.9), (1.25, 9.8)]
+    s.mates = [(-1.2, 13.0), (-0.4, 13.9), (0.45, 13.4), (1.25, 14.3)]
         .iter()
         .map(|&(r, a)| Mate {
             steady: true,
             ..Mate::walk(
                 layout.spawn + ahead * a + right * r,
-                layout.spawn + ahead * (a - 4.5) + right * r * 0.9,
+                layout.spawn + ahead * (a - 8.5) + right * r * 0.9,
             )
         })
         .collect();
+    out.push(s);
+
+    // 17. La Rabia: first person, the last bundle laid in the ceiba's arc
+    //     beside the other four; every lamp on the llano stutters.
+    let out_dir = (Vec2::new(offering.x, offering.z) - ceiba).normalize_or(Vec2::X);
+    let altar = Vec2::new(offering.x, offering.z);
+    let roots = Vec3::new(altar.x, g(altar) + 0.2, altar.y);
+    let mut s = Shot::new(
+        "17_lay",
+        4.5,
+        vec![
+            key(
+                0.0,
+                at(altar.x + out_dir.x * 5.0, altar.y + out_dir.y * 5.0, 1.62),
+                roots + Vec3::Y * 0.9,
+            ),
+            key(
+                2.2,
+                at(altar.x + out_dir.x * 2.0, altar.y + out_dir.y * 2.0, 1.45),
+                roots,
+            ),
+            key(
+                4.5,
+                at(altar.x + out_dir.x * 2.3, altar.y + out_dir.y * 2.3, 1.55),
+                roots + Vec3::Y * 1.4,
+            ),
+        ],
+    );
+    s.pov = true;
+    s.torch = true;
+    s.fov = 64.0;
+    s.lay = Some(2.3);
+    s.still = 2.5 / 4.5;
+    s.key_light = Some((Vec3::new(offering.x, offering.y + 1.5, offering.z), 12_000.0));
+    out.push(s);
+
+    // 18. The shelf radio in the dark house: a slow push in on its dial.
+    let radio = d.radio;
+    let side = Vec3::X;
+    let mut s = Shot::new(
+        "18_radio",
+        3.5,
+        vec![
+            key(
+                0.0,
+                radio + side * 1.6 + Vec3::new(0.0, 0.25, 0.35),
+                radio + Vec3::Y * 0.1,
+            ),
+            key(
+                3.5,
+                radio + side * 0.85 + Vec3::new(0.0, 0.12, 0.15),
+                radio + Vec3::Y * 0.1,
+            ),
+        ],
+    );
+    s.fov = 40.0;
+    s.handheld = 0.1;
+    s.key_light = Some((radio + side * 0.9 + Vec3::Y * 0.8, 1_500.0));
+    out.push(s);
+
+    // 19. Wading the caño past the moored boat, torches low over the water.
+    let boat = d.boat.center();
+    let wade = Vec2::new(boat.x + 2.0, -64.5);
+    let mut s = Shot::new(
+        "19_cano",
+        4.0,
+        vec![
+            key(0.0, at(18.6, -63.0, 2.5), at(wade.x + 5.0, wade.y, 0.2)),
+            key(4.0, at(18.8, -63.4, 2.4), at(wade.x + 2.5, wade.y, 0.3)),
+        ],
+    );
+    s.fov = 38.0;
+    s.handheld = 0.25;
+    s.key_light = Some((at(wade.x + 4.0, -62.5, 3.5), 26_000.0));
+    s.mates = vec![
+        Mate {
+            steady: true,
+            ..Mate::walk(wade + Vec2::new(10.0, 0.6), wade + Vec2::new(2.5, 0.2))
+        },
+        Mate {
+            steady: true,
+            carrying: true,
+            ..Mate::walk(wade + Vec2::new(12.5, 2.0), wade + Vec2::new(5.0, 1.5))
+        },
+    ];
+    out.push(s);
+
+    // 20. A friend down in the tall grass, crawling, the torch dropped beside
+    //     them; another creeps in, crouched, to reach them.
+    let fallen = Vec2::new(fields.x - 7.0, fields.y + 9.0);
+    let mut s = Shot::new(
+        "20_downed",
+        4.0,
+        vec![
+            key(
+                0.0,
+                at(fallen.x - 4.0, fallen.y + 3.5, 1.9),
+                at(fallen.x, fallen.y, 0.2),
+            ),
+            key(
+                4.0,
+                at(fallen.x - 3.2, fallen.y + 2.8, 1.7),
+                at(fallen.x + 0.3, fallen.y, 0.2),
+            ),
+        ],
+    );
+    s.fov = 50.0;
+    s.handheld = 0.3;
+    s.key_light = Some((at(fallen.x - 1.5, fallen.y + 1.5, 3.0), 14_000.0));
+    s.mates = vec![
+        Mate {
+            down: true,
+            steady: true,
+            ..Mate::walk(fallen + Vec2::new(0.6, -0.4), fallen + Vec2::new(-0.2, 0.1))
+        },
+        Mate {
+            crouch: true,
+            steady: true,
+            ..Mate::walk(fallen + Vec2::new(5.5, -3.8), fallen + Vec2::new(1.2, -0.6))
+        },
+    ];
+    out.push(s);
+
+    // 21. El Velo: he walks the grass under a cold light, and then he is not
+    //     there. Only the whistle (in the edit) goes on.
+    let veil = Vec2::new(fields.x - 8.0, fields.y + 1.0);
+    let mut s = Shot::new(
+        "21_velo",
+        5.0,
+        vec![
+            key(0.0, at(fields.x - 13.5, fields.y + 5.0, 1.9), at(veil.x, veil.y, 1.6)),
+            key(
+                5.0,
+                at(fields.x - 13.0, fields.y + 4.6, 1.9),
+                at(veil.x + 2.0, veil.y - 1.0, 1.6),
+            ),
+        ],
+    );
+    s.fov = 30.0;
+    s.handheld = 0.2;
+    s.him = Some(Him {
+        keys: vec![
+            HimKey { t: 0.0, at: veil },
+            HimKey {
+                t: 5.0,
+                at: veil + Vec2::new(4.0, -2.0),
+            },
+        ],
+        state: ThreatState::Stalking,
+        face: None,
+        vanish_at: Some(2.6),
+    });
+    s.him_light = 34_000.0;
+    s.still = 0.3;
+    out.push(s);
+
+    // 22. His face: a slow push in under the brim until the eyes catch the
+    //     torch; he stands quite still and looks back.
+    let still_at = Vec2::new(fields.x - 10.0, fields.y + 2.0);
+    let toward = Vec2::new(-0.8, 0.6).normalize();
+    let eye_at = |back: f32, up: f32| {
+        let p = still_at + toward * back;
+        Vec3::new(p.x, g(still_at) + up, p.y)
+    };
+    let eyes = eye_at(0.154, 2.405);
+    let mut s = Shot::new(
+        "22_face",
+        5.0,
+        vec![
+            key(0.0, eye_at(3.4, 2.2), eyes),
+            key(5.0, eye_at(1.35, 2.33), eyes + Vec3::Y * 0.01),
+        ],
+    );
+    s.fov = 36.0;
+    s.handheld = 0.12;
+    s.torch = true;
+    s.key_light = Some((eye_at(1.0, 1.7), 2_500.0));
+    s.him = Some(Him {
+        keys: vec![HimKey { t: 0.0, at: still_at }],
+        state: ThreatState::Stalking,
+        face: Some(toward),
+        vanish_at: None,
+    });
+    s.still = 0.9;
+    out.push(s);
+
+    // 23. The baba in the caño: low over the water, its eyes and snout
+    //     awash in the torchlight.
+    if let Some(c) = d
+        .fauna
+        .iter()
+        .find(|f| f.kind == crate::geometry::district::FaunaKind::Caiman)
+    {
+        let fwd = Vec2::new(-c.yaw.sin(), -c.yaw.cos());
+        let side = Vec2::new(-fwd.y, fwd.x);
+        let water = crate::geometry::district::WATER_LEVEL;
+        let head = c.at + fwd * 1.0;
+        let low = |p: Vec2, up: f32| Vec3::new(p.x, water + up, p.y);
+        let mut s = Shot::new(
+            "23_caiman",
+            4.0,
+            vec![
+                key(0.0, low(c.at + fwd * 3.6 + side * 1.2, 0.32), low(head, 0.02)),
+                key(4.0, low(c.at + fwd * 2.6 + side * 0.7, 0.26), low(head, 0.0)),
+            ],
+        );
+        s.fov = 40.0;
+        s.handheld = 0.2;
+        s.torch = true;
+        s.key_light = Some((low(c.at + fwd * 1.8 + side * 1.4, 1.4), 22_000.0));
+        out.push(s);
+    }
+
+    // 24. His sack of bones swinging on his back, followed from behind his
+    //     shoulder as he walks the road outside the gate, backlit by its
+    //     lamps; a strike shows him whole.
+    let lane_z = gate.y + 5.5;
+    let mut s = Shot::new(
+        "24_sack",
+        4.0,
+        vec![
+            key(0.0, at(gate.x + 7.2, lane_z + 2.6, 1.8), at(gate.x + 3.6, lane_z, 1.95)),
+            key(4.0, at(gate.x - 0.9, lane_z + 2.6, 1.8), at(gate.x - 4.6, lane_z, 1.95)),
+        ],
+    );
+    s.fov = 52.0;
+    s.handheld = 0.25;
+    s.him = Some(Him {
+        keys: vec![
+            HimKey {
+                t: 0.0,
+                at: Vec2::new(gate.x + 4.5, lane_z),
+            },
+            HimKey {
+                t: 4.0,
+                at: Vec2::new(gate.x - 4.0, lane_z),
+            },
+        ],
+        state: ThreatState::Stalking,
+        face: None,
+        vanish_at: None,
+    });
+    s.him_light = 14_000.0;
+    s.storm = Storm::FlashAt(2.6);
+    out.push(s);
+
+    // 25. He stoops over the bones laid at the ceiba, counting them, turned
+    //     three-quarters to us across the arc of bundles.
+    let side = Vec2::new(-out_dir.y, out_dir.x);
+    let at_altar = altar + out_dir * 1.55 + side * 0.4;
+    let towards = (-out_dir * 0.5 + side * 0.86).normalize();
+    let cam_at = at_altar + side * 3.9 + out_dir * 2.2;
+    let mut s = Shot::new(
+        "25_count",
+        4.0,
+        vec![
+            key(0.0, at(cam_at.x, cam_at.y, 1.3), at(at_altar.x, at_altar.y, 1.25)),
+            key(
+                4.0,
+                at(cam_at.x - side.x * 0.7, cam_at.y - side.y * 0.7, 1.2),
+                at(at_altar.x, at_altar.y, 1.15),
+            ),
+        ],
+    );
+    s.fov = 45.0;
+    s.handheld = 0.15;
+    s.bones_home = true;
+    s.key_light = Some((Vec3::new(offering.x, offering.y + 1.2, offering.z), 9_000.0));
+    s.him = Some(Him {
+        keys: vec![HimKey { t: 0.0, at: at_altar }],
+        state: ThreatState::Counting,
+        face: Some(towards),
+        vanish_at: None,
+    });
     out.push(s);
 
     // Not in the cut, for review (TRAILER_ONLY=90): the four survivors going
@@ -645,6 +945,8 @@ pub struct TrailerRun {
     stills: bool,
     written: Vec<PathBuf>,
     omen_sent: bool,
+    /// The laying's telegraph went out this shot.
+    lay_sent: bool,
     exit_in: Option<u32>,
 }
 
@@ -697,6 +999,7 @@ pub(crate) fn setup(
         stills: std::env::var("TRAILER_STILLS").is_ok(),
         written: Vec::new(),
         omen_sent: false,
+        lay_sent: false,
         exit_in: None,
     });
 }
@@ -812,7 +1115,8 @@ pub(crate) fn drive(
     }
     // Him.
     let th = &mut truth.encounter.threat;
-    match &shot.him {
+    let seen = shot.him.as_ref().filter(|him| him.vanish_at.is_none_or(|v| t < v));
+    match seen {
         Some(him) => {
             let (at, face, speed) = him_at(him, t);
             th.pos = at;
@@ -859,9 +1163,23 @@ pub(crate) fn drive(
             }
             s.danger = 0;
             s.players.retain(|p| p.id < crate::photos::PHOTO_PLAYER_BASE);
+            let laid = shot.lay.is_some_and(|at| t >= at);
             if let Some(p) = s.players.iter_mut().find(|p| Some(p.id) == me) {
-                p.carrying = u8::from(shot.carrying);
+                p.carrying = u8::from(shot.carrying || (shot.lay.is_some() && !laid));
                 p.status = 0;
+            }
+            if shot.bones_home {
+                for r in s.relics.iter_mut() {
+                    r.state = 2;
+                }
+                s.world.delivered = s.relics.len() as u8;
+            }
+            if shot.lay.is_some() {
+                let last = s.relics.len().saturating_sub(1);
+                for (i, r) in s.relics.iter_mut().enumerate() {
+                    r.state = if i < last || laid { 2 } else { 1 };
+                }
+                s.world.delivered = (last + usize::from(laid)) as u8;
             }
             for (i, m) in shot.mates.iter().enumerate() {
                 let k = if m.steady {
@@ -892,6 +1210,10 @@ pub(crate) fn drive(
         }
     }
     let _ = &launch;
+    if capturing && !run.lay_sent && shot.lay.is_some_and(|at| t >= at) {
+        omens.write(EncounterMsg(Event::RelicDelivered));
+        run.lay_sent = true;
+    }
 
     // Warm up each shot until the renderer has everything it needs.
     if !capturing {
@@ -938,6 +1260,7 @@ pub(crate) fn drive(
         run.warm = 0;
         run.idle = 0;
         run.omen_sent = false;
+        run.lay_sent = false;
     }
 }
 

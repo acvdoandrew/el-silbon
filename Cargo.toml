@@ -18,6 +18,8 @@ bevy = { version = "=0.19.1", default-features = false, features = [
     "mouse",
     # The launch splash and the window icon decode PNGs.
     "png",
+    # The Tripo models' textures (tools/models/tripo.py) are JPEG.
+    "jpeg",
 ] }
 renet = "=2.0.0"
 renet_netcode = "=2.0.0"

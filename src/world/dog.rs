@@ -34,8 +34,17 @@ pub struct DogJaw;
 #[derive(Component)]
 pub struct DogTail;
 
+/// One length of the rope, `ROPE_SEGMENTS` of them sagging from the post.
 #[derive(Component)]
-pub struct DogRope;
+pub struct DogRope(pub u8);
+
+const ROPE_SEGMENTS: u8 = 8;
+
+/// The middle of his collar, round the neck where it leaves the chest
+/// (root space, measured on `tureco.glb`), and its tilt with the neck.
+const COLLAR: Vec3 = Vec3::new(0.0, 0.66, -0.37);
+const COLLAR_TILT: f32 = -0.6;
+const COLLAR_RADIUS: f32 = 0.09;
 
 fn body_mesh() -> Mesh {
     let fur = srgb(0.3, 0.19, 0.1);
@@ -201,14 +210,21 @@ pub fn spawn_dog(
         Mesh3d(meshes.add(stake.build())),
         MeshMaterial3d(rope.clone()),
     ));
-    commands.spawn((
-        Name::new("Tureco's rope"),
-        DogRope,
-        Mesh3d(meshes.add(Cuboid::new(0.02, 0.02, 1.0))),
-        MeshMaterial3d(rope),
-        NotShadowCaster,
-        Transform::from_translation(at),
-    ));
+    let length = meshes.add(Cuboid::new(0.022, 0.022, 1.0));
+    for i in 0..ROPE_SEGMENTS {
+        commands.spawn((
+            Name::new("Tureco's rope"),
+            DogRope(i),
+            Mesh3d(length.clone()),
+            MeshMaterial3d(rope.clone()),
+            NotShadowCaster,
+            Transform::from_translation(at),
+        ));
+    }
+    let collar = meshes.add(Torus {
+        minor_radius: 0.014,
+        major_radius: COLLAR_RADIUS,
+    });
     let head = meshes.add(head_mesh());
     let leg = meshes.add(leg_mesh());
     commands
@@ -221,6 +237,12 @@ pub fn spawn_dog(
             Visibility::Inherited,
         ))
         .with_children(|d| {
+            d.spawn((
+                Name::new("Tureco's collar"),
+                Mesh3d(collar),
+                MeshMaterial3d(rope),
+                Transform::from_translation(COLLAR).with_rotation(Quat::from_rotation_x(COLLAR_TILT)),
+            ));
             d.spawn((
                 DogHead,
                 Mesh3d(head),
@@ -271,7 +293,7 @@ pub fn animate_dog(
     root: Single<(&mut DogRoot, &mut Transform), (Without<DogHead>, Without<DogLeg>, Without<DogRope>)>,
     mut head: Query<&mut Transform, (With<DogHead>, Without<DogLeg>, Without<DogRope>)>,
     mut legs: Query<(&DogLeg, &mut Transform), (Without<DogHead>, Without<DogRope>)>,
-    mut rope: Query<(&mut Transform, &mut Visibility), (With<DogRope>, Without<DogHead>, Without<DogLeg>)>,
+    mut rope: Query<(&DogRope, &mut Transform, &mut Visibility), (Without<DogHead>, Without<DogLeg>)>,
     mut paws: Query<
         (&DogPaw, &mut Transform),
         (
@@ -298,17 +320,16 @@ pub fn animate_dog(
     dog.phase = (dog.phase + moved * 9.0) % std::f32::consts::TAU;
     let ground = layout.0.surface_height(pos);
     let tied = view.mood == 0;
-    // Tied, he sits and waits by the post; free, he trots with a bob.
+    // Tied, he stands and waits by the post; free, he trots with a bob.
     let bob = 0.02 * (dog.phase * 2.0).sin().abs() * pace;
-    let sit = if tied { -0.12 } else { 0.0 };
-    let want = Vec3::new(pos.x, ground + bob + sit, pos.y);
+    let want = Vec3::new(pos.x, ground + bob, pos.y);
     tf.translation = if tf.translation.distance(want) > 3.0 {
         want
     } else {
         tf.translation.lerp(want, (dt * 12.0).min(1.0))
     };
     let yaw = (-facing.x).atan2(-facing.y);
-    let target = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(if tied { 0.25 } else { 0.0 });
+    let target = Quat::from_rotation_y(yaw);
     tf.rotation = tf.rotation.slerp(target, (dt * 8.0).min(1.0));
     for mut h in &mut head {
         let (dip, jerk) = match view.mood {
@@ -345,20 +366,23 @@ pub fn animate_dog(
         l.rotation = Quat::from_rotation_x(swing);
     }
     // The lower legs fold as each foot comes through: the fore paws flick
-    // back, the hocks bend; tied, he sits on his haunches.
+    // back, the hocks bend.
     for (paw, mut p) in &mut paws {
         let lift = (dog.phase + paw.0).cos().max(0.0) * pace;
-        let fold = match (paw.1, tied) {
-            (true, _) => -0.9 * lift,
-            (false, true) => 0.5,
-            (false, false) => 0.7 * lift,
-        };
+        let fold = if paw.1 { -0.9 * lift } else { 0.7 * lift };
         p.rotation = Quat::from_rotation_x(fold);
     }
-    // The rope runs from the post to his collar while he is tied.
+    // The rope runs from the post to his collar while he is tied, sagging
+    // between them, and ties on at the side of the collar facing the post.
     let post = layout.0.district.dog_post;
     let post3 = Vec3::new(post.x - 0.5, ground + 0.75, post.y);
-    for (mut r, mut vis) in &mut rope {
+    let neck = tf.translation + tf.rotation * COLLAR;
+    let toward = (post3 - neck).with_y(0.0).normalize_or(Vec3::X);
+    let knot = neck + toward * COLLAR_RADIUS - Vec3::Y * 0.03;
+    let span = knot - post3;
+    let sag = 0.06 + 0.12 * span.length();
+    let along = |u: f32| post3 + span * u - Vec3::Y * sag * 4.0 * u * (1.0 - u);
+    for (seg, mut r, mut vis) in &mut rope {
         let want_vis = if tied {
             Visibility::Inherited
         } else {
@@ -368,12 +392,13 @@ pub fn animate_dog(
             *vis = want_vis;
         }
         if tied {
-            let collar = tf.translation + tf.rotation * Vec3::new(0.0, 0.62, -0.3);
-            let mid = (post3 + collar) * 0.5;
-            let span = collar - post3;
-            r.translation = mid;
-            r.rotation = Quat::from_rotation_arc(Vec3::Z, span.normalize_or(Vec3::Z));
-            r.scale = Vec3::new(1.0, 1.0, span.length().max(0.05));
+            let n = f32::from(ROPE_SEGMENTS);
+            let (a, b) = (along(f32::from(seg.0) / n), along(f32::from(seg.0 + 1) / n));
+            let d = b - a;
+            r.translation = (a + b) * 0.5;
+            r.rotation = Quat::from_rotation_arc(Vec3::Z, d.normalize_or(Vec3::Z));
+            // a little long, so the joins between lengths close
+            r.scale = Vec3::new(1.0, 1.0, d.length() + 0.012);
         }
     }
 }

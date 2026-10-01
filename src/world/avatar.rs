@@ -177,9 +177,12 @@ pub fn pose(bone: Bone, g: &Gait) -> (Quat, Vec3) {
     let z = Quat::from_rotation_z;
     // The body leans into speed, a sprint, a crouch and a load.
     let lean = -(0.05 * a + 0.16 * g.sprint + 0.34 * cr + 0.08 * g.carry);
-    let hip_sw = (0.42 + 0.12 * g.sprint) * a * (1.0 - 0.3 * cr);
-    let knee_sw = (0.95 + 0.25 * g.sprint) * a.min(1.0);
-    let arm_sw = (0.45 + 0.35 * g.sprint) * a;
+    let hip_sw = (0.5 + 0.12 * g.sprint) * a * (1.0 - 0.3 * cr);
+    let knee_sw = (1.05 + 0.15 * g.sprint) * a.min(1.0);
+    let arm_sw = (0.6 + 0.35 * g.sprint) * a;
+    // The models were made with the arms a little out from the sides: bring
+    // them in so the hands hang by the thighs.
+    let arm_in = 0.1;
     let hip_base = 1.05 * cr;
     let knee_base = 1.75 * cr + 0.1 * a;
     let leg = |side: f32| {
@@ -212,14 +215,17 @@ pub fn pose(bone: Bone, g: &Gait) -> (Quat, Vec3) {
         // the feet stay near level: they undo most of the leg's turn
         Bone::FootL => (x(-(hl + kl) * 0.85), Vec3::ZERO),
         Bone::FootR => (x(-(hr + kr) * 0.85), Vec3::ZERO),
-        Bone::ShoulderL => (z(-0.06) * x(-arm_sw * s + 0.3 * cr), Vec3::ZERO),
+        Bone::ShoulderL => (z(arm_in) * x(-arm_sw * s + 0.3 * cr), Vec3::ZERO),
         Bone::ElbowL => (
             x(0.15 + 0.4 * a * (-s).max(0.0) + 0.9 * g.sprint * a.min(1.0)),
             Vec3::ZERO,
         ),
         Bone::HandL => (x(0.1 * a * s), Vec3::ZERO),
         // the torch arm holds the beam where they look, whatever the spine does
-        Bone::ShoulderR => (x(pitch * 0.85 - lean - torch_elbow + 0.1 * a * s), Vec3::ZERO),
+        Bone::ShoulderR => (
+            z(-arm_in * 0.6) * x(pitch * 0.85 - lean - torch_elbow + 0.1 * a * s),
+            Vec3::ZERO,
+        ),
         Bone::ElbowR => (x(torch_elbow), Vec3::ZERO),
         Bone::HandR => (Quat::IDENTITY, Vec3::ZERO),
     };

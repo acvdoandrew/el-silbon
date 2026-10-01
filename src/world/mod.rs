@@ -7,6 +7,7 @@ pub mod ceiba;
 pub mod district;
 pub mod dog;
 pub mod dynamic;
+pub mod fauna;
 pub mod flora;
 pub mod herd;
 pub mod house;
@@ -116,7 +117,7 @@ impl Plugin for WorldPlugin {
             (
                 flicker_lights,
                 silbon::animate_silbon,
-                herd::animate,
+                (herd::animate, fauna::animate),
                 dynamic::bundles,
                 dynamic::relic_perches,
                 dynamic::peppers,
@@ -171,6 +172,7 @@ pub fn spawn_world(
     wet::spawn(&mut ctx, &materials, &mut wet_materials);
     flora::spawn(&mut ctx, &mut materials, &mut grass_materials, &mut images);
     herd::spawn(&mut ctx, &mut materials);
+    fauna::spawn(&mut ctx);
     vehicles::spawn(&mut ctx, &mut materials);
 
     commands.insert_resource(satchel);

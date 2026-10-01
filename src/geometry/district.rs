@@ -295,10 +295,48 @@ pub struct District {
     pub watch_ramp: Rect2,
     pub watch_height: f32,
     pub watch_side: Vec2,
+    /// The llano's wild and tame company: scenery with an idle life, never in
+    /// the way (no blockers, no sight lines, no sound).
+    pub fauna: Vec<Fauna>,
+}
+
+/// Which animal a `Fauna` is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FaunaKind {
+    Horse,
+    Capybara,
+    Caiman,
+    Egret,
+}
+
+/// One animal of the scenery: where it stands and which way it faces.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fauna {
+    pub kind: FaunaKind,
+    pub at: Vec2,
+    /// Radians about the vertical; 0 faces -Z.
+    pub yaw: f32,
 }
 
 fn p(x: f32, z: f32) -> Vec2 {
     Vec2::new(x, z)
+}
+
+/// The scenery's animals: a saddle horse among the herd and an egret
+/// following it, a family of chigüires on the caño's north bank, a baba
+/// lying in the channel past the boat and an egret fishing the shallows.
+fn fauna() -> Vec<Fauna> {
+    use FaunaKind::*;
+    let f = |kind, x: f32, z: f32, yaw: f32| Fauna { kind, at: p(x, z), yaw };
+    vec![
+        f(Horse, 35.5, -19.0, 0.9),
+        f(Egret, 33.5, -13.5, -0.6),
+        f(Capybara, 38.0, -59.6, 1.4),
+        f(Capybara, 40.4, -59.1, 1.9),
+        f(Capybara, 39.0, -58.2, 1.6),
+        f(Caiman, 31.5, -66.8, -1.75),
+        f(Egret, 47.0, -61.7, 2.4),
+    ]
 }
 fn rect(x0: f32, z0: f32, x1: f32, z1: f32) -> Rect2 {
     Rect2::new(p(x0, z0), p(x1, z1))
@@ -1069,6 +1107,7 @@ impl District {
             watch_ramp,
             watch_height,
             watch_side: watch_deck.min + Vec2::new(-8.0, 10.0),
+            fauna: fauna(),
         };
         // Hand-placed landmark palms and groves, then a seeded scatter that
         // keeps routes, structures and water clear. Trunks are solid and hide
