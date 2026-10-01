@@ -242,8 +242,9 @@ def sounds(stems):
         (g("catch_hit_3.wav"), at("catch", 1.69), -1, {}),
         (g("catch_shriek.wav"), at("catch", 1.69), -10, {"until": black}),
         (g("catch_slam.wav"), black, 0, {}),
-        # (The synthesized bones_rattle after the slam read as comic, 2026-10-01;
-        # a heavier ElevenLabs bone clatter is to replace it, see PROGRESS.md.)
+        # The sack of bones hits the ground (the game's recorded catch_bones;
+        # the synthesized rattle read as comic, 2026-10-01).
+        (g("catch_bones.wav"), black + 0.2, -6, {}),
         (g("ringing.wav"), black, -10, {}),
     ]
 

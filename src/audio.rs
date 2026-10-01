@@ -101,6 +101,9 @@ struct Sounds {
     catch_hits: [Handle<AudioSource>; 4],
     catch_shriek: Handle<AudioSource>,
     catch_slam: Handle<AudioSource>,
+    /// A recorded sack of bones at the catch's cut (the synthesized rattle
+    /// read as comic).
+    catch_bones: Handle<AudioSource>,
     /// A fallen friend's groans, and their cry for help.
     groans: [Handle<AudioSource>; 3],
     call_help: Handle<AudioSource>,
@@ -370,6 +373,7 @@ fn load_sounds(
         catch_hits: std::array::from_fn(|k| a(&format!("catch_hit_{k}"))),
         catch_shriek: a("catch_shriek"),
         catch_slam: a("catch_slam"),
+        catch_bones: a("catch_bones"),
         groans: std::array::from_fn(|k| a(&format!("downed_groan_{k}"))),
         call_help: a("call_help"),
     };
@@ -649,7 +653,7 @@ fn play_stings(
                     Sting::Shriek => catch(&mut commands, &sounds.catch_shriek, g * 0.55),
                     _ => {
                         catch(&mut commands, &sounds.catch_slam, g * 1.3);
-                        catch(&mut commands, &sounds.bones, g * 1.4);
+                        catch(&mut commands, &sounds.catch_bones, g * 1.4);
                         catch(&mut commands, &sounds.ringing, g * 0.9);
                     }
                 }

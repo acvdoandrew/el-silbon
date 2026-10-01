@@ -389,6 +389,39 @@ _source = None
 USE_RECORDING = True  # False: build the synthesized fallback (--synth)
 
 
+# Sound effects generated with ElevenLabs (eleven_text_to_sound_v2) on the
+# user's account and chosen by the user over the synthesized ones, which read
+# as comic (2026-10-01; see assets/SOURCES.md). Each is kept as a 44.1 kHz mono
+# source in assets/audio/source/elevenlabs/ and only levelled here, so a
+# regeneration never overwrites it; without the file the synthesized sound
+# stands in. Target: the loudest 0.4 s at the old file's level, peaks under
+# -1 dBFS.
+RECORDED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "audio", "source",
+                            "elevenlabs")
+RECORDED_RMS_DB = {"dog_growl.wav": -18.8, "dog_bark.wav": -18.1, "catch_bones.wav": -19.3}
+
+
+def recorded_or(name, synth):
+    """The recorded effect `name`, levelled, or `synth()` without it."""
+    path = os.path.join(RECORDED_DIR, name)
+    if not os.path.exists(path):
+        return synth()
+    with wave.open(path, "rb") as w:
+        assert w.getframerate() == SR and w.getnchannels() == 1 and w.getsampwidth() == 2
+        raw = w.readframes(w.getnframes())
+    x = [v / 32768.0 for v in struct.unpack("<%dh" % (len(raw) // 2), raw)]
+    # Trim the silence before the first sound (with 10 ms kept).
+    start = next((i for i, v in enumerate(x) if abs(v) > 0.01), 0)
+    x = x[max(0, start - int(0.01 * SR)):]
+    win, loudest = int(0.4 * SR), 1e-9
+    for i in range(0, max(1, len(x) - win), win // 4):
+        s = x[i:i + win]
+        loudest = max(loudest, math.sqrt(sum(v * v for v in s) / len(s)))
+    peak = max(1e-9, max(abs(v) for v in x))
+    gain = min(10 ** (RECORDED_RMS_DB[name] / 20) / loudest, 10 ** (-1.0 / 20) / peak)
+    return fade([v * gain for v in x], 0.002, 0.03)
+
+
 def recording():
     """Whether the whistles are built from the recording."""
     return USE_RECORDING and os.path.exists(SOURCE)
@@ -2202,6 +2235,9 @@ def make_catch():
         "catch_breath.wav": make_catch_breath(random.Random(9300)),
         "catch_shriek.wav": make_catch_shriek(random.Random(9305)),
         "catch_slam.wav": make_catch_slam(random.Random(9306)),
+        # The bones at the cut: a recorded sack of bones (the synthesized
+        # rattle read as comic), else the rattle on its own seed.
+        "catch_bones.wav": recorded_or("catch_bones.wav", lambda: make_bones(random.Random(9307))),
     }
     for k in range(4):
         files[f"catch_hit_{k}.wav"] = make_catch_hit(random.Random(9301 + k), k)
@@ -2230,8 +2266,8 @@ def make_horror():
         "tell_whip.wav": make_whip(random.Random(SEED + 116)),
         "tell_bottles.wav": make_bottles(random.Random(SEED + 117)),
         "banished.wav": make_banished(random.Random(SEED + 118)),
-        "dog_growl.wav": make_growl(random.Random(SEED + 119)),
-        "dog_bark.wav": make_bark(random.Random(SEED + 120)),
+        "dog_growl.wav": recorded_or("dog_growl.wav", lambda: make_growl(random.Random(SEED + 119))),
+        "dog_bark.wav": recorded_or("dog_bark.wav", lambda: make_bark(random.Random(SEED + 120))),
         "title_theme.wav": make_theme(random.Random(SEED + 121)),
         "frogs_loop.wav": make_frogs(random.Random(SEED + 122)),
         "windmill_creak.wav": make_windmill(random.Random(SEED + 123)),
