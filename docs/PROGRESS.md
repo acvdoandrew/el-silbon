@@ -1,5 +1,15 @@
 # Progress
 
+## Start here — 2026-09-30 (end of day: test.5 on main)
+
+- **State:** `main` = `v0.1.0-test.5` (fingerprint `0x8e42d8fa763d35cc`), published as a GitHub pre-release. Everything from the M1b batch (sections below) and test.5 (harder Silbón, El Velo, menu arrows, Language / Idioma, Journal columns) is merged. No other branch holds unmerged work; the temporary lane worktrees are gone.
+- **Windows dev setup:** checkout `C:\Users\andre\source\repos\el-silbon`, MSVC toolchain via `rustup override`; Smart App Control must stay off. Gate as in AGENTS.md; sweeps per night with `$env:ROUTE_NIGHT='normal|gentle|hard'; cargo test --locked --test session the_routes_hold_over_many_storms -- --ignored --nocapture`; package with `powershell -File tools\package.ps1 0.1.0-test.N` (zip in `target\dist\`, shared over Discord or a GitHub pre-release).
+- **Sweep now (solo / shared):** Normal 150 / 146 (on the bar: shared 38, 72, 119, 145, a harder Silbón catching player 2 on lit open ground), Gentle 150 / 150, Hard 150 / 150. Any harder tuning needs the route driver (`src/script.rs`) to get smarter first, or a decision on the bar.
+- **Waiting on the test.5 playtest:** do the veils (25–70 s, whistle gaps capped at 10 s) feel right; is he aggressive enough now (grace 60 s, Relax 40–70 s, 3 hunts per 10 min on Normal); the ‹ › arrows by mouse; Spanish texts on screen (page 19 and long Journal titles).
+- **User decisions so far:** Outcome::Dawn at 1.5 × night_length; `anima_sight` on; `bleed_after_sack` 30 s; a hauled friend's map dot follows them live; the name stays "El Silbón — The Return"; display mode in Video settings, no fullscreen key; repo public, test builds as GitHub pre-releases or zips over Discord.
+- **Next candidates (roadmap v3, M2):** La Cuenta (vigil while he counts), the rest of the call wheel (Gritos y silbos), El Compadre and the house omens, Ánimas haunts for spectators, El desmayo, El desamparado, Mandados and the copla at dawn, El paso del caño, the tale station on the radio.
+- **Known small issues:** at 1280 px the 860 px pause Journal covers part of the objectives list; the exe's ProductName reads `el_silbon` (winresource default).
+
 ## Current handoff — M1b (branch m1b)
 
 **test.5 (merged, 2026-09-30).** `t5-silbon` (031cf19: he hunts harder, El Velo) and `t5-lang` (c6141ff, 475222b: menu arrows by mouse, Language / Idioma, the Journal fits) merged onto test.4. Gate on the merged tree: fmt, clippy `-D warnings`, test (lib 135, district 9, session 66 + 3 ignored) clean. Sweeps (solo / shared): Normal 150 / 146, Gentle 150 / 150, Hard 150 / 150. Headless two-process net smoke: NET SMOKE PASS on host and client; fingerprint `0x8e42d8fa763d35cc` (does not pair with test.4). Packaged `el_silbon-0.1.0-test.5-windows.zip` (109.1 MB) with `tools/package.ps1`. Unverified by hand: the veils and the harder pacing in a human night, the ‹ › arrows by mouse, the Spanish texts on screen. User decision (test.4 playtest): a friend's map dot keeps following them live while hauled.
