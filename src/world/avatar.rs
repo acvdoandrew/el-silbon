@@ -232,27 +232,50 @@ pub fn pose(bone: Bone, g: &Gait) -> (Quat, Vec3) {
     if g.down <= 0.0 {
         return stand;
     }
-    // Down: face to the ground (the placer lays the root flat), arms reaching
-    // ahead and pulling in turn, legs trailing, head up to see.
+    // Down: face to the ground (the placer lays the root flat), dragging
+    // themselves on. One arm reaches far ahead while the other pulls back to
+    // the chest, and the opposite knee draws up to push; the hips and
+    // shoulders roll against each other, the head bobs with each pull.
     let crawl = s * a.min(1.0);
+    let (reach_l, reach_r) = (crawl.max(0.0), (-crawl).max(0.0));
+    let bob = a.min(1.0) * (2.0 * g.phase).sin().abs();
     let prone = match bone {
-        Bone::Pelvis => (Quat::IDENTITY, Vec3::ZERO),
-        Bone::Torso | Bone::Chest => (x(0.12), Vec3::ZERO),
+        Bone::Pelvis => (y(0.16 * crawl) * z(0.08 * crawl), Vec3::new(0.0, 0.03 * bob, 0.0)),
+        Bone::Torso => (y(-0.1 * crawl) * x(0.12), Vec3::ZERO),
+        Bone::Chest => (y(-0.08 * crawl) * z(-0.06 * crawl) * x(0.12), Vec3::ZERO),
         Bone::Neck => (x(0.35), Vec3::ZERO),
-        Bone::Head => (x(0.55), Vec3::ZERO),
-        Bone::HipL => (x(0.15 + 0.2 * crawl), Vec3::ZERO),
-        Bone::HipR => (x(0.15 - 0.2 * crawl), Vec3::ZERO),
-        Bone::KneeL => (x(-0.5 - 0.3 * crawl.max(0.0)), Vec3::ZERO),
-        Bone::KneeR => (x(-0.5 - 0.3 * (-crawl).max(0.0)), Vec3::ZERO),
+        Bone::Head => (y(0.12 * crawl) * x(0.55 - 0.1 * bob), Vec3::ZERO),
+        // the knee opposite the reaching arm swings out and up along the ground to push
+        Bone::HipL => (z(-0.6 * reach_r) * x(0.12 + 0.3 * reach_r), Vec3::ZERO),
+        Bone::HipR => (z(0.6 * reach_l) * x(0.12 + 0.3 * reach_l), Vec3::ZERO),
+        Bone::KneeL => (x(-0.35 - 0.55 * reach_r), Vec3::ZERO),
+        Bone::KneeR => (x(-0.35 - 0.55 * reach_l), Vec3::ZERO),
         Bone::FootL | Bone::FootR => (x(-0.6), Vec3::ZERO),
-        Bone::ShoulderL => (z(-0.25) * x(2.5 + 0.35 * crawl), Vec3::ZERO),
-        Bone::ShoulderR => (z(0.2) * x(2.2 - 0.35 * crawl), Vec3::ZERO),
-        Bone::ElbowL => (x(0.5 + 0.4 * (-crawl).max(0.0)), Vec3::ZERO),
-        Bone::ElbowR => (x(0.3 + 0.4 * crawl.max(0.0)), Vec3::ZERO),
+        // the reaching arm goes long past the head; the pulling one hauls
+        // back toward the chest with its elbow bent
+        Bone::ShoulderL => (z(-0.25) * x(1.6 + 1.2 * reach_l + 0.6 * (1.0 - a.min(1.0))), Vec3::ZERO),
+        Bone::ShoulderR => (z(0.2) * x(1.6 + 1.2 * reach_r + 0.6 * (1.0 - a.min(1.0))), Vec3::ZERO),
+        Bone::ElbowL => (x(0.25 + 1.1 * reach_r), Vec3::ZERO),
+        Bone::ElbowR => (x(0.25 + 1.1 * reach_l), Vec3::ZERO),
         Bone::HandL | Bone::HandR => (x(0.3), Vec3::ZERO),
     };
     let d = g.down.clamp(0.0, 1.0);
     (stand.0.slerp(prone.0, d), stand.1.lerp(prone.1, d))
+}
+
+/// Metres a downed friend drags themselves through one full crawl cycle (a
+/// pull with each arm): short, so their limbs visibly work at crawling speed.
+pub const CRAWL_STRIDE: f32 = 0.8;
+
+/// Metres per full stride and the stride's size for a teammate moving at
+/// `speed`: the size is measured against the gait in use, so a crawl at full
+/// crawling speed is a full crawl, not a quarter of a walk.
+pub fn stride_and_size(down: bool, speed: f32, crawl_speed: f32) -> (f32, f32) {
+    if down {
+        (CRAWL_STRIDE, (speed / crawl_speed.max(0.1)).min(1.0))
+    } else {
+        (1.6 + 0.2 * speed, (speed / 3.6).min(1.45))
+    }
 }
 
 /// Marks the bundle carried on a teammate's back.
@@ -779,6 +802,7 @@ pub fn setup(
 /// and glances at rest; the head and the torch arm follow where they look.
 pub fn animate(
     time: Res<Time>,
+    tuning: Option<Res<crate::app::TuningRes>>,
     mut roots: Query<(Entity, &mut AvatarMotion, &Transform)>,
     tree: Query<&Children>,
     mut joints: Query<(&AvatarJoint, &mut Transform), Without<AvatarMotion>>,
@@ -787,6 +811,7 @@ pub fn animate(
     if dt <= 0.0 {
         return;
     }
+    let crawl_speed = tuning.map_or_else(|| crate::tuning::Tuning::default().crawl_speed, |t| t.0.crawl_speed);
     for (entity, mut m, root) in &mut roots {
         let here = root.translation;
         let moved = m.last.map_or(0.0, |last| (here - last).xz().length());
@@ -795,16 +820,17 @@ pub fn animate(
         let speed = if moved > 1.0 { 0.0 } else { moved / dt };
         m.speed += (speed - m.speed) * (dt * 8.0).min(1.0);
         // Longer strides the faster they go: a walk takes about 2.3 m a
-        // stride (both feet), a sprint 2.6.
-        let stride = 1.6 + 0.2 * m.speed;
+        // stride (both feet), a sprint 2.6. A crawl gains a short pull per
+        // arm, so a downed friend's limbs work as they drag themselves on.
+        let (stride, size) = stride_and_size(m.down, m.speed, crawl_speed);
         m.phase = (m.phase + m.speed * dt * std::f32::consts::TAU / stride) % std::f32::consts::TAU;
         m.clock += dt;
         let ease = |from: f32, to: f32, rate: f32| from + (to - from) * (dt * rate).min(1.0);
         let on = |b: bool| if b { 1.0 } else { 0.0 };
         let (sprint, crouch, down, carrying, pitch) = (m.sprint, m.crouch, m.down, m.carrying, m.pitch);
-        let (speed, phase, clock) = (m.speed, m.phase, m.clock);
+        let (phase, clock) = (m.phase, m.clock);
         let g = &mut m.gait;
-        g.amp = ease(g.amp, (speed / 3.6).min(1.45), 10.0);
+        g.amp = ease(g.amp, size, 10.0);
         g.sprint = ease(g.sprint, on(sprint), 6.0);
         g.crouch = ease(g.crouch, on(crouch && !down), 8.0);
         g.down = ease(g.down, on(down), 5.0);
@@ -922,5 +948,46 @@ mod tests {
         let (head, _) = world(Bone::Head, &down);
         let (hand, _) = world(Bone::HandL, &down);
         assert!((lay * hand).z < (lay * head).z, "hand {hand} head {head}");
+    }
+
+    #[test]
+    fn a_crawling_friend_pulls_with_each_arm_and_pushes_with_the_other_knee() {
+        // Over one crawl cycle at full crawl, each hand travels well along the
+        // body (reach and pull), not a twitch on a slide.
+        let at = |phase: f32| Gait {
+            down: 1.0,
+            amp: 1.0,
+            phase,
+            ..Default::default()
+        };
+        let lay = Quat::from_rotation_x(-1.5);
+        for hand in [Bone::HandL, Bone::HandR] {
+            let zs: Vec<f32> = (0..32)
+                .map(|i| (lay * world(hand, &at(i as f32 / 32.0 * std::f32::consts::TAU)).0).z)
+                .collect();
+            let travel = zs.iter().cloned().fold(f32::MIN, f32::max) - zs.iter().cloned().fold(f32::MAX, f32::min);
+            assert!(travel > 0.15, "{hand:?} travels only {travel} m in a crawl cycle");
+        }
+        // When the left arm reaches, the right knee draws up, and the other way.
+        let left_reach = at(std::f32::consts::FRAC_PI_2);
+        let right_reach = at(3.0 * std::f32::consts::FRAC_PI_2);
+        let (knee_r_l, _) = world(Bone::KneeR, &left_reach);
+        let (knee_r_r, _) = world(Bone::KneeR, &right_reach);
+        assert!(
+            (lay * knee_r_l).z < (lay * knee_r_r).z,
+            "the right knee draws up as the left arm reaches"
+        );
+        // The root cause seen in play: at crawling speed the crawl was sized
+        // against a walk (a quarter) on a walking stride, so friends slid.
+        let crawl = crate::tuning::Tuning::default().crawl_speed;
+        let (stride, size) = stride_and_size(true, crawl, crawl);
+        assert!((size - 1.0).abs() < 1e-6, "a full-speed crawl is a full crawl: {size}");
+        assert!(
+            crawl / stride > 0.8,
+            "a crawl cycles about once a second: {}",
+            crawl / stride
+        );
+        let (_, walk) = stride_and_size(false, 3.6, crawl);
+        assert!((walk - 1.0).abs() < 1e-6, "walking is unchanged");
     }
 }
