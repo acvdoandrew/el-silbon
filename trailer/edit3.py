@@ -223,11 +223,8 @@ def sounds(stems):
         (g("step_water_0.wav"), at("cano", 2.8), -12, {}),
         (g("dawn.wav"), at("card_dawn") - 0.1, -9, {"until": at("card_friends", 0.6), "fade_out": 0.8}),
         (g("thunder_b.wav"), at("downed", 0.8), -13, {"until": at("card_lies"), "fade_out": 0.5}),
-        # The hunt: whooshes on the cuts, a heart, his hunt, lightning, a
-        # riser into the silence.
-        (s("sfx_whoosh.mp3"), at("hide") - 0.6, -5, {}),
-        (s("sfx_whoosh.mp3"), at("chase") - 0.6, -3, {}),
-        (s("sfx_whoosh.mp3"), at("reveal") - 0.6, -1, {}),
+        # The hunt: a heart, his hunt, lightning, a riser into the silence.
+        # (No whooshes on the cuts: the user found them comic, 2026-10-01.)
         (g("heartbeat.wav"), at("hide"), -10, {"loop": True, "until": at("reveal", 1.5), "fade_in": 1.0, "fade_out": 0.3}),
         (g("sting_hunt.wav"), at("chase"), -8, {}),
         (g("sting_reveal.wav"), at("reveal", 0.35), -6, {"until": catch, "fade_out": 0.04}),
@@ -245,7 +242,8 @@ def sounds(stems):
         (g("catch_hit_3.wav"), at("catch", 1.69), -1, {}),
         (g("catch_shriek.wav"), at("catch", 1.69), -10, {"until": black}),
         (g("catch_slam.wav"), black, 0, {}),
-        (g("bones_rattle.wav"), black + 0.2, -6, {}),
+        # (The synthesized bones_rattle after the slam read as comic, 2026-10-01;
+        # a heavier ElevenLabs bone clatter is to replace it, see PROGRESS.md.)
         (g("ringing.wav"), black, -10, {}),
     ]
 

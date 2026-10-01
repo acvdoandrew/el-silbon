@@ -1,5 +1,13 @@
 # Progress
 
+## Current handoff — 2026-10-01 (test.6, the crawl, comic sounds)
+
+- **test.6** (`v0.1.0-test.6`, local tag; fingerprint `0x595f9863bfc94fc4`): main at `df7d2b0` (Tripo models, wildlife, the heavier catch) verified on Windows: gate green (clippy clean here; the `src/icon.rs:80` lint seen on Linux does not fire on Windows), sweeps Normal 150 / 146, Gentle 150 / 150, Hard 150 / 150, headless net smoke PASS. Zip 70.4 MB.
+- **The crawl** (`5e5b657`, playtest: "they're just laying on the ground and floating forward"): a downed friend's crawl was sized against a walk (0.9 m/s is a quarter of 3.6) on a walking stride. `avatar::stride_and_size` now sizes it against `Tuning::crawl_speed` on a 0.8 m `CRAWL_STRIDE`; the prone pose reaches with one arm, pulls with the other, swings the opposite knee out to push, rolls hips and shoulders, bobs the head. Presentation only (fingerprint unchanged). Checked in the trailer's `20_downed` frames (grass hides most of it); judge in play.
+- **Comic sounds (user, from trailer 3):**
+  - Removed from `trailer/edit3.py`: the three `sfx_whoosh` hits before `hide` / `chase` / `reveal` (heard at about 1:20 and 1:25), and the `bones_rattle` after the catch's slam (about 1:35). Re-render trailer 3 on Linux.
+  - **To do on Linux (ElevenLabs, user's choice):** replace the game's synthesized `dog_growl.wav` and `dog_bark.wav` (Tureco; heard at 0:24 under "whipped him… set the dog on him") and the bone sound at the catch's cut (`bones_rattle.wav` as played by the catch, and check what `catch_slam.wav` layers) with realistic ElevenLabs sound effects: a low, wet, threatening dog growl; one or two hard, close barks with a yard echo; a dry, heavy clatter of real bones dropped in a sack (no tonal "xylophone" clacks). Keep them in the game too, recorded in `assets/SOURCES.md` (account, prompt, model). Note: `tools/gen_audio.py` regenerates every WAV, so add the ElevenLabs files the way the whistle recording is handled (a source file that `gen_audio.py` copies or processes rather than synthesizes), so a regeneration does not overwrite them. Then put the new bone clatter back after the slam in `edit3.py` if it fits.
+
 ## Current handoff — 2026-10-01 (trailer 3: the Madrina)
 
 Uncommitted. The user asked for a scarier catch (done, below) and then a
