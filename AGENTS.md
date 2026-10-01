@@ -21,6 +21,7 @@
 - User preference: hands-on desktop verification is user-led. Do not automate
   Omarchy cursor, keyboard, focus, or window manipulation without renewed permission.
   Supply exact run commands, a short checklist, and requested F12 views instead.
+  Exception: trailer work has standing permission (see **Trailer** below).
 
 ## Build and test gate
 
@@ -78,5 +79,31 @@ an API — do not mix older Bevy idioms.
 - Debug features stay clearly labelled (`--smoke`, F12) and never set the
   outcome directly.
 - Meshes, textures and audio are original; bundled Noto fonts are third-party OFL.
+  (This governs what ships in the game, not trailer media — see **Trailer**.)
   Audio: regenerate with `python3 tools/gen_audio.py` (deterministic).
   Textures and meshes are generated in Rust at startup.
+
+## Trailer (standing permission, granted 2026-09-29)
+
+A trailer/teaser session may own the whole job end to end without asking:
+script and narration, voice, gameplay capture, edit, music/SFX mix and render.
+
+- **ElevenLabs is approved** for narration, voice design and trailer-only SFX
+  or music. Pick or design voices freely and spend credits as needed. Only the
+  narration script and trailer text go out; never upload source code, `.env`
+  or secrets.
+- **Capture**: the session may build and launch the game (release or debug),
+  record the screen or game window (e.g. `wf-recorder`, `gpu-screen-recorder`,
+  `ffmpeg`), and position/focus/fullscreen the game window for recording. It may
+  send keyboard/mouse input to the game window only, to play or stage shots.
+  Prefer in-game drivers (`--smoke`, `--net-smoke`, a new scripted `--trailer`
+  camera/route mode) for repeatable shots. Don't touch other apps or windows.
+- **It is its own integrator**: it may run builds and the gate while working;
+  just don't edit files another writer currently owns. A `--trailer` mode is a
+  debug feature: clearly labelled, off by default, never sets outcomes.
+- **Game rules don't bind the edit**: perception/whistle and "original assets"
+  rules apply to game code. In the trailer, cut, re-mix, layer narration and
+  add effects however works best, while keeping the game's footage and lore honest.
+- **Files**: work in `trailer/` (scripts, narration text, edit project, notes);
+  keep raw captures and renders out of git (`trailer/out/`, ignored), and list
+  ElevenLabs voices/generations in `trailer/SOURCES.md`. Commit only when asked.
