@@ -1,5 +1,56 @@
 # Progress
 
+## Current handoff — 2026-10-01 (three new trailers: A radio, B co-op, C teaser)
+
+Uncommitted. The user asked for the whole trailer remade as three different
+versions, showing the new crawl and sounds ("give me the best you got").
+
+- **Output** (`~/Videos/`, EN and ES each): `el_silbon_A_radio_*` (120 s, the
+  tale told by a 1963 radio host, then a bulletin, then the static eats his
+  last line), `el_silbon_B_coop_*` (83 s, cards on the beat of a horror
+  joropo: four friends, bones, ceiba, La Rabia, pepper wards, Tureco, the
+  tower's fire, pump and truck, a friend crawling and another going back,
+  the whistle lies, the catch), `el_silbon_C_teaser_*` (38 s, the rule shown:
+  a loud whistle and he is a speck; a faint one and he is behind you) plus
+  `el_silbon_C_teaser_vertical_*` (1080×1920). Masters at -14 LUFS, true
+  peak about -1.9 dBFS; `*_share` (1080p, smaller) and `*_preview_720p`.
+- **Script / edit:** `trailer/script_v4.md`; `trailer/cut4.py --cut
+  radio|coop|teaser --lang en|es [--vertical]` on `trailer/cutkit.py`
+  (shared machinery: segments, timed text, letterbox, static bursts, a
+  `freeze` segment that holds a strike frame and pushes in, the mix,
+  loudnorm). `--plan` prints the timeline and warns on voice overlaps and
+  missing frames. `edit3.py` (trailer 3) untouched.
+- **New shots** in `src/trailer.rs` (presentation only, appended 26–35):
+  `26_rise` (he rises out of the grass), `27_crawl` (a friend crawling on the
+  lit road, another crouching in, a strike shows him behind), `28_ward` (a
+  burning pepper ward, him counting, friends creeping past), `29_bark`
+  (Tureco loose and barking), `30_beacon` (the lookout's fire, him walking to
+  it), `31_wide` (from the lookout, a strike: he is a speck), `32_turn`
+  (first person, a slow turn round to find him), `33_survivor`,
+  `34_radio_long`, `35_capybara`. New staging: `Shot::rise_at`, `wards`,
+  `beacon`, `dog` (`Dog`: loose, growling, barking from `bark_at`), `glide`
+  (even camera pace through many keys); `TRAILER_VERTICAL=1` renders
+  1080×1920 to `trailer_vertical/`; `TRAILER_ONLY` takes a comma list.
+- **Hyprland is Lua now:** launch renders with
+  `hyprctl eval "hl.exec_cmd('[workspace 5 silent; fullscreen] CMD')"`
+  (`hyprctl dispatch exec` fails to parse). All 37 shots render in about
+  90 s.
+- **Sound:** a designed voice (El Locutor del Llano) for A through an AM
+  filter, dry for the last two lines; new score cues and two radio effects
+  (`trailer/SOURCES.md`, flow `7c4ZCUEoOYwOuTi3KbRF`). No whooshes, no
+  synthesized bones or groans; the catch uses `catch_bones`.
+- **Verified:** both narrations transcribed back and match the script; the
+  music cues transcribe to no words; every cut's frames sampled on contact
+  sheets (cards, subtitles, the held strike, the crawl, the turn); loudness
+  measured. `cargo build --release` clean.
+- **Unverified:** nobody has listened yet — the designed voice, the radio
+  filter's level against the score, the co-op cards against the drums'
+  actual downbeats (placed from the loudness curve, not by ear). Gate after
+  the `trailer.rs` additions: fmt clean, clippy only the old `src/icon.rs:80`
+  lint; `cargo test` not run (trailer code has no tests).
+- **Next:** the user's watch; then nudge offsets/gains in `cut4.py` and
+  re-mix with `--keep DIR --sound-only`.
+
 ## Current handoff — 2026-10-01 (test.6, the crawl, comic sounds)
 
 - **test.6** (`v0.1.0-test.6`, local tag; fingerprint `0x595f9863bfc94fc4`): main at `df7d2b0` (Tripo models, wildlife, the heavier catch) verified on Windows: gate green (clippy clean here; the `src/icon.rs:80` lint seen on Linux does not fire on Windows), sweeps Normal 150 / 146, Gentle 150 / 150, Hard 150 / 150, headless net smoke PASS. Zip 70.4 MB.

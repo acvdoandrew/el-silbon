@@ -6,8 +6,8 @@
 //! Nothing here touches the rules; the staging is a presentation mirror,
 //! rebuilt every frame, like `--photos`. `TRAILER_STILLS=1` renders one
 //! frame per shot instead (for framing); `TRAILER_ONLY=name` renders only
-//! the shots whose names contain it. The edit (titles, sound) is made from
-//! these frames by `tools/trailer/`.
+//! the shots whose names contain it (or any of a comma list). The edit
+//! (titles, sound) is made from these frames by `trailer/`.
 
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -29,6 +29,16 @@ use crate::world::omen::{Catch, Fright, LUNGE_GAP};
 pub const FPS: f32 = 30.0;
 pub const WIDTH: u32 = 1920;
 pub const HEIGHT: u32 = 1080;
+
+/// The frame size: 1920×1080, or 1080×1920 with `TRAILER_VERTICAL=1` (the
+/// same shots for a phone, written to `trailer_vertical/`).
+fn size() -> (u32, u32) {
+    if vertical() { (HEIGHT, WIDTH) } else { (WIDTH, HEIGHT) }
+}
+
+fn vertical() -> bool {
+    std::env::var("TRAILER_VERTICAL").is_ok()
+}
 /// Exposure added over the night's grade: a touch brighter than play, for
 /// video. The +0.55 the old exposure brightness gave it (0.7 stops a unit),
 /// so its look is unchanged; the player's brightness is a gamma now.
@@ -91,6 +101,14 @@ impl Mate {
     }
 }
 
+/// Tureco loose at `at`, facing `face`, growling; barking from `bark_at`.
+#[derive(Clone, Copy)]
+pub struct Dog {
+    pub at: Vec2,
+    pub face: Vec2,
+    pub bark_at: Option<f32>,
+}
+
 #[derive(Clone, Copy)]
 pub enum Storm {
     Calm,
@@ -132,6 +150,17 @@ pub struct Shot {
     pub lay: Option<f32>,
     /// All five bundles lie in the ceiba's arc, nobody carrying one.
     pub bones_home: bool,
+    /// He rises out of the grass this many seconds in (unseen before).
+    pub rise_at: Option<f32>,
+    /// Pepper wards burning on the ground.
+    pub wards: Vec<Vec2>,
+    /// The lookout's fire is lit.
+    pub beacon: bool,
+    /// Tureco, loose.
+    pub dog: Option<Dog>,
+    /// The camera passes its keys at an even pace, eased only at the ends
+    /// (for a turn traced by many keys).
+    pub glide: bool,
 }
 
 impl Shot {
@@ -157,6 +186,11 @@ impl Shot {
             him_light: 0.0,
             lay: None,
             bones_home: false,
+            rise_at: None,
+            wards: Vec::new(),
+            beacon: false,
+            dog: None,
+            glide: false,
         }
     }
 }
@@ -171,6 +205,16 @@ pub fn camera_at(shot: &Shot, t: f32) -> (Vec3, Vec3) {
     let keys = &shot.cam;
     if keys.len() == 1 || t <= keys[0].t {
         return (keys[0].pos, keys[0].look);
+    }
+    if shot.glide {
+        let (t0, t1) = (keys[0].t, keys[keys.len() - 1].t);
+        let u = t0 + smooth((t - t0) / (t1 - t0).max(1e-3)) * (t1 - t0);
+        for w in keys.windows(2) {
+            if u <= w[1].t {
+                let k = (u - w[0].t) / (w[1].t - w[0].t).max(1e-3);
+                return (w[0].pos.lerp(w[1].pos, k), w[0].look.lerp(w[1].look, k));
+            }
+        }
     }
     for w in keys.windows(2) {
         if t <= w[1].t {
@@ -843,6 +887,309 @@ pub fn shots(layout: &Layout) -> Vec<Shot> {
     });
     out.push(s);
 
+    // 26. He rises out of the tall grass under a cold light, facing us.
+    let rise = Vec2::new(fields.x - 8.0, fields.y + 1.0);
+    let toward_cam = Vec2::new(-0.78, 0.62).normalize();
+    let mut s = Shot::new(
+        "26_rise",
+        5.5,
+        vec![
+            key(
+                0.0,
+                at(rise.x + toward_cam.x * 7.5, rise.y + toward_cam.y * 7.5, 1.2),
+                at(rise.x, rise.y, 1.5),
+            ),
+            key(
+                5.5,
+                at(rise.x + toward_cam.x * 6.2, rise.y + toward_cam.y * 6.2, 1.1),
+                at(rise.x, rise.y, 1.9),
+            ),
+        ],
+    );
+    s.fov = 40.0;
+    s.handheld = 0.2;
+    s.him = Some(Him {
+        keys: vec![HimKey { t: 0.0, at: rise }],
+        state: ThreatState::Stalking,
+        face: Some(toward_cam),
+        vanish_at: None,
+    });
+    s.rise_at = Some(1.0);
+    s.him_light = 40_000.0;
+    s.still = 0.85;
+    out.push(s);
+
+    // 27. A friend down on the lit road, crawling toward us; another comes
+    //     crouched to reach them; a strike shows him standing behind them.
+    let mut s = Shot::new(
+        "27_crawl",
+        5.5,
+        vec![
+            key(0.0, from_spawn(1.6, 0.7, 0.5), from_spawn(9.0, 0.0, 0.6)),
+            key(5.5, from_spawn(1.1, 0.5, 0.45), from_spawn(9.0, 0.2, 0.8)),
+        ],
+    );
+    s.fov = 46.0;
+    s.handheld = 0.2;
+    s.key_light = Some((from_spawn(4.5, 1.2, 3.0), 26_000.0));
+    s.mates = vec![
+        Mate {
+            down: true,
+            steady: true,
+            ..Mate::walk(
+                layout.spawn + ahead * 7.6 + right * 0.3,
+                layout.spawn + ahead * 3.4 + right * 0.1,
+            )
+        },
+        Mate {
+            crouch: true,
+            steady: true,
+            ..Mate::walk(
+                layout.spawn + ahead * 6.5 - right * 4.5,
+                layout.spawn + ahead * 4.0 - right * 0.9,
+            )
+        },
+    ];
+    let behind = layout.spawn + ahead * 15.0 + right * 1.2;
+    s.him = Some(Him {
+        keys: vec![HimKey { t: 0.0, at: behind }],
+        state: ThreatState::Stalking,
+        face: Some(-ahead),
+        vanish_at: None,
+    });
+    s.rise_at = Some(1.5);
+    s.storm = Storm::FlashAt(4.0);
+    s.still = 4.1 / 5.5;
+    out.push(s);
+
+    // 28. A pepper ward burns on the track; he squats at its edge counting
+    //     his bones while two friends creep past behind him.
+    let ward = Vec2::new(16.0, 8.0);
+    let edge = ward + Vec2::new(0.95, 0.15).normalize() * 3.6;
+    let mut s = Shot::new(
+        "28_ward",
+        5.0,
+        vec![
+            key(0.0, at(ward.x - 2.0, ward.y + 8.0, 1.7), at(ward.x + 1.8, ward.y, 0.7)),
+            key(5.0, at(ward.x - 1.0, ward.y + 7.0, 1.5), at(ward.x + 2.2, ward.y, 0.8)),
+        ],
+    );
+    s.fov = 50.0;
+    s.handheld = 0.2;
+    s.wards = vec![ward];
+    s.key_light = Some((at(edge.x - 0.5, edge.y + 2.5, 3.5), 12_000.0));
+    s.him = Some(Him {
+        keys: vec![HimKey { t: 0.0, at: edge }],
+        state: ThreatState::Counting,
+        face: Some((ward - edge).normalize()),
+        vanish_at: None,
+    });
+    s.mates = vec![
+        Mate {
+            crouch: true,
+            steady: true,
+            ..Mate::walk(ward + Vec2::new(-6.5, -1.6), ward + Vec2::new(1.5, -2.2))
+        },
+        Mate {
+            crouch: true,
+            steady: true,
+            ..Mate::walk(ward + Vec2::new(-8.0, -1.0), ward + Vec2::new(0.0, -1.7))
+        },
+    ];
+    out.push(s);
+
+    // 29. Tureco loose in the yard, hackles up, barking at the dark; a
+    //     strike shows what he smelled.
+    let dog = Vec2::new(8.0, 14.0);
+    let sniff = Vec2::new(1.0, -0.12).normalize();
+    let mut s = Shot::new(
+        "29_bark",
+        4.0,
+        vec![
+            key(
+                0.0,
+                at(dog.x - 1.9, dog.y + 1.4, 0.65),
+                at(dog.x + sniff.x * 8.0, dog.y + sniff.y * 8.0, 0.9),
+            ),
+            key(
+                4.0,
+                at(dog.x - 1.6, dog.y + 1.2, 0.6),
+                at(dog.x + sniff.x * 8.0, dog.y + sniff.y * 8.0, 1.0),
+            ),
+        ],
+    );
+    s.fov = 50.0;
+    s.handheld = 0.25;
+    s.dog = Some(Dog {
+        at: dog,
+        face: sniff,
+        bark_at: Some(1.0),
+    });
+    s.key_light = Some((at(dog.x - 0.5, dog.y + 1.5, 2.5), 7_000.0));
+    s.him = Some(Him {
+        keys: vec![HimKey {
+            t: 0.0,
+            at: dog + sniff * 20.0,
+        }],
+        state: ThreatState::Stalking,
+        face: Some(-sniff),
+        vanish_at: None,
+    });
+    s.storm = Storm::FlashAt(2.5);
+    s.still = 2.6 / 4.0;
+    out.push(s);
+
+    // 30. The lookout's fire burns; he walks to it through the grass.
+    let fire = d.beacon;
+    let fire2 = Vec2::new(fire.x, fire.z);
+    let mut s = Shot::new(
+        "30_beacon",
+        5.0,
+        vec![
+            key(0.0, at(fire2.x - 9.0, fire2.y + 17.0, 1.2), fire),
+            key(5.0, at(fire2.x - 8.0, fire2.y + 15.5, 1.1), fire - Vec3::Y * 1.0),
+        ],
+    );
+    s.fov = 50.0;
+    s.handheld = 0.15;
+    s.beacon = true;
+    s.him = Some(Him {
+        keys: vec![
+            HimKey {
+                t: 0.0,
+                at: fire2 + Vec2::new(-7.0, 14.0),
+            },
+            HimKey {
+                t: 5.0,
+                at: fire2 + Vec2::new(-3.8, 8.5),
+            },
+        ],
+        state: ThreatState::Stalking,
+        face: None,
+        vanish_at: None,
+    });
+    out.push(s);
+
+    // 31. From the lookout: a strike lights the whole llano and he is a
+    //     speck far out on the open ground.
+    let speck = Vec2::new(38.5, -49.0);
+    let view = Vec2::new(32.0, -30.0);
+    let deck = Vec3::new(43.0, d.watch_height + 1.9, -86.0);
+    let mut s = Shot::new(
+        "31_wide",
+        6.0,
+        vec![
+            key(0.0, deck, at(view.x, view.y, 0.0)),
+            key(6.0, deck + Vec3::new(-0.3, 0.0, 0.4), at(view.x, view.y, 0.3)),
+        ],
+    );
+    s.fov = 46.0;
+    s.handheld = 0.05;
+    s.him = Some(Him {
+        keys: vec![HimKey { t: 0.0, at: speck }],
+        state: ThreatState::Stalking,
+        face: Some((Vec2::new(deck.x, deck.z) - speck).normalize()),
+        vanish_at: None,
+    });
+    s.storm = Storm::FlashAt(1.5);
+    s.still = 1.6 / 6.0;
+    out.push(s);
+
+    // 32. First person in the grass, torch on: the eye turns slowly round…
+    //     and he is standing right behind.
+    let eye_at = Vec2::new(fields.x - 4.0, fields.y + 6.0);
+    let a0 = std::f32::consts::PI * 0.95;
+    let eye3 = at(eye_at.x, eye_at.y, 1.58);
+    let n = 12;
+    let mut cam = vec![key(0.0, eye3, eye3 + Vec3::new(a0.cos() * 6.0, -0.15, a0.sin() * 6.0))];
+    for i in 0..=n {
+        let k = i as f32 / n as f32;
+        let a = a0 + std::f32::consts::PI * k;
+        let up = -0.15 + 0.85 * smooth((k - 0.6) / 0.4);
+        cam.push(key(
+            0.9 + 4.8 * k,
+            eye3,
+            eye3 + Vec3::new(a.cos() * 6.0, up, a.sin() * 6.0),
+        ));
+    }
+    let mut s = Shot::new("32_turn", 7.5, cam);
+    s.glide = true;
+    s.pov = true;
+    s.torch = true;
+    s.fov = 64.0;
+    s.handheld = 0.35;
+    let behind = eye_at + Vec2::new((a0 + std::f32::consts::PI).cos(), (a0 + std::f32::consts::PI).sin()) * 2.5;
+    s.him = Some(Him {
+        keys: vec![HimKey { t: 0.0, at: behind }],
+        state: ThreatState::Warning,
+        face: Some((eye_at - behind).normalize()),
+        vanish_at: None,
+    });
+    s.him_light = 4_000.0;
+    s.still = 0.92;
+    out.push(s);
+
+    // 33. A friend walks toward us down the road, torch in hand, looking
+    //     about; the camera backs away before them.
+    let mut s = Shot::new(
+        "33_survivor",
+        4.5,
+        vec![
+            key(0.0, from_spawn(4.6, 0.35, 1.5), from_spawn(9.0, 0.0, 1.45)),
+            key(4.5, from_spawn(2.0, 0.3, 1.5), from_spawn(5.4, 0.0, 1.45)),
+        ],
+    );
+    s.fov = 28.0;
+    s.handheld = 0.3;
+    s.key_light = Some((from_spawn(5.0, 1.0, 3.0), 22_000.0));
+    s.mates = vec![Mate {
+        steady: true,
+        ..Mate::walk(layout.spawn + ahead * 9.6, layout.spawn + ahead * 5.6)
+    }];
+    s.still = 0.7;
+    out.push(s);
+
+    // 34. The dark house: a long slow push toward the shelf radio, a strike
+    //     in the window.
+    let radio = d.radio;
+    let mut s = Shot::new(
+        "34_radio_long",
+        9.0,
+        vec![
+            key(0.0, radio + Vec3::new(3.2, 0.35, 0.6), radio + Vec3::Y * 0.05),
+            key(9.0, radio + Vec3::new(0.8, 0.12, 0.12), radio + Vec3::Y * 0.08),
+        ],
+    );
+    s.fov = 42.0;
+    s.handheld = 0.06;
+    s.key_light = Some((radio + Vec3::new(0.9, 0.8, 0.0), 1_200.0));
+    s.storm = Storm::FlashAt(6.5);
+    s.still = 0.2;
+    out.push(s);
+
+    // 35. The chigüires on the caño's bank, low across the water.
+    let herd: Vec<Vec2> = d
+        .fauna
+        .iter()
+        .filter(|f| f.kind == crate::geometry::district::FaunaKind::Capybara)
+        .map(|f| f.at)
+        .collect();
+    if !herd.is_empty() {
+        let c = herd.iter().copied().sum::<Vec2>() / herd.len() as f32;
+        let mut s = Shot::new(
+            "35_capybara",
+            4.0,
+            vec![
+                key(0.0, at(c.x - 3.6, c.y + 2.6, 1.35), at(c.x, c.y, 0.3)),
+                key(4.0, at(c.x - 3.0, c.y + 2.0, 1.25), at(c.x + 0.3, c.y, 0.3)),
+            ],
+        );
+        s.fov = 42.0;
+        s.handheld = 0.2;
+        s.key_light = Some((at(c.x - 1.2, c.y + 1.4, 2.6), 24_000.0));
+        out.push(s);
+    }
+
     // Not in the cut, for review (TRAILER_ONLY=90): the four survivors going
     // past on the road outside the gate, side on — one sprinting, one
     // creeping crouched, one carrying bones, one walking — then one down,
@@ -957,9 +1304,10 @@ pub(crate) fn setup(
     layout: Res<LayoutRes>,
     camera: Single<Entity, With<Player>>,
 ) {
+    let (width, height) = size();
     let image = Image::new_target_texture(
-        WIDTH,
-        HEIGHT,
+        width,
+        height,
         TextureFormat::Rgba8Unorm,
         Some(TextureFormat::Rgba8UnormSrgb),
     );
@@ -982,7 +1330,7 @@ pub(crate) fn setup(
     ));
     let mut shots = shots(&layout.0);
     if let Ok(only) = std::env::var("TRAILER_ONLY") {
-        shots.retain(|s| s.name.contains(&only));
+        shots.retain(|s| only.split(',').any(|o| s.name.contains(o)));
     }
     info!(
         "trailer: {} shots, {:.1} s",
@@ -1122,7 +1470,11 @@ pub(crate) fn drive(
             th.pos = at;
             th.facing = face;
             th.speed = speed;
-            th.presence = Presence::Present;
+            th.presence = match shot.rise_at {
+                Some(r) if t < r => Presence::Hidden,
+                Some(r) => Presence::Rising { t: t - r },
+                None => Presence::Present,
+            };
             th.state = him.state;
         }
         None => {
@@ -1162,6 +1514,13 @@ pub(crate) fn drive(
                 s.world.truck = 0.0;
             }
             s.danger = 0;
+            s.zones = shot.wards.iter().map(|w| [w.x, w.y, 30.0]).collect();
+            s.world.beacon = if shot.beacon { 30.0 } else { 0.0 };
+            if let Some(dog) = shot.dog {
+                s.dog.pos = dog.at.to_array();
+                s.dog.facing = dog.face.normalize_or(Vec2::Y).to_array();
+                s.dog.mood = if dog.bark_at.is_some_and(|b| t >= b) { 3 } else { 2 };
+            }
             s.players.retain(|p| p.id < crate::photos::PHOTO_PLAYER_BASE);
             let laid = shot.lay.is_some_and(|at| t >= at);
             if let Some(p) = s.players.iter_mut().find(|p| Some(p.id) == me) {
@@ -1237,9 +1596,12 @@ pub(crate) fn drive(
         return;
     }
     virtual_time.unpause();
-    let dir = launch
-        .shots_dir
-        .join(if run.stills { "trailer_stills" } else { "trailer" });
+    let dir = launch.shots_dir.join(match (run.stills, vertical()) {
+        (true, false) => "trailer_stills",
+        (true, true) => "trailer_vertical_stills",
+        (false, false) => "trailer",
+        (false, true) => "trailer_vertical",
+    });
     let path = if run.stills {
         dir.join(format!("{}.png", shot.name))
     } else {
